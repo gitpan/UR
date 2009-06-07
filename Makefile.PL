@@ -6,6 +6,7 @@ use inc::Module::Install;
 name     'UR';
 license 'perl';
 all_from 'lib/UR.pm';
+install_script 'bin/ur';
 perl_version '5.008';
 
 # prereqs

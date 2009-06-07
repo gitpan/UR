@@ -1,5 +1,7 @@
 UR is a Class Framework and Object/Relational Mapper (ORM) for Perl.
 
+After installing, run the "ur" command for a list of options.
+
 As a Class Framework, it starts with the familiar Perl meme of the blessed
 hash reference as the basis for object instances, and builds upon that 
 with a more formal way to describe classes and their properties, object
@@ -23,8 +25,4 @@ structure indicates.
 
 UR.pm contains more introductory POD documentation.  UR::Manual has a short
 list of documentation you're likely to want to see next.  
-
-
-
-
 
