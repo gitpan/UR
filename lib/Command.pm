@@ -837,6 +837,8 @@ sub _shell_args_property_meta
         next if not $property_meta->is_mutable;
         next if $property_meta->is_delegated;
         next if $property_meta->is_calculated;
+#        next if $property_meta->{is_output}; # TODO: This was breaking the G::M::T::Annotate::TranscriptVariants annotator. This should probably still be here but temporarily roll back
+        next if $property_meta->is_transient;
         next if $seen{$property_name};
         $seen{$property_name} = 1;
         next if $property_meta->is_constant;
