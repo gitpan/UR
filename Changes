@@ -1,5 +1,17 @@
 Revision history for UR
 
+0.7     2009-06-10
+        Fix to build process: the distribution will work if you do not have Module::Install installed.
+
+0.6     2009-06-07
+        Fixed to build process: actually install the "ur" executable.
+
+0.5     2009-06-06 
+        Updates to POD.  Additional API updates to UR::Object.
+
+0.4     2009-06-04
+        Updates to POD.  Extensive API updates to UR::Object.
+
 0.3     2009-05-29
         Fixed memory leak in cache pruner, and added additional debugging environment variable.
         Additional laziness on file-based data-sources.

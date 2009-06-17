@@ -1,26 +1,23 @@
----
-abstract: 'rich declarative non-hierarchical transactional objects'
-author:
-  - 'UR was built by the software development team at the Washington'
-build_requires:
+--- 
+abstract: rich declarative non-hierarchical transactional objects
+author: 
+  - UR was built by the software development team at the Washington
+build_requires: 
   Test::Fork: 0.02
   Test::More: 0.62
-configure_requires:
-  ExtUtils::MakeMaker: 6.48
 distribution_type: module
-generated_by: 'Module::Install version 0.81'
+generated_by: Module::Install version 0.68
 license: perl
-meta-spec:
-  url: http://module-build.sourceforge.net/META-spec-v1.4.html
-  version: 1.4
+meta-spec: 
+  url: http://module-build.sourceforge.net/META-spec-v1.3.html
+  version: 1.3
 name: UR
-no_index:
-  directory:
+no_index: 
+  directory: 
     - inc
     - t
-requires:
+requires: 
   Carp: 0
-  Class::Autouse: 1.99_02
   DBD::SQLite: 1.14
   DBI: 1.601
   Data::Compare: 0.13
@@ -29,11 +26,11 @@ requires:
   File::Basename: 2.73
   FreezeThaw: 0.43
   Lingua::EN::Inflect: 1.88
+  Sub::Name: 0.04
   Sys::Hostname: 1.11
   Text::Diff: 0.35
   YAML: 0
   perl: 5.8.0
   version: 0.74
-resources:
-  license: http://dev.perl.org/licenses/
-version: 0.7
+tests: t/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t
+version: 0.8
