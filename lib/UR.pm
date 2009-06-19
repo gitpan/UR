@@ -10,7 +10,7 @@ use warnings FATAL => 'all';
 our $VERSION;
 
 BEGIN {
-    $VERSION = '0.8';
+    $VERSION = '0.9';
 }
 
 # Ensure we get detailed errors while starting up.

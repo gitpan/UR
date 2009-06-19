@@ -9,23 +9,30 @@ all_from 'lib/UR.pm';
 install_script 'bin/ur';
 perl_version '5.008';
 
-# prereqs
-requires 'version'              => '0.74';
-#requires 'Class::Autouse'       => '1.99_02';
-requires 'Carp';
-requires 'Sys::Hostname'        => '1.11';
-requires 'File::Basename'       => '2.73';
-requires 'Lingua::EN::Inflect'  => '1.88';
-requires 'FreezeThaw'           => '0.43';
-requires 'Date::Calc';
-requires 'Date::Parse';
-requires 'YAML';
-requires 'Data::Compare'        => '0.13';
-requires 'Text::Diff'           => '0.35';
-requires 'DBI'                  => '1.601';
-requires 'DBD::SQLite'          => '1.14';
-#requires 'Moose'                => '0.31';
-requires 'Sub::Name'            => '0.04';
+# prereqs (ordered)
+features (
+    -core => [
+        'version'             => '0.74',
+        'Carp'                => '',
+        'Sys::Hostname'       => '1.11',
+        'File::Basename'      => '2.73',
+        'Lingua::EN::Inflect' => '1.88',
+        'FreezeThaw'          => '0.43',
+        'Date::Calc'          => '',
+        'Date::Parse'         => '',
+        'YAML'                => '',
+        'Data::Compare'       => '0.13',
+        'Text::Diff'          => '0.35',
+        'DBI'                 => '1.601',
+        'DBD::SQLite'         => '1.14',
+        'Sub::Name'           => '0.04',
+        'Sub::Install'        => '0.924',
+    ],
+    'Moose' => [
+        #-tests  => [ [ 't/URT/t/00-load.t' ], <t/URT/t/*-moose-*.t> ],
+        'Moose' => '0.31',
+    ]
+);
 
 # things the tests need
 build_requires 'Test::More' => '0.62';
@@ -36,5 +43,5 @@ build_requires 'Test::Fork' => '0.02';
 
 tests('t/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t');
 
+auto_install();
 WriteAll();
-
