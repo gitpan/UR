@@ -30,8 +30,8 @@ exit(0);
 
 # remove the /private from Mac OS X paths
 sub clean_darwin {
-    return 1 unless $^O eq 'darwin';
     my ($path) = @_;
+    return $path unless $^O eq 'darwin';
     $path =~ s{^/private}{};
     return $path;
 }

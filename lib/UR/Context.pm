@@ -106,20 +106,25 @@ sub resolve_data_sources_for_class_meta_and_rule {
     my $data_source;
 
     # For data dictionary items
+    # When the FileMux datasource is more generalized and works for
+    # any kind of underlying datasource, this code can move from here 
+    # and into the base class for Meta datasources
     if ($class_name->isa('UR::DataSource::RDBMS::Entity')) {
         if (!defined $boolexpr) {
             $DB::single=1;
         }
 
         my $params = $boolexpr->legacy_params_hash;
+        my $namespace;
         if ($params->{'namespace'}) {
+            $namespace = $params->{'namespace'};
             $data_source = $params->{'namespace'} . '::DataSource::Meta';
 
         } elsif ($params->{'data_source'} &&
                  ! ref($params->{'data_source'}) &&
                  $params->{'data_source'}->can('get_namespace')) {
 
-            my $namespace = $params->{'data_source'}->get_namespace;
+            $namespace = $params->{'data_source'}->get_namespace;
             $data_source = $namespace . '::DataSource::Meta';
 
         } elsif ($params->{'data_source'} &&
@@ -128,11 +133,26 @@ sub resolve_data_sources_for_class_meta_and_rule {
             unless (scalar(keys %namespaces) == 1) {
                 Carp::confess("get() across multiple namespaces is not supported");
             }
-            my $namespace = $params->{'data_source'}->[0]->get_namespace;
+            $namespace = $params->{'data_source'}->[0]->get_namespace;
             $data_source = $namespace . '::DataSource::Meta';
         } else {
             Carp::confess("Required parameter (namespace or data_source_id) missing");
             #$data_source = 'UR::DataSource::Meta';
+        }
+
+        if (my $exists = UR::Object::Type->get($data_source)) {
+            # switch the terminology above to stop using $data_source for the class name
+            # now it's the object..
+            $data_source = $data_source->get();
+        }
+        else {
+            $self->warning_message("no data source $data_source: generating for $namespace...");
+            UR::DataSource::Meta->generate_for_namespace($namespace);
+            $data_source = $data_source->get();
+        }
+
+        unless ($data_source) {
+            Carp::confess "Failed to find or generate a data source for meta data for namespace $namespace!";
         }
 
     } else {
@@ -623,6 +643,8 @@ sub create_entity {
     }
     
     $entity->__signal_change__("create");
+    $entity->{'__get_serial'} = $UR::Context::GET_COUNTER++;
+    $UR::Context::all_objects_cache_size++;
     return $entity;
 }
 
@@ -1162,7 +1184,7 @@ sub get_objects_for_class_and_rule {
         return unless defined wantarray;
         return @results if wantarray;
         if (@results > 1) {
-            die sprintf("Multiple results unexpected for query.\n\tClass %s\n\trule params: %s\n\tGot %d results:\n%s\n",
+            Carp::confess sprintf("Multiple results unexpected for query.\n\tClass %s\n\trule params: %s\n\tGot %d results:\n%s\n",
                         $rule->subject_class_name,
                         join(',', $rule->params_list),
                         scalar(@results),
@@ -1370,7 +1392,6 @@ sub _create_secondary_loading_closures {
 
     my $loading_templates = $primary_template->{'loading_templates'};
 
-$DB::single=1;
     # Make a mapping of property name to column positions returned by the primary query
     my %primary_query_column_positions;
     foreach my $tmpl ( @$loading_templates ) {
@@ -1614,7 +1635,7 @@ sub _create_import_iterator_for_underlying_context {
                 my $subclass_name = $type_obj->subclass_name($class_name);
                 if ($subclass_name and $subclass_name ne $class_name) {
                     #$rule = $subclass_name->define_boolexpr($rule->params_list, $sub_typing_property => $value);
-                    $rule = UR::BoolExpr->resolve($subclass_name, $rule->params_list, $sub_typing_property => $value);
+                    $rule = UR::BoolExpr->resolve_normalized($subclass_name, $rule->params_list, $sub_typing_property => $value);
                     return $self->_create_import_iterator_for_underlying_context($rule,$dsx,$this_get_serial);
                 }
             }
@@ -1791,12 +1812,19 @@ sub _create_import_iterator_for_underlying_context {
                     $_->finalize if ref($_) ne 'CODE';
                 }
                 
-                # Each of these iterators should be at the end, too.  Call them one more time
+                # If the SQL for the subclassed items was constructed properly, then each
+                # of these iterators should be at the end, too.  Call them one more time
                 # so they'll finalize their object fabricators.
                 foreach my $class ( keys %subordinate_iterator_for_class ) {
                     my $obj = $subordinate_iterator_for_class{$class}->();
                     if ($obj) {
-                        warn "Leftover objects in subordinate iterator for $class";
+                        # The last time this happened, it was because a get() was done on an abstract
+                        # base class with only 'id' as a param.  When the subclassified rule was
+                        # turned into SQL in UR::DataSource::RDBMS::_generate_template_data_for_loading()
+                        # it removed that one 'id' filter, since it assummed any class with more than
+                        # one ID property (usually classes have a named whatever_id property, and an alias 'id'
+                        # property) will have a rule that covered both ID properties
+                        warn "Leftover objects in subordinate iterator for $class.  This shouldn't happen, but it's not fatal...";
                         while ($obj = $subordinate_iterator_for_class{$class}->()) {1;}
                     }
                 }
@@ -1884,10 +1912,10 @@ sub _create_import_iterator_for_underlying_context {
                     unless ($sub_iterator) {
                         #print "parallel iteration for loading $subclass_name under $class_name!\n";
                         my $sub_classified_rule_template = $rule_template->sub_classify($subclass_name);
-                        my $sub_classified_rule = $sub_classified_rule_template->get_rule_for_values(@values);
+                        my $sub_classified_rule = $sub_classified_rule_template->get_normalized_rule_for_values(@values);
                         $sub_iterator 
                             = $subordinate_iterator_for_class{$table_subclass} 
-                                = $self->_create_import_iterator_for_underlying_context($sub_classified_rule,$dsx);
+                                = $self->_create_import_iterator_for_underlying_context($sub_classified_rule,$dsx,$this_get_serial);
                     }
                     ($object) = $sub_iterator->();
                     if (! defined $object) {
@@ -3154,6 +3182,11 @@ sub commit {
         die "Application failure during commit!";
     }
     $self->__signal_change__('commit',1);
+
+    foreach ( $self->all_objects_loaded('UR::Object') ) {
+        delete $_->{'_change_count'};
+    }
+
     return 1;
 }
 
@@ -3523,6 +3556,7 @@ sub _commit_databases {
             die "FAILED TO COMMIT!: " . $class->error_message;
         }
     }
+
     return 1;
 }
 

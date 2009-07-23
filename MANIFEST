@@ -1,5 +1,12 @@
 bin/ur
 Changes
+doc/Cookbook.pod
+doc/Metadata.pod
+doc/Overview.pod
+doc/Presentation.pod
+doc/Tutorial.pod
+doc/UR.pod
+doc/UR_Presentation.pdf
 inc/Module/AutoInstall.pm
 inc/Module/Install.pm
 inc/Module/Install/AutoInstall.pm
@@ -15,12 +22,11 @@ inc/Module/Install/WriteAll.pm
 INSTALL
 lib/above.pm
 lib/Class/Autouse_1_99_02.pm
-lib/Class/Autouse_README
+lib/Class/Autouse_1_99_02.README
 lib/Command.pm
 lib/Devel/callcount.pm
 lib/UR.pm
 lib/UR/BoolExpr.pm
-lib/UR/BoolExpr/Normalizer.pm
 lib/UR/BoolExpr/Template.pm
 lib/UR/BoolExpr/Template/And.pm
 lib/UR/BoolExpr/Template/Composite.pm
@@ -55,6 +61,7 @@ lib/UR/DataSource/CSV.pm
 lib/UR/DataSource/File.pm
 lib/UR/DataSource/FileMux.pm
 lib/UR/DataSource/Meta.pm
+lib/UR/DataSource/Meta.sqlite3
 lib/UR/DataSource/Meta.sqlite3-dump
 lib/UR/DataSource/Meta.sqlite3-dump-boostrap
 lib/UR/DataSource/Meta.sqlite3-schema
@@ -66,6 +73,7 @@ lib/UR/DataSource/RDBMS/BitmapIndex.pm
 lib/UR/DataSource/RDBMS/Entity.pm
 lib/UR/DataSource/RDBMS/FkConstraint.pm
 lib/UR/DataSource/RDBMS/FkConstraintColumn.pm
+lib/UR/DataSource/RDBMS/PendingDDL.pm
 lib/UR/DataSource/RDBMS/PkConstraintColumn.pm
 lib/UR/DataSource/RDBMS/Table.pm
 lib/UR/DataSource/RDBMS/Table/Viewer/Default/Text.pm
@@ -136,6 +144,8 @@ lib/UR/Namespace/Command/Describe.pm
 lib/UR/Namespace/Command/Diff.pm
 lib/UR/Namespace/Command/Diff/Rewrite.pm
 lib/UR/Namespace/Command/Diff/Update.pm
+lib/UR/Namespace/Command/Export.pm
+lib/UR/Namespace/Command/Export/DbicClasses.pm
 lib/UR/Namespace/Command/Info.pm
 lib/UR/Namespace/Command/List.pm
 lib/UR/Namespace/Command/List/Classes.pm
@@ -197,6 +207,7 @@ lib/UR/Object/Type/AccessorWriter/Sum.pm
 lib/UR/Object/Type/DBICModuleWriter.pm
 lib/UR/Object/Type/Initializer.pm
 lib/UR/Object/Type/Initializer.pod
+lib/UR/Object/Type/InternalAPI.pm
 lib/UR/Object/Type/ModuleWriter.pm
 lib/UR/Object/Type/Viewer/Default/Text.pm
 lib/UR/Object/Type/Viewer/Default/Umlet.pm
@@ -260,6 +271,9 @@ MANIFEST			This list of files
 META.yml
 README
 t/above.t
+t/CdExample.pm
+t/CdExample/Artist.pm
+t/CdExample/Cd.pm
 t/URT.pm
 t/URT/34Baseclass.pm
 t/URT/34Subclass.pm
@@ -296,6 +310,7 @@ t/URT/t/04e_file.t
 t/URT/t/04e_file_sync_database.t
 t/URT/t/04f_filemux.t
 t/URT/t/04f_filemux_sync_database.t
+t/URT/t/05_get_create_get.t
 t/URT/t/06_accessor_simple.t
 t/URT/t/07_create_get_simple.t
 t/URT/t/08_create_get_complex1.t
@@ -345,6 +360,8 @@ t/URT/t/51_get_with_hints.t
 t/URT/t/52_limit_cache_size.t
 t/URT/t/53_abandoned_iterator.t
 t/URT/t/54_valid_values.t
+t/URT/t/55_on_the_fly_metadb.t
+t/URT/t/56_properties_query.t
 t/URT/t/60_command_define_datasource.t
 t/URT/t/98_ur_update.t
 t/URT/t/99_transaction.t

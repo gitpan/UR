@@ -1,4 +1,5 @@
 package UR::DataSource::RDBMS;
+
 use strict;
 use warnings;
 use Scalar::Util;
@@ -24,32 +25,69 @@ UR::Object::Type->define(
     doc => 'A logical DBI-based database, independent of prod/dev/testing considerations or login details.',
 );
 
+
+sub database_exists {
+    my $self = shift;
+    warn $self->class . " failed to implement the database_exists() method.  Testing connection as a surrogate.  FIXME here!\n";
+    eval {
+        my $c = $self->create_dbh();
+    };
+    if ($@) {
+        return;
+    }
+    return 1;
+}
+
+
+sub create_database {
+    my $self = shift;
+    die $self->class . " failed to implement the create_database() method!"
+        . "  Unable to initialize a new database for this data source "
+        . $self->__display_name__ . " FIXME here.\n";
+}
+
+
 sub _resolve_ddl_for_table {
     my ($self,$table) = @_;
 
-    my $table_name = $table->table_name;    
+    my $table_name = $table->table_name;
 
-    my $ddl;
-    
+    my @ddl;
+
     if ($table->{db_committed}) {
-        #$ddl = "alter table $table_name ";
+        my @columns = $table->columns;
+        for my $column (@columns) {
+            next unless $column->last_object_revision eq '-';
+            my $column_name = $column->column_name;
+            my $ddl = "alter table $table_name add column ";
+
+            $ddl .= "\t$column_name " . $column->data_type;
+            if ($column->data_length) {
+                $ddl .= '(' . $column->data_length . ')';
+            }
+            push(@ddl, $ddl) if $ddl;
+        }
     }
     else {
+        my $ddl;
         my @columns = $table->columns;
         for my $column (@columns) {
             next unless $column->last_object_revision eq '-';
             my $column_name = $column->column_name;
             $ddl = 'create table ' . $table_name . "(\n" unless defined $ddl;
+
             $ddl .= "\t$column_name " . $column->data_type;
             if ($column->data_length) {
                 $ddl .= '(' . $column->data_length . ')';
             }
+
             $ddl .= ",\n" unless $column eq $columns[-1];
         }
         $ddl .= "\n)" if defined $ddl;
+        push(@ddl, $ddl) if $ddl;
     }
 
-    return $ddl;
+    return @ddl;
 }
 
 sub generate_schema_for_class_meta {
@@ -59,7 +97,8 @@ sub generate_schema_for_class_meta {
     # this gets called with the temp flag when _sync_database realizes 
     # it knows nothing about the table in question.
     
-    # We basically presume the schema is the one we would have generated if
+    # We basically presume the schema is the one we would have generated 
+    # given the current class definitions
     # TODO: We still need to presume foreign keys are constrained.
     my $method = ($temp ? '__define__' : 'create'); 
 
@@ -79,7 +118,7 @@ sub generate_schema_for_class_meta {
     my $table_name = $class_meta->table_name;
     unless ($table_name) {
         if (my @column_names = keys %properties_with_expected_columns) {
-            die "class " . $class_meta->__display_name__ . " has no table_name specified for columns @column_names!";
+            Carp::confess "class " . $class_meta->__display_name__ . " has no table_name specified for columns @column_names!";
         }
         else {
             # no table, but no storable columns.  all ok.
@@ -108,6 +147,7 @@ sub generate_schema_for_class_meta {
             map { $_->column_name => $_ } 
             grep { $_->column_name }
             $table->columns;
+        push @defined, ($table,$table->columns);
     }
     else {
         ## print "adding table $table_name\n";
@@ -120,19 +160,20 @@ sub generate_schema_for_class_meta {
             last_object_revision => $t,
             table_type => ($table_name =~ /\s/ ? 'view' : 'table'),
         );
-        die unless $table;
+        Carp::confess("Failed to create metadata or table $table_name") unless $table;
         push @defined, $table;
     }
 
     my ($update,$add,$extra) = _intersect_lists([keys %properties_with_expected_columns],[keys %existing_columns]);
 
     for my $column_name (@$extra) {
-        $self->warning_message("unused table column: $table_name.$column_name\n");
+        my $column = $existing_columns{$column_name};
+        $column->last_object_revision('?');
     }   
    
     for my $column_name (@$add) {
         my $property = $properties_with_expected_columns{$column_name}; 
-        print "adding column $column_name\n";
+        #print "adding column $column_name\n";
         my $column = UR::DataSource::RDBMS::TableColumn->$method(
             column_name => $column_name,
             table_name => $table->table_name,
@@ -161,7 +202,6 @@ sub generate_schema_for_class_meta {
         $column->data_length($property->data_length);
         $column->nullable($property->is_optional);
         $column->remarks($property->doc);
-        $column->last_object_revision($t);
     }
 
     # handle missing meta datasource on the fly...
@@ -173,14 +213,15 @@ sub generate_schema_for_class_meta {
         }
     }
 
-    my $ddl = $self->_resolve_ddl_for_table($table);
-    ##print "DDL2: $ddl\n";
+    my @ddl = $self->_resolve_ddl_for_table($table);
     $t = UR::Time->now;
-    if (defined($ddl)) {
+    if (@ddl) {
         my $dbh = $table->data_source->get_default_handle;
-        $dbh->do($ddl) or die "Failed to modify the database schema!";
-        for my $o ($table, $table->columns) {
-            $o->last_object_revision($t);
+        for my $ddl (@ddl) {
+            $dbh->do($ddl) or Carp::confess("Failed to modify the database schema!: $ddl\n" . $dbh->errstr);
+            for my $o ($table, $table->columns) {
+                $o->last_object_revision($t);
+            }
         }
     }
 
@@ -371,8 +412,8 @@ sub create_dbh {
     if ($self->can("_init_created_dbh")) {
         unless ($self->_init_created_dbh($dbh)) {
             $dbh->disconnect;
-            die "Failed to initialize new database connection!\n"
-                . $self->error_message . "\n";
+            Carp::confess("Failed to initialize new database connection!\n"
+                . $self->error_message . "\n");
         }
     }
 
@@ -594,21 +635,6 @@ sub resolve_attribute_name_for_column_name {
     return $type_name;
 }
 
-sub can_savepoint {
-    my $class = ref($_[0]);
-    die "Class $class didn't supply can_savepoint()";
-}
-
-sub set_savepoint {
-    my $class = ref($_[0]);
-    die "Class $class didn't supply set_savepoint, but can_savepoint is true";
-}
-
-sub rollback_to_savepoint {
-    my $class = ref($_[0]);
-    die "Class $class didn't supply rollback_to_savepoint, but can_savepoint is true";
-}
-
 sub refresh_database_metadata_for_table_name {
     my ($self,$table_name) = @_;
 
@@ -624,7 +650,7 @@ sub refresh_database_metadata_for_table_name {
     my $table_sth = $data_source->get_table_details_from_data_dictionary('%', $data_source->owner, $table_name, "TABLE,VIEW");
     my $table_data = $table_sth->fetchrow_hashref();
     unless ($table_data && %$table_data) {
-        $self->error_message("No data for table $table_name in data source $data_source.");
+        #$self->error_message("No data for table $table_name in data source $data_source.");
         return;
     }
 
@@ -1101,43 +1127,56 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
         return $self->next_dummy_autogenerated_id;
     }
 
-    my $class = UR::Object::Type->get(class_name => $class_name);
-    my $table_name;
-    unless ($table_name) {
+    my $class_meta = UR::Object::Type->get(class_name => $class_name);
+    my $sequence = $class_meta->id_sequence_generator_name;
+
+    # FIXME Child classes really should use the same sequence generator as its parent
+    # if it doesn't specify its own.
+    # It'll be hard to distinguish the case of a class meta not explicitly mentioning its
+    # sequence name, but there's a sequence generator in the schema for it (the current
+    # mechanism), and when we should defer to the parent's sequence...
+    unless ($sequence) {
+        # This class directly doesn't have a sequence specified.  Search through the inheritance
+        my $table_name;
         for my $parent_class_name ($class_name, $class_name->inheritance) {
             # print "checking $parent_class_name (for $class_name)\n";
             my $parent_class = UR::Object::Type->get(class_name => $parent_class_name);
             # print "object $parent_class\n";
             next unless $parent_class;
+            #$sequence = $class_meta->id_sequence_generator_name;
+            #last if $sequence;
             if ($table_name = $parent_class->table_name) {
                 # print "found table $table_name\n";
                 last;
             }
         }
-    }
 
-    my $table = UR::DataSource::RDBMS::Table->get(table_name => $table_name, data_source => $self->id);
+        unless ($table_name) {
+            Carp::croak("Could not determine a table name for class $class_name");
+        }
 
-    unless ($table_name && $table) {
-        Carp::confess("Failed to find a table for class $class_name!");
-    }
+        my $table_meta = UR::DataSource::RDBMS::Table->get(table_name => $table_name, data_source => $self->id);
 
-    my @keys = $table->primary_key_constraint_column_names;
-    my $key;
-    if (@keys > 1) {
-        Carp::confess("Tables with multiple primary keys (i.e." . $table->table_name  . " @keys) cannot have a surrogate key created from a sequence.");
-    }
-    elsif (@keys == 0) {
-        Carp::confess("No primary keys found for table " . $table->table_name . "\n");
-    }
-    else {
-        $key = $keys[0];
-    }
+        my @primary_keys;
+        if ($table_meta) {
+            @primary_keys = $table_meta->primary_key_constraint_column_names;
+        } else {
+            # No metaDB info... try and make a guess based on the class' ID proeprties
+            @primary_keys = grep { $_ }  # Only interested in the properties with columns defined
+                            map { $_->column_name }
+                            $class_meta->all_id_property_metas;
+        }
 
-    # FIXME Each class should have a way to override what sequence generator to use
-    my $sequence;
-    unless ($sequence = $class->id_sequence_generator_name) {
-        $sequence = $self->_get_sequence_name_for_table_and_column($table_name, $key);
+        if (@primary_keys > 1) {
+            Carp::croak("Tables with multiple primary keys (i.e." .
+                         $table_name  . ": " .
+                         join(',',@primary_keys) .
+                         ") cannot have a surrogate key created from a sequence.");
+        } elsif (@primary_keys == 0) {
+            Carp::croak("No primary keys found for table " . $table_name . "\n");
+        }
+
+        $sequence = $self->_get_sequence_name_for_table_and_column($table_name, $primary_keys[0]);
     }
 
     my $new_id = $self->_get_next_value_from_sequence($sequence);
@@ -1237,7 +1276,7 @@ sub create_iterator_closure_for_rule {
         Carp::confess($class->error_message);
     }
     
-    die unless $sth;
+    die unless $sth;   # FIXME - this has no effect, right?  
 
     $self->__signal_change__('query',$sql);
 
@@ -1901,7 +1940,7 @@ sub _sync_database {
             for my $n (0 .. $#column_objects) {
                 if ($column_objects[$n]->data_type eq 'BLOB')
                 {
-                    $sth->bind_param($n+1, undef, { ora_type => 113,  ora_field => $column_objects[$n]->column_name });
+                    $sth->bind_param($n+1, undef, { ora_type => 23 });
                 }
             }
         }
@@ -2239,7 +2278,13 @@ sub _default_save_sql_for_object {
         my $table = UR::DataSource::RDBMS::Table->get(table_name => $table_name, data_source => $dsn) ||
                     UR::DataSource::RDBMS::Table->get(table_name => $table_name, data_source => 'UR::DataSource::Meta');
         unless ($table) {
-            Carp::confess("No table $table_name found for data source $dsn!");
+            $self->generate_schema_for_class_meta($class_object,1);
+            # try again...
+            $table = UR::DataSource::RDBMS::Table->get(table_name => $table_name, data_source => $dsn) ||
+                    UR::DataSource::RDBMS::Table->get(table_name => $table_name, data_source => 'UR::DataSource::Meta');
+            unless ($table) {
+                Carp::confess("No table $table_name found for data source $dsn!");
+            }
         }        
         my @table_class_obj = grep { $_->class_name !~ /::Ghost$/ } UR::Object::Type->is_loaded(table_name => $table_name);
         my $table_class;
@@ -2824,6 +2869,7 @@ sub _generate_template_data_for_loading {
         my $alias_for_property_value;
     
         my $property_name = $delegated_property->property_name;
+#$DB::single=1;
         my @joins = $delegated_property->_get_joins;
         my $relationship_name = $delegated_property->via;
         unless ($relationship_name) {
@@ -3226,7 +3272,7 @@ sub _generate_template_data_for_loading {
                 $from_clause .= "${link_table_name}.${link_column_name} = $expr_sql";
             }
             elsif (defined $value_position) {
-                die "Joins cannot use variable values currently!"
+                Carp::croak "Joins cannot use variable values currently!"
             }
             else {
                 my ($more_sql, @more_params) = 

@@ -47,6 +47,8 @@ my $sql_fh;
 if ($ENV{'UR_DBI_MONITOR_SQL'}) {
     $sql_fh = UR::DBI->sql_fh();
 }
+
+sub can_savepoint { 0;}  # Doesn't support savepoints
  
 sub get_default_handle {
     my $self = shift;
@@ -60,12 +62,7 @@ sub get_default_handle {
         my $filename = $self->server;
         unless (-e $filename) {
             # file doesn't exist
-            my $fh = IO::File->new($filename, '>>');
-            unless ($fh) {
-                $self->error_message("$filename does not exist, and can't be created: $!");
-                return;
-            }
-            $fh->close();
+            $filename = '/dev/null';
         }
 
         my $fh = IO::File->new($filename);
@@ -284,7 +281,7 @@ sub _comparator_for_operator_and_property {
                    };
         }
 
-    } elsif ($operator eq '[]') {
+    } elsif ($operator eq '[]' or $operator eq 'in') {
         if ($property->is_numeric and $self->_things_in_list_are_numeric($value)) {
             # Numeric 'in' comparison  returns undef is we're within the range of the list
             # but don't actually match any of the items in the list
@@ -318,6 +315,24 @@ sub _comparator_for_operator_and_property {
                        }
                    };
 
+        }
+
+    } elsif ($operator eq 'not []' or $operator eq 'not in') {
+        if ($property->is_numeric and $self->_things_in_list_are_numeric($value)) {
+            return sub {
+                foreach ( @$value ) {
+                    return -1 if $$next_candidate_row->[$index] == $_;
+                }
+                return 0;
+            }
+
+        } else {
+            return sub {
+                foreach ( @$value ) {
+                    return -1 if $$next_candidate_row->[$index] eq $_;
+                }
+                return 0;
+            }
         }
 
     } elsif ($operator eq 'like') {
@@ -376,6 +391,18 @@ sub _comparator_for_operator_and_property {
             return sub { 
                        $$next_candidate_row->[$index] >= $value ? 0 : -1;
                    };
+        } elsif ($operator eq 'true') {
+            return sub {
+                       $$next_candidate_row->[$index] ? 0 : -1;
+                   };
+        } elsif ($operator eq 'false') {
+            return sub {
+                       $$next_candidate_row->[$index] ? 1 : 0;
+                   };
+        } elsif ($operator eq '!=' or $operator eq 'ne') {
+             return sub {
+                       $$next_candidate_row->[$index] != $value ? 0 : -1;
+             }
         }
 
     } else {
@@ -402,12 +429,16 @@ sub _comparator_for_operator_and_property {
                    };
         } elsif ($operator eq 'true') {
             return sub {
-                       $$next_candidate_row->[$index] ? 0 : 1;
+                       $$next_candidate_row->[$index] ? 0 : -1;
                    };
         } elsif ($operator eq 'false') {
             return sub {
                        $$next_candidate_row->[$index] ? 1 : 0;
                    };
+        } elsif ($operator eq '!=' or $operator eq 'ne') {
+             return sub {
+                       $$next_candidate_row->[$index] ne $value ? 0 : -1;
+             }
         }
     }
 }
@@ -469,6 +500,9 @@ sub create_iterator_closure_for_rule {
                                                                                $column_name_to_index_map{$column_name},
                                                                                $operator,
                                                                                $rule_value);
+        unless ($comparison_function) {
+            Carp::croak("Unknown operator '$operator' in file data source filter");
+        }
         push @comparison_for_column, $comparison_function;
     }
 
@@ -763,6 +797,9 @@ sub _sync_database {
     my $original_data_file = $self->server;
     my $original_data_dir  = File::Basename::dirname($original_data_file);
     my $use_quick_rename;
+    unless (-d $original_data_dir){
+        File::Path::mkpath($original_data_dir);
+    }
     if (-w $original_data_dir) {
         $use_quick_rename = 1;  # We can write to the data dir
     } elsif (! -w $original_data_file) {
@@ -904,6 +941,7 @@ sub _sync_database {
             my $comparison = $row_sort_sub->($row, $insert->[0]);
             if ($comparison > 0) {
                 # write the object's data
+                no warnings 'uninitialized';   # Some of the object's data may be undef
                 my $new_row = shift @$insert;
                 my $new_line = join($join_pattern, @$new_row) . $record_separator;
 
@@ -948,6 +986,7 @@ sub _sync_database {
 
     # finish out by writing the rest of the new data
     foreach my $new_row ( @$insert ) {
+        no warnings 'uninitialized';   # Some of the object's data may be undef
         my $new_line = join($join_pattern, @$new_row) . $record_separator;
         if ($ENV{'UR_DBI_MONITOR_SQL'}) {
             $sql_fh->print("INSERT >>$new_line<<\n");
@@ -990,6 +1029,10 @@ sub _sync_database {
         
         $new_write_fh->close();
     }
+
+    # Because of the rename/copy process during syncing, the previously opened filehandle may
+    # not be valid anymore.  get_default_handle will reopen the file next time it's needed
+    $self->{_fh} = undef; 
 
     if ($ENV{'UR_DBI_MONITOR_SQL'}) {
         $sql_fh->printf("FILE: TOTAL COMMIT TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
