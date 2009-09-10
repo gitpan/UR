@@ -15,11 +15,11 @@ BEGIN {
     # this is an attempt to get around it...
 
     # for the cpan shell, and other parsers
-    $VERSION = 'v0.11';
+    $VERSION = 'v0.12';
 
     # for actual inspection
     ${VERSION} 
-        = qv('0.11'); 
+        = qv('0.12'); 
 };
 
 # Ensure we get detailed errors while starting up.
@@ -443,6 +443,7 @@ UR::Object::Type->define(
         reference_property_metas        => { is => 'UR::Object::Reference::Property', reverse_as => 'reference_meta', is_many => 1 },
         class_meta                      => { is => 'UR::Object::Type', id_by => 'class_name' },
         r_class_meta                    => { is => 'UR::Object::Type', id_by => 'r_class_name' },
+        property_meta                   => { is => 'UR::Object::Property', id_by => ['class_name', 'delegation_name'] },
     ],
 );
 
@@ -541,7 +542,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version v0.11.
+This document describes UR version v0.12.
 
 =head1 SYNOPSIS
 
@@ -563,7 +564,6 @@ This document describes UR version v0.11.
     
     @o = Foo->get(prop2 => 222, prop1 => [101,111,121], 'prop3 between' => [200, 400]);
     # returns one object again
-
 
     ## database
 

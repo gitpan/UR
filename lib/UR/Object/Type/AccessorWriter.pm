@@ -11,6 +11,8 @@ use Carp ();
 use Sub::Name ();
 use Sub::Install ();
 
+our @CARP_NOT = qw( UR::Object UR::Context );
+
 sub mk_rw_accessor {
     my ($self, $class_name, $accessor_name, $column_name, $property_name, $is_transient) = @_;
     $property_name ||= $accessor_name;
@@ -79,8 +81,7 @@ sub mk_ro_accessor {
 
             if ($old ne $new)
             {
-$DB::single=1;
-                Carp::confess("Cannot change read-only property $accessor_name for class $class_name!"
+                Carp::croak("Cannot change read-only property $accessor_name for class $class_name!"
                 . "  Failed to update " . $_[0]->__display_name__ . " property: $property_name from $old to $new");
             }
             return $new;
@@ -174,7 +175,7 @@ sub mk_indirect_ro_accessor {
 
     my $accessor = Sub::Name::subname $full_name => sub {
         my $self = shift;
-        Carp::confess("assignment value passed to read-only indirect accessor $accessor_name for class $class_name!") if @_;
+        Carp::croak("assignment value passed to read-only indirect accessor $accessor_name for class $class_name!") if @_;
         my @bridges = $self->$via(@where);
         return unless @bridges;
         return $self->context_return(@bridges) if ($to eq '-filter');
@@ -195,12 +196,12 @@ sub mk_indirect_ro_accessor {
 
         my $linking_property = UR::Object::Property->get(class_name => $class_name, property_name => $via);
         unless ($linking_property->data_type) {
-            Carp::confess "Property ${class_name}::${accessor_name}: via refers to a property with no data_type.  Can't process filter";
+            Carp::croak "Property ${class_name}::${accessor_name}: via refers to a property with no data_type.  Can't process filter";
         }
         my $final_property = UR::Object::Property->get(class_name => $linking_property->data_type, 
                                                        property_name => $to);
         unless ($final_property->data_type) {
-            Carp::confess "Property ${class_name}::${accessor_name}: to refers to a property with no data_type.  Can't process filter";
+            Carp::croak "Property ${class_name}::${accessor_name}: to refers to a property with no data_type.  Can't process filter";
         }
         $r_class_name = $final_property->data_type;
     };
@@ -282,14 +283,14 @@ sub mk_indirect_rw_accessor {
                     #WAS > Carp::confess("Cannot set $accessor_name on $class_name $self->{id}: property is via $via which is not set!");
                 }
                 elsif (@bridges > 1) {
-                    Carp::confess("Cannot set $accessor_name on $class_name $self->{id}: multiple instances of '$via' found, via which the property is set!");
+                    Carp::croak("Cannot set $accessor_name on $class_name $self->{id}: multiple instances of '$via' found, via which the property is set!");
                 }
                 #print "updating $bridges[0] $to to @_\n";
                 return $bridges[0]->$to(@_);
             }
             elsif ($update_strategy eq 'delete-create') {
                 if (@bridges > 1) {
-                    Carp::confess("Cannot set $accessor_name on $class_name $self->{id}: multiple instances of '$via' found, via which the property is set!");
+                    Carp::croak("Cannot set $accessor_name on $class_name $self->{id}: multiple instances of '$via' found, via which the property is set!");
                 }
                 else {
                     if (@bridges) {
@@ -299,7 +300,7 @@ sub mk_indirect_rw_accessor {
                     #print "adding via $adder @where :::> $to @_\n";
                     @bridges = $self->$adder(@where, $to => $_[0]);
                     unless (@bridges) {
-                        Carp::confess("Failed to add bridge for $accessor_name on $class_name $self->{id}: property is via $via!");
+                        Carp::croak("Failed to add bridge for $accessor_name on $class_name $self->{id}: property is via $via!");
                     }
                 }
             }
@@ -355,7 +356,7 @@ sub mk_calculation_accessor {
         $accessor = sub {
             my $self = shift;
             if (@_) {
-                Carp::confess("$class_name $accessor_name is a read-only property derived from @$calculate_from");
+                Carp::croak("$class_name $accessor_name is a read-only property derived from @$calculate_from");
             }
             return $calculation_src->(map { $self->$_ } @$calculate_from);        
         };
@@ -412,11 +413,11 @@ sub mk_calculation_accessor {
         #print ">>$src<<\n";
         eval $src;
         if ($@) {
-            Carp::confess "ERROR IN CALCULATED PROPERTY SOURCE: $class_name $accessor_name\n$@\n";
+            Carp::croak "ERROR IN CALCULATED PROPERTY SOURCE: $class_name $accessor_name\n$@\n";
         }
     }
     else {
-        Carp::confess "Error implementing calcuation accessor for $class_name $accessor_name!";
+        Carp::croak "Error implementing calcuation accessor for $class_name $accessor_name!";
     }
 }
 
@@ -581,8 +582,7 @@ sub mk_ro_class_accessor {
 
             if ($old ne $new)
             {
-$DB::single=1;
-                Carp::confess("Cannot change read-only class-wide property $accessor_name for class $class_name from $old to $new!");
+                Carp::croak("Cannot change read-only class-wide property $accessor_name for class $class_name from $old to $new!");
             }
             return $new;
         }
@@ -732,6 +732,10 @@ sub mk_object_set_accessors {
             }
             else {
                 return unless $self->{$plural_name};
+                if (ref($self->{$plural_name}) ne 'ARRAY') {
+                    Carp::carp("$class_name with id ".$self->id." does not hold an arrayref in its $plural_name property");
+                    $self->{$plural_name} = [ $self->{$plural_name} ];
+                }
                 return @{ $self->{$plural_name} };
             }
         }
@@ -824,35 +828,42 @@ sub mk_object_set_accessors {
         $params_prefix_resolved = 1;
     };
 
-    my $single_accessor = Sub::Name::subname $class_name ."::$singular_name" => sub {
-        my $self = shift;
-        $rule_resolver->($self) unless ($rule_template);
-        if ($rule_template) {
-            my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names);
-            $params_prefix_resolver->() unless $params_prefix_resolved;
-            unshift @_, @params_prefix if @_ == 1;
-            if (@where or @_) {
-                return my $obj = $r_class_name->get($rule->params_list,@where,@_);
+    if ($singular_name ne $plural_name) {
+        my $single_accessor = Sub::Name::subname $class_name ."::$singular_name" => sub {
+            my $self = shift;
+            $rule_resolver->($self) unless ($rule_template);
+            if ($rule_template) {
+                my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names);
+                $params_prefix_resolver->() unless $params_prefix_resolved;
+                unshift @_, @params_prefix if @_ == 1;
+                if (@where or @_) {
+                    return my $obj = $r_class_name->get($rule->params_list,@where,@_);
+                }
+                else {
+                    return my $obj = $r_class_name->get($rule);
+                }
             }
             else {
-                return my $obj = $r_class_name->get($rule);
+                return unless $self->{$plural_name};
+                return unless @_;  # Can't compare our list to nothing...
+                if (@_ > 1) {
+                    Carp::croak "rule-based selection of single-item accessor not supported.  Instead of single value, got @_";
+                }
+                unless (ref($self->{$plural_name}) eq 'ARRAY') {
+                    Carp::croak("${class_name}::$singular_name($_[0]): $plural_name does not contain an arrayref");
+                }
+                no warnings 'uninitialized';
+                my @matches = grep { $_ eq $_[0]  } @{ $self->{$plural_name} };
+                return $matches[0] if @matches < 2;
+                return $self->context_return(@matches);
             }
-        }
-        else {
-            return unless $self->{$plural_name};
-            if (@_ > 1) {
-                Carp::croak "rule-based selection of single-item accessor not supported.  Instead of single value, got @_";
-            }
-            my @matches = grep { $_ eq $_[0]  } @{ $self->{$plural_name} };
-            return $matches[0] if @matches < 2;
-            return $self->context_return(@matches); 
-        }
-    };
-    Sub::Install::reinstall_sub({
-        into => $class_name,
-        as   => $singular_name,
-        code => $single_accessor,
-    });
+        };
+        Sub::Install::reinstall_sub({
+            into => $class_name,
+            as   => $singular_name,
+            code => $single_accessor,
+        });
+    }
 
     my $add_accessor = Sub::Name::subname $class_name ."::add_$singular_name" => sub {
         # TODO: this handles only a single item when making objects: support a list of hashrefs
@@ -1164,7 +1175,7 @@ the $property_name key of the object's hashref.
 Creates a read-only accessor named $accessor_name which retrieves its value
 in the $property_name key of the object's hashref.  If the method is used
 as a mutator by passing in a value to the method, it will throw an exception
-with Carp::confess.
+with Carp::croak.
 
 =item mk_id_based_object_accessor
 
@@ -1243,7 +1254,7 @@ acts as a class-wide property.
 Creates a read-only accessor called $accessor_name which retrieves its value
 from a scalar captured by the accessor's closure.  The value is initialized
 to $variable_value.  If called as a mutator, it throws an exception through
-Carp::confess
+Carp::croak
 
 =back
 

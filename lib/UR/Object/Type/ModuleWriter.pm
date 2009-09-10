@@ -171,10 +171,13 @@ sub resolve_class_description_perl {
         
         my $section_src = '';
         my $max_name_length = 0;
+        my $multi_line_indent = '';
         foreach my $property_meta ( @properties ) {
             my $name = $property_meta->property_name;
             $max_name_length = length($name) if (length($name) > $max_name_length);
         }
+        # 14 is the 8 spaces at the start of the $line, plus ' => { '
+        $multi_line_indent = ' ' x ($max_name_length + 14);
         foreach my $property_meta ( @properties ) {
             my $name = $property_meta->property_name;
             my @fields = $self->_get_display_fields_for_property(
@@ -183,6 +186,9 @@ sub resolve_class_description_perl {
                                         section => $section,
                                         attributes_have => \@property_meta_property_names);
 
+            foreach ( @fields ) {
+                s/\n/\n$multi_line_indent/;
+            }
             my $line = "        "
                 . $name . (" " x ($max_name_length - length($name)))
                 . " => { "
@@ -278,7 +284,7 @@ sub resolve_module_header_source {
     return $perl;
 }
 
-my $next_line_prefix = "\n" . (" " x 25);
+my $next_line_prefix = "\n";
 my $deep_indent_prefix = "\n" . (" " x 55);
 
 sub _get_display_fields_for_property {
@@ -319,6 +325,7 @@ sub _get_display_fields_for_property {
         $seen{'is_delegated'} = 1;
     }
     elsif ($property->is_calculated) {
+$DB::single=1;
         my @calc_fields;
         if (my $calc_from = $property->calculate_from) {
             if ($calc_from and @$calc_from == 1) {
@@ -383,6 +390,11 @@ sub _get_display_fields_for_property {
             push @fields, "to => '" . $property->to . "'";
             $seen{'to'} = 1;
         }
+
+        if ($property->is_mutable) {
+            # via properties are not usually mutable
+            push @fields, 'is_mutable => 1';
+        }
     }
     if ($property->reverse_as) {
         push @fields, "reverse_as => '" . $property->reverse_as . "'";
@@ -432,7 +444,7 @@ sub _get_display_fields_for_property {
     if ($desc && length($desc)) {
         $desc =~ s/([\$\@\%\\\"])/\\$1/g;
         $desc =~ s/\n/\\n/g;
-        push @fields,  $next_line_prefix . "doc => '$desc'";
+        push @fields, $next_line_prefix . "doc => '$desc'";
     }
     
     return @fields;
@@ -451,9 +463,18 @@ sub module_path {
     my $path = $INC{$base_name};
     return _abs_path_relative_to_pwd_at_compile_time($path) if $path;
     #warn "Module $base_name is not in \%INC!\n";
-    my $namespace = $base_name;
-    $namespace =~ s/\/.*$//;
-    $namespace .= ".pm";
+
+    my $namespace;
+    my $first_slash = index($base_name, '/');
+    if ($first_slash >= 0) {
+        # Normal case...
+        $namespace = substr($base_name, 0, $first_slash);
+        $namespace .= ".pm";
+    } else {
+        # This module must _be_ the namespace
+        $namespace = $base_name;
+    }
+
     for my $dir (map { _abs_path_relative_to_pwd_at_compile_time($_) } grep { -d $_ } @INC) {
         if (-e $dir . "/" . $namespace) {
             #warn "Found $base_name in $dir...\n";

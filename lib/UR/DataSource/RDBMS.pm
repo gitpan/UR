@@ -646,6 +646,10 @@ sub refresh_database_metadata_for_table_name {
     # this must be on or before the actual data dictionary queries
     my $revision_time = UR::Time->now();
 
+    # We'll count a table object as changed even if any of the columns,
+    # FKs, etc # were changed
+    my $data_was_changed_for_this_table = 0;
+
     # TABLE
     my $table_sth = $data_source->get_table_details_from_data_dictionary('%', $data_source->owner, $table_name, "TABLE,VIEW");
     my $table_data = $table_sth->fetchrow_hashref();
@@ -723,7 +727,10 @@ sub refresh_database_metadata_for_table_name {
             $column_obj->nullable(substr($column_data->{IS_NULLABLE}, 0, 1));
             $column_obj->data_length($column_data->{COLUMN_SIZE});
             $column_obj->remarks($column_data->{REMARKS});
-            $column_obj->last_object_revision($revision_time) if ($column_obj->__changes__());
+            if ($column_obj->__changes__()) {
+                $column_obj->last_object_revision($revision_time);
+                $data_was_changed_for_this_table = 1;
+            }
 
         } else {
             # It's new, create it from scratch
@@ -740,6 +747,8 @@ sub refresh_database_metadata_for_table_name {
                 remarks     => $column_data->{REMARKS},
                 last_object_revision => $revision_time,
             );
+
+            $data_was_changed_for_this_table = 1;
         }
 
         unless ($column_obj) {
@@ -750,8 +759,9 @@ sub refresh_database_metadata_for_table_name {
     }
     
     for my $to_delete (values %columns_to_delete) {
-        $self->status_message("Detected column " . $to_delete->column_name . " has gone away.");
+        #$self->status_message("Detected column " . $to_delete->column_name . " has gone away.");
         $to_delete->delete;
+        $data_was_changed_for_this_table = 1;
     }
 
 
@@ -820,6 +830,7 @@ sub refresh_database_metadata_for_table_name {
                 );
     
                 $fk{$fk->id} = $fk;
+                $data_was_changed_for_this_table = 1;
             }
     
             if ($fk{$fk->id}) {
@@ -883,6 +894,7 @@ sub refresh_database_metadata_for_table_name {
                     1;
                 }
                 $fk{$fk->fk_constraint_name} = $fk;
+                $data_was_changed_for_this_table = 1;
             }
     
             if ($fk{$fk->fk_constraint_name}) {
@@ -920,7 +932,7 @@ sub refresh_database_metadata_for_table_name {
     my $pk_sth = $data_source->get_primary_key_details_from_data_dictionary(undef, $db_owner, $table_name);
 
     if ($pk_sth) {
-		my @new_pk;
+        my @new_pk;
         while (my $data = $pk_sth->fetchrow_hashref()) {
             $data->{'COLUMN_NAME'} =~ s/"|'//g;  # Postgres puts quotes around things that look like keywords
             my $pk = UR::DataSource::RDBMS::PkConstraintColumn->get(
@@ -929,32 +941,32 @@ sub refresh_database_metadata_for_table_name {
                             column_name => $data->{'COLUMN_NAME'},
                           );
             if ($pk) {
-				# Since the rank/order is pretty much all that might change, we
-				# just delete and re-create these.
-				# It's a no-op at save time if there are no changes.
+                # Since the rank/order is pretty much all that might change, we
+                # just delete and re-create these.
+                # It's a no-op at save time if there are no changes.
             	$pk->delete;
             }
 			
-			push @new_pk, [
-				table_name => $table_name,
-				data_source => $data_source_id,
-				owner => $data_source->owner,
-				column_name => $data->{'COLUMN_NAME'},
-				rank => $data->{'KEY_SEQ'} || $data->{'ORDINAL_POSITION'},
-			];
-			#        $table_object->{primary_key_constraint_name} = $data->{PK_NAME};
-			#        $embed{primary_key_constraint_column_names} ||= {};
-			#        $embed{primary_key_constraint_column_names}{$table_object} ||= [];
-			#        push @{ $embed{primary_key_constraint_column_names}{$table_object} }, $data->{COLUMN_NAME};
+            push @new_pk, [
+                            table_name => $table_name,
+                            data_source => $data_source_id,
+                            owner => $data_source->owner,
+                            column_name => $data->{'COLUMN_NAME'},
+                            rank => $data->{'KEY_SEQ'} || $data->{'ORDINAL_POSITION'},
+                          ];
+            #        $table_object->{primary_key_constraint_name} = $data->{PK_NAME};
+            #        $embed{primary_key_constraint_column_names} ||= {};
+            #        $embed{primary_key_constraint_column_names}{$table_object} ||= [];
+            #        push @{ $embed{primary_key_constraint_column_names}{$table_object} }, $data->{COLUMN_NAME};
         }
 		
-		for my $data (@new_pk) {
-        	my $pk = UR::DataSource::RDBMS::PkConstraintColumn->create(@$data);
-			unless ($pk) {
-				$self->error_message("Failed to create primary key @$data");
-				return;
-			}
-		}			
+        for my $data (@new_pk) {
+            my $pk = UR::DataSource::RDBMS::PkConstraintColumn->create(@$data);
+            unless ($pk) {
+                $self->error_message("Failed to create primary key @$data");
+                return;
+            }
+        }			
     }
 
     ## Get the unique constraints
@@ -1046,6 +1058,8 @@ sub refresh_database_metadata_for_table_name {
             }
         }
     }
+
+    $table_object->last_object_revision($revision_time) if ($data_was_changed_for_this_table);
 
     # Now that all columns know their foreign key constraints,
     # have the column objects resolve the various names
@@ -2660,7 +2674,7 @@ sub _generate_template_data_for_loading {
         # we only pull back columns we're grouping by if there is grouping happening
         for my $name (@$group_by) {
             unless ($class_name->can($name)) {
-                die "$class_name has no property/method $name.  Cannot group by it!";
+                Carp::croak("Cannot group by '$name': Class $class_name has no property/method by that name");
             }
             $group_by_property_names{$name} = 1;
         }
@@ -2678,7 +2692,7 @@ sub _generate_template_data_for_loading {
         # we only pull back columns we're ordering by if there is ordering happening
         for my $name (@$order_by) {
             unless ($class_name->can($name)) {
-                die "$class_name has no property/method $name.  Cannot order by it!";
+                Carp::croak("Cannot order by '$name': Class $class_name has no property/method by that name");
             }
             $order_by_property_names{$name} = 1;
         }
@@ -2884,7 +2898,20 @@ sub _generate_template_data_for_loading {
         my $delegate_class_meta = $delegated_property->class_meta;
         my $via_accessor_meta = $delegate_class_meta->property_meta_for_name($relationship_name);
         my $final_accessor = $delegated_property->to;
-        if (my $final_accessor_meta = $via_accessor_meta->data_type->__meta__->property_meta_for_name($final_accessor)) {
+        my $final_accessor_class_meta = $via_accessor_meta->data_type->__meta__;
+
+        # Follow all the via/to indirectedness to where the data ultimately comes from
+        if (my $final_accessor_meta = $final_accessor_class_meta->property_meta_for_name($final_accessor)) {
+
+            if ($final_accessor_meta->id eq "UR::Object\tid") {
+                # This is the generic 'id' property that won't be in the database.  See if the class 
+                # has a single, alternate ID property we can swap in here
+                my @id_properties = grep { $_->class_name ne 'UR::Object' } $final_accessor_class_meta->all_id_property_metas();
+                if (@id_properties == 1) {
+                    $final_accessor_meta = $id_properties[0];
+                    $final_accessor_class_meta = $final_accessor_meta->class_meta;
+                }
+            }
             while($final_accessor_meta && $final_accessor_meta->via) {
                 $final_accessor_meta = $final_accessor_meta->to_property_meta();
             }
@@ -2904,8 +2931,8 @@ sub _generate_template_data_for_loading {
         my %aliases_for_this_delegate;
         while (my $object_join = shift @joins) {
             #$DB::single = 1;
-            #print "\tjoin $join\n";
-            #        print Data::Dumper::Dumper($join);
+            #print "\tjoin $object_join\n";
+            #        print Data::Dumper::Dumper($object_join);
             
             $last_object_num = $object_num;
             $object_num++;
@@ -3149,7 +3176,9 @@ sub _generate_template_data_for_loading {
                         #print "found alias for $property_name on $foreign_class_name: $alias\n";
                     }
                     else {
-                        #print "no alias for $property_name on $foreign_class_name\n";
+                        # The thing we're joining to isn't a database-backed column (maybe calculated?)
+                        $needs_further_boolexpr_evaluation_after_loading = 1;
+                        next DELEGATED_PROPERTY;
                     }
                 }
                 

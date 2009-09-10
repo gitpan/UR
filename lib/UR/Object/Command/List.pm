@@ -69,7 +69,7 @@ EOS
 ##############################
 
 sub valid_styles {
-    return (qw/ text csv pretty html xml/);
+    return (qw/ text csv pretty html xml newtext/);
 }
 
 sub create {
@@ -145,7 +145,7 @@ sub _do
         $self->show([ map { $_->property_name } $self->_subject_class_filterable_properties ]);
     }
 
-    my $style_module_name = ucfirst $self->style;
+    my $style_module_name = __PACKAGE__ . '::' . ucfirst $self->style;
     my $style_module = $style_module_name->new( 
         iterator =>$iterator, 
         show =>$self->show, 
@@ -157,7 +157,7 @@ sub _do
     return 1;
 }
 
-package Style;
+package UR::Object::Command::List::Style;
 
 sub new{
     my ($class, %args) = @_;
@@ -166,6 +166,21 @@ sub new{
     }
     return bless(\%args, $class);
 }
+
+sub _get_next_object_from_iterator {
+    my $self = shift;
+
+    my $obj;
+    for (1) {
+        $obj = eval { $self->{'iterator'}->next };
+        if ($@) {
+            UR::Object::Command::List->warning_message($@);
+            redo;
+        }
+    }
+    return $obj;
+}
+        
 
 sub _object_properties_to_string {
     my ($self, $o, $char) = @_;
@@ -202,15 +217,15 @@ sub format_and_print{
     }
 
     my $count = 0;
-    while (my $object = $self->{iterator}->next) {
+    while (my $object = $self->_get_next_object_from_iterator()) {
         $self->{output}->print($self->_get_object_string($object), "\n");
         $count++;
     }
 
 }
 
-package Html;
-use base 'Style';
+package UR::Object::Command::List::Html;
+use base 'UR::Object::Command::List::Style';
 
 sub _get_header_string{
     my $self = shift;
@@ -239,7 +254,7 @@ sub format_and_print{
     }
 
     my $count = 0;
-    while (my $object = $self->{iterator}->next) {
+    while (my $object = $self->_get_next_object_from_iterator()) {
         $self->{output}->print($self->_get_object_string($object));
         $count++;
     }
@@ -247,8 +262,8 @@ sub format_and_print{
     $self->{output}->print("</table>");
 }
 
-package Csv;
-use base 'Style';
+package UR::Object::Command::List::Csv;
+use base 'UR::Object::Command::List::Style';
 
 sub _get_header_string{
     my $self = shift;
@@ -262,8 +277,8 @@ sub _get_object_string {
     return $self->_object_properties_to_string($object, ',');
 }
 
-package Pretty;
-use base 'Style';
+package UR::Object::Command::List::Pretty;
+use base 'UR::Object::Command::List::Style';
 
 sub _get_header_string{
     return '';
@@ -285,57 +300,57 @@ sub _get_object_string{
     return $out;
 }
 
-package Xml;
-use base 'Style';
+package UR::Object::Command::List::Xml;
+use base 'UR::Object::Command::List::Style';
 
 sub format_and_print{
-	my $self = shift;
-	my $out;
+    my $self = shift;
+    my $out;
 
-	my $doc = XML::LibXML->createDocument();
-	my $results_node = $doc->createElement("results");
-	$results_node->addChild( $doc->createAttribute("generated-at",UR::Time->now()) );
+    my $doc = XML::LibXML->createDocument();
+    my $results_node = $doc->createElement("results");
+    $results_node->addChild( $doc->createAttribute("generated-at",UR::Time->now()) );
 
-	$doc->setDocumentElement($results_node);
+    $doc->setDocumentElement($results_node);
 
-	my $count = 0;
-    while (my $object = $self->{iterator}->next) {
-		my $object_node = $results_node->addChild( $doc->createElement("object") );
+    my $count = 0;
+    while (my $object = $self->_get_next_object_from_iterator()) {
+        my $object_node = $results_node->addChild( $doc->createElement("object") );
 
-		my $object_reftype = ref $object;
-		$object_node->addChild( $doc->createAttribute("type",$object_reftype) );
-		$object_node->addChild( $doc->createAttribute("id",$object->id) );
-		
-		for my $property ( @{$self->{show}} ) {
+        my $object_reftype = ref $object;
+        $object_node->addChild( $doc->createAttribute("type",$object_reftype) );
+        $object_node->addChild( $doc->createAttribute("id",$object->id) );
 
-			my $property_node = $object_node->addChild ($doc->createElement($property));
+        for my $property ( @{$self->{show}} ) {
 
-			my @items = $object->$property;
+             my $property_node = $object_node->addChild ($doc->createElement($property));
 
-            my $reftype = ref $items[0];
+             my @items = $object->$property;
 
-			if ($reftype && $reftype ne 'ARRAY' && $reftype ne 'HASH') {
-				foreach (@items) {
-					my $subobject_node = $property_node->addChild( $doc->createElement("object") );
-					$subobject_node->addChild( $doc->createAttribute("type",$reftype) );
-					$subobject_node->addChild( $doc->createAttribute("id",$_->id) );
-					#$subobject_node->addChild( $doc->createTextNode($_->id) );
-					#xIF
-				}
-			} else {
-				foreach (@items) {
-					$property_node->addChild( $doc->createTextNode($_) );
-				}
-			}
+             my $reftype = ref $items[0];
 
-		}
-		$count++;
-	}
-	$self->{output}->print($doc->toString(1));
+             if ($reftype && $reftype ne 'ARRAY' && $reftype ne 'HASH') {
+                 foreach (@items) {
+                     my $subobject_node = $property_node->addChild( $doc->createElement("object") );
+                     $subobject_node->addChild( $doc->createAttribute("type",$reftype) );
+                     $subobject_node->addChild( $doc->createAttribute("id",$_->id) );
+                     #$subobject_node->addChild( $doc->createTextNode($_->id) );
+                     #xIF
+                 }
+             } else {
+                 foreach (@items) {
+                     $property_node->addChild( $doc->createTextNode($_) );
+                 }
+             }
+
+         }
+        $count++;
+    }
+    $self->{output}->print($doc->toString(1));
 }
 
-package Text;
-use base 'Style';
+package UR::Object::Command::List::Text;
+use base 'UR::Object::Command::List::Style';
 
 sub _get_header_string{
     my $self = shift;
@@ -359,7 +374,7 @@ sub format_and_print{
     }
 
     my $count = 0;
-    while (my $object = $self->{iterator}->next) {
+    while (my $object = $self->_get_next_object_from_iterator()) {
         $tab_delimited .= $self->_get_object_string($object)."\n";
         $count++;
     }
@@ -405,6 +420,45 @@ sub tab2col{
     }
     return $output;
 }
+
+package UR::Object::Command::List::Newtext;
+use base 'UR::Object::Command::List::Text';
+
+sub format_and_print{
+    my $self = shift;
+    my $tab_delimited;
+
+$DB::single=1;
+    unless ($self->{noheaders}){
+        $tab_delimited .= $self->_get_header_string."\n";
+    }
+
+    my $viewer = UR::Object::Viewer->create_viewer(
+                       subject_class_name => 'UR::Object',
+                       perspective => 'lister',
+                       toolkit => 'text',
+                       aspects => [ @{$self->{'show'}} ],
+                  );
+
+    my $this_row_tab_delimited;
+    open(my $fh, '>',  \$this_row_tab_delimited);
+    $viewer->{'widget'} = $fh;
+
+    my $count = 0;
+    while (my $object = $self->_get_next_object_from_iterator()) {
+        $fh->seek(0,0);
+        $this_row_tab_delimited = '';
+
+        $viewer->set_subject($object);
+        $viewer->show();
+        $tab_delimited .= $this_row_tab_delimited;
+        #$tab_delimited .= $viewer->buf();
+        $count++;
+    }
+
+    $self->{output}->print($self->tab2col($tab_delimited));
+}
+
 1;
 =pod
 
@@ -482,5 +536,5 @@ text, csv, html, xml, pretty (inprogress)
 =cut
 
 
-#$HeadURL: svn+ssh://svn/srv/svn/gscpan/distro/ur-bundle/trunk/lib/UR/Object/Command/List.pm $
-#$Id: List.pm 49429 2009-07-30 23:17:00Z ssmith $
+#$HeadURL: svn+ssh://svn/srv/svn/gscpan/perl_modules/trunk/UR/Object/Command/List.pm $
+#$Id: List.pm 50329 2009-08-25 20:10:00Z abrummet $
