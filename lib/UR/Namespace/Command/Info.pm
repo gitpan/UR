@@ -7,6 +7,13 @@ use UR;
 UR::Object::Type->define(
     class_name => __PACKAGE__,
     is => 'UR::Namespace::Command',
+    has => [
+        subject => {
+            is_optional => 1,
+            is_many => 1,
+            shell_args_position => 1
+        }
+    ]
 );
 
 
@@ -20,7 +27,8 @@ sub is_sub_command_delegator { 0;}
 sub execute {
 my($self, $params) = @_;
 
-    $DB::single=1;
+    $self->_init or return;
+
     my $namespace = $self->namespace_name;
     # FIXME why dosen't require work here?
     eval "use  $namespace";
@@ -30,13 +38,13 @@ my($self, $params) = @_;
     }
 
     # Loop through each command line parameter and see what kind of thing it is
-    # create a viewer and display it
+    # create a view and display it
     my @class_aspects = qw( );
     my @table_aspects = qw( );
     my %already_printed;
 
-    my %viewers;
-    foreach my $item ( @{$params->{' '}} ) {
+    my %views;
+    foreach my $item ( $self->subject ) {
         my @meta_objs = ();
 
         if ($item eq $namespace or $item =~ m/::/) {
@@ -71,16 +79,16 @@ my($self, $params) = @_;
             next unless $obj;
             next if ($already_printed{$obj}++);
 
-            $viewers{$obj->class} ||= UR::Object::Viewer->create_viewer(
+            $views{$obj->class} ||= UR::Object::View->create(
                                           subject_class_name => $obj->class,
                                           perspective => 'default',
                                           toolkit => 'text',
                                        );
  
 
-            my $viewer = $viewers{$obj->class};
-            $viewer->set_subject($obj);
-            $viewer->show();
+            my $view = $views{$obj->class};
+            $view->subject($obj);
+            $view->show();
             print "\n";
         }
    

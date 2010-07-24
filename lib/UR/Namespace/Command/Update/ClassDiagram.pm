@@ -16,6 +16,12 @@ UR::Object::Type->define(
         file => { type => 'String', doc => 'Pathname of the Umlet (.uxf) file' },
         show_attributes => { type => 'Boolean', is_optional => 1, default => 1, doc => 'Include class attributes in the diagram' },
         show_methods => { type => 'Boolean', is_optional => 1, default => 0, doc => 'Include methods in the diagram (not implemented yet' },
+        include_ur_object => { type => 'Boolean', is_optional => 1, default => 0, doc => 'Include UR::Object and UR::Entity in the diagram (default = no)' },
+        initial_name => {
+            is_many => 1,
+            is_optional => 1,
+            shell_args_position => 1
+        }
     ],
 );
 
@@ -43,6 +49,9 @@ use constant MAX_X_AUTO_POSITION => 800;
 
 sub execute {
     my $self = shift;
+
+    $self->_init or return;
+
     my $params = shift;
     
 $DB::single=1;
@@ -53,7 +62,7 @@ $DB::single=1;
         return;
     }
 
-    my @initial_name_list = @{$params->{' '}};
+    my @initial_name_list = $self->initial_name;
 
     my $diagram;
     if (-f $params->{'file'}) {
@@ -236,6 +245,11 @@ my($self, %params) = @_;
     return unless @related_names;
 
     my @objs = $item_class->get($item_param => \@related_names);
+
+    unless ($self->include_ur_object) {
+        # Prune out UR::Object and UR::Entity
+        @objs = grep { $_->class_name ne 'UR::Object' and $_->class_name ne 'UR::Entity' } @objs;
+    }
 
     # make a recursive call to get the related objects by name
     return ( @objs, $self->_get_related_items( %params, names => \@related_names, depth => --$params{'depth'}) );

@@ -2,15 +2,12 @@ use strict;
 use warnings;
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 
 use Test::More tests => 50;
 use URT::DataSource::SomeSQLite;
-
-END {
-    unlink URT::DataSource::SomeSQLite->server;
-}
 
 &setup_classes_and_db();
 

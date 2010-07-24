@@ -96,12 +96,6 @@ $DB::single=1;
     #    }
     #}
 
-    if (@{ $self->bare_args }) {
-        $self->error_message("Bare paramters not supported: @{ $self->bare_args }\n");
-        $self->status_message($self->help_usage_complete_text,"\n");
-        return;
-    }
-
     $self->_init;
 
     my $namespace = $self->namespace_name;
@@ -347,6 +341,7 @@ $DB::single=1;
             @changed_class_meta_objects
         ) {
             my $class_name = $obj->class_name;
+            next unless $class_name;  #if $obj is a ghost, class_name might return undef?
             $changed_classes{$class_name} = 1;
         }
         unless (@changed_class_meta_objects) {
@@ -1648,7 +1643,7 @@ sub _sync_filesystem {
                 my $old_module_path = $class_obj->module_path;
                 my $new_module_path = $old_module_path;
                 $new_module_path =~ s/\/$namespace\//\/$namespace\/\.deleted\//;
-                $status_message_this_update .= ' (moving $old_module_path $new_module_path)';
+                $status_message_this_update .= " (moving $old_module_path to $new_module_path)";
                 rename $old_module_path, $new_module_path;
 
                 UR::Context::Transaction->log_change($class_obj, $class_obj->class_name, $class_obj->id, 'rewrite_module_header', Data::Dumper::Dumper({path => $new_module_path, data => $old_file_data}));

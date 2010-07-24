@@ -182,9 +182,10 @@ sub _preprocess_subclass_description {
         $current_desc = $self->class_name->$preprocessor($current_desc);
     }
 
+    # only call it on the direct parent classes, let recursion walk the tree
     my @parent_class_names = 
-        grep { $_->isa("UR::Object::Type") and $_ ne $self->class_name } 
-        $self->ancestry_class_names();
+        grep { $_->can('__meta__') } 
+        $self->parent_class_names();
 
     for my $parent_class_name (@parent_class_names) {
         my $parent_class = $parent_class_name->__meta__;
@@ -625,6 +626,9 @@ sub _normalize_class_description {
             my $params;
             if (ref($tmp[0])) {
                 $params = shift @tmp;
+                unless (ref($params) eq 'HASH') {
+                    Carp::confess("class $class_name property $name has an arrayref instead of a hashref describing its meta-attributes!");
+                }
                 %$params = (@added_property_meta, %$params) if @added_property_meta;
             }
             else {
@@ -796,21 +800,22 @@ sub _normalize_class_description {
                     last PARENT_CLASS;
                 }
             }
-        }    
+        }
     }
 
     # normalize the data behind the property descriptions    
-    my @properties = keys %$instance_properties;
-    for my $property_name (@properties) {            
+    my @property_names = keys %$instance_properties;
+    for my $property_name (@property_names) {
         my %old_property = %{ $instance_properties->{$property_name} };        
         my %new_property = $class->_normalize_property_description($property_name, \%old_property, \%new_class);
         $instance_properties->{$property_name} = \%new_property;
     }
+
     # Find 'via' properties where the to is '-filter' and rewrite them to 
     # copy some attributes from the source property 
     # This feels like a hack, but it makes other parts of the system easier by
     # not having to deal with -filter
-    foreach my $property_name ( keys %$instance_properties ) {
+    foreach my $property_name ( @property_names ) {
         my $property_data = $instance_properties->{$property_name};
         if ($property_data->{'to'} && $property_data->{'to'} eq '-filter') {
             my $via = $property_data->{'via'};
@@ -835,6 +840,15 @@ sub _normalize_class_description {
             $desc = $parent_class->_preprocess_subclass_description($desc);
         }
     }
+
+    #if (my $subclassify_by = $new_class{'subclassify_by'}) {
+    #    my $subclassify_property = $instance_properties->{$subclassify_by};
+    #    if ($subclassify_property->{'is_delegated'}) {
+    #        Carp::croak("Invalid property for class $class subclassify_by '$subclassify_by': delegated properties are not supported");
+    #    } elsif ($subclassify_property->{'calculate'} and !ref($subclassify_property->{'calculate'})) {
+    #        Carp::croak("Invalid property for class $class subclassify_by '$subclassify_by': non-coderef calculations are not supported");
+    #    } 
+    #}
 
     my $meta_class_name = __PACKAGE__->_resolve_meta_class_name_for_class_name($class_name);
     $desc->{meta_class_name} ||= $meta_class_name;
@@ -917,6 +931,8 @@ sub _normalize_property_description {
         [ is_id                           => qw//],
         [ id_by                           => qw//], 
         [ id_class_by                     => qw//],
+        [ specify_by                      => qw//],
+        [ order_by                        => qw//],
         [ via                             => qw//], 
         [ to                              => qw//],             
         [ where                           => qw/restrict filter/],
@@ -987,7 +1003,10 @@ sub _normalize_property_description {
     }
     
     if (!defined($new_property{is_mutable})) {
-        if ($new_property{is_delegated} or $new_property{is_calculated}) {
+        if ($new_property{is_delegated}
+               or
+             (defined $class_data->{'subclassify_by'} and $class_data->{'subclassify_by'} eq $property_name)
+        ) {
             $new_property{is_mutable} = 0;
         }
         else {
@@ -1016,7 +1035,7 @@ sub _normalize_property_description {
     ) {
         $new_property{column_name} = $new_property{property_name};            
     }
-    $new_property{column_name} = uc($new_property{column_name});
+    $new_property{column_name} = uc($new_property{column_name}) if ($new_property{column_name});
     
     unless ($new_property{attribute_name}) {
         $new_property{attribute_name} = $property_name;
@@ -1040,6 +1059,14 @@ sub _normalize_property_description {
     #        }
     #        %$property_meta = $class->_normalize_property_description($property_meta->{property_name},$property_meta,\%new_class);
     #    }
+
+    if ($new_property{order_by} and not $new_property{is_many}) {
+        die "Cannot use order_by except on is_many properties!";
+    }
+
+    if ($new_property{specify_by} and not $new_property{is_many}) {
+        die "Cannot use specify_by except on is_many properties!";
+    }
 
     if (my @unknown = keys %old_property) {
         die "unknown meta-attributes present for $class_name $property_name: @unknown\n";
@@ -1303,7 +1330,17 @@ sub _complete_class_meta_object_definitions {
                     ($r_class_name, $r_class_name->__meta__->ancestry_class_names);
                 unless ($r_property) {
                     $DB::single = 1;
-                    Carp::confess("No r_property found for relationship $r_class_name, $r_id_properties[$n]\n");
+                    my $property_name = $pinfo->{'property_name'};
+                    if (@$id_properties != @r_id_properties) {
+                        Carp::croak("Can't resolve relationship for class $class property '$property_name': "
+                                    . "id_by metadata has " . scalar(@$id_properties) . " items, but remote class "
+                                    . "$r_class_name only has " . scalar(@r_id_properties) . " ID properties\n");
+                    } else {
+                        my $r_id_property = $r_id_properties[$n] ? "'$r_id_properties[$n]'" : '(undef)';
+                        Carp::croak("Can't resolve relationship for class $class property '$property_name': "
+                                    . "Class $r_class_name does not have an ID property named $r_id_property, "
+                                    . "which would be linked to the local property '".$id_properties->[$n]."'\n");
+                    }
                 }
                 $id_property_detail->{data_type} = $r_property->{data_type};
             }
@@ -1547,7 +1584,7 @@ sub _complete_class_meta_object_definitions {
     if (my $extra = $self->{extra}) {
         # some class characteristics may be only present in subclasses of UR::Object
         # we handle these at this point, since the above is needed for boostrapping
-        $DB::single = 1;
+        $DB::single = 1 if keys %$extra;
         my %still_not_found;
         for my $key (sort keys %$extra) {
             if ($self->can($key)) {

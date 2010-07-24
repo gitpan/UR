@@ -37,12 +37,6 @@ UR::Object::Type->define(
 
 sub driver { "SQLite" }
 
-sub server {
-    my $self = shift->_singleton_object();
-    $self->_init_database;
-    return $self->_database_file_path;
-}
-
 sub owner { 
     undef
 }
@@ -55,9 +49,16 @@ sub auth {
     undef
 }
 
+sub create_dbh {
+    my $self = shift->_singleton_object();
+
+    $self->_init_database;
+    return $self->SUPER::create_dbh(@_);
+}
+
 sub database_exists {
     my $self = shift;
-    return 1 if -e $self->_database_file_path;
+    return 1 if -e $self->server;
     return 1 if -e $self->_data_dump_path; # exists virtually, and will dynamicaly instantiate
     return;
 }
@@ -65,7 +66,7 @@ sub database_exists {
 sub create_database {
     my $self = shift;
     die "Database exists!" if $self->database_exists;
-    my $path = $self->_database_file_path;
+    my $path = $self->server;
     return 1 if IO::File->new(">$path");
 }
 
@@ -82,22 +83,24 @@ sub _data_dump_path {
 }
 
 # FIXME is there a way to make this an object parameter instead of a method
-sub _database_file_path {
+sub server {
     my $self = shift->_singleton_object();
     my $path = $self->__meta__->module_path;
     $path =~ s/\.pm$/.sqlite3/ or Carp::confess("Odd module path $path");
     my $dir = File::Basename::dirname($path);
     return $path; 
 }
+*_database_file_path = \&server;
 
 sub _journal_file_path {
     my $self = shift->_singleton_object();
-    return $self->_database_file_path . "-journal";
+    return $self->server . "-journal";
 }
 
 sub _init_database {
-    my $self = shift;
-    my $db_file     = $self->_database_file_path;
+    my $self = shift->_singleton_object();
+
+    my $db_file     = $self->server;
     my $dump_file   = $self->_data_dump_path;
 
     my $db_time     = (stat($db_file))[9];
@@ -105,13 +108,12 @@ sub _init_database {
 
     if (-e $db_file) {
         if ($dump_time && ($db_time < $dump_time)) {
-            print "$db_time db $dump_time dump\n";
             my $bak_file = $db_file . '-bak';
             $self->warning_message("Dump file is newer than the db file.  Replacing db_file $db_file.");
             unlink $bak_file if -e $bak_file;
             rename $db_file, $bak_file;
             if (-e $db_file) {
-                die "Failed to move out-of-date file $db_file out of the way for reconstruction! $!";
+                Carp::croak "Failed to move out-of-date file $db_file out of the way for reconstruction! $!";
             }
         }
         #else {
@@ -124,8 +126,6 @@ sub _init_database {
         # initialize a new database from the one in the base class
         # should this be moved to connect time?
 
-        $DB::single = 1;
-        
         # TODO: auto re-create things as needed based on timestamp
 
         my $schema_file = $self->_schema_path;
@@ -133,7 +133,10 @@ sub _init_database {
         if (-e $dump_file) {
             # create from dump
             $self->warning_message("Re-creating $db_file from $dump_file.");
-            system("sqlite3 $db_file <$dump_file");
+            my $rv = system("sqlite3 $db_file <$dump_file");
+            if ($rv) {
+                $self->_load_db_from_dump_internal($dump_file);
+            }
             unless (-e $db_file) {
                 Carp::confess("Failed to import $dump_file into $db_file!");
             }
@@ -141,7 +144,10 @@ sub _init_database {
         elsif ( (not -e $db_file) and (-e $schema_file) ) {
             # create from schema
             $self->warning_message("Re-creating $db_file from $schema_file.");
-            system("sqlite3 $db_file <$schema_file");
+            my $rv = system("sqlite3 $db_file <$schema_file");
+            if ($rv) {
+                $self->_load_db_from_dump_internal($schema_file);
+            }
             unless (-e $db_file) {
                 Carp::confess("Failed to import $dump_file into $db_file!");
             }
@@ -300,7 +306,7 @@ sub _resolve_fk_name {
     my $col_str = $table_info->{'sql'};
     $col_str =~ s/^\s+|\s+$//g;  # Remove leading and trailing whitespace
     $col_str =~ s/\s{2,}/ /g;    # Remove multiple spaces
-    if ($col_str =~ m/^CREATE TABLE (\w+)\s*?\((.*?)\)$/i) {
+    if ($col_str =~ m/^CREATE TABLE (\w+)\s*?\((.*?)\)$/is) {
         unless (uc($1) eq uc($table_name)) {
             Carp::confess("SQL for $table_name is inconsistent");
         }
@@ -520,7 +526,7 @@ sub commit {
     my $worked = $self->SUPER::commit(@_);
     return unless $worked;
 
-    my $db_filename = $self->_database_file_path();
+    my $db_filename = $self->server();
     my $dump_filename = $self->_data_dump_path();
 
     return 1 if ($has_no_pending_trans);
@@ -533,9 +539,14 @@ sub commit {
         # The dump worked
         return 1;
     } elsif ($? == -1) {
-        $retval >>= 8;
-        $self->error_message("Dumping the SQLite database $db_filename from DataSource ",$self->get_name," to $dump_filename failed\nThe sqlite3 return code was $retval, errno $!");
-        return;
+        if ($! =~ m/No such file or directory/) {
+            # sqlite3 wasn't in the PATH?
+            return $self->_dump_db_to_file_internal();
+        } else {
+            $retval >>= 8;
+            $self->error_message("Dumping the SQLite database $db_filename from DataSource ",$self->get_name," to $dump_filename failed\nThe sqlite3 return code was $retval, errno $!");
+            return;
+        }
     }
 
     # Shouldn't get here...
@@ -596,5 +607,110 @@ sub _get_info_from_sqlite_master {
     return @rows;
 }
 
+
+# This is used if, for whatever reason, we can't sue the sqlite3 command-line
+# program to load up the database.  We'll make a good-faith effort to parse
+# the SQL text, but it won't be fancy.  This is intended to be used to initialize
+# meta DB dumps, so we should have to worry about escaping quotes, multi-line
+# statements, etc.
+#
+# The real DB file should be moved out of the way before this is called.  The existing
+# DB file will be removed.
+sub _load_db_from_dump_internal {
+    my $self = shift;
+    my $file_name = shift;
+
+    my $fh = IO::File->new($file_name);
+    unless ($fh) {
+        Carp::croak("Can't open DB dump file $file_name: $!");
+    }
+
+    my $db_file = $self->server;
+    if (-f $db_file) {
+        unless(unlink($db_file)) {
+            Carp::croak("Can't remove DB file $db_file: $!");
+        }
+    }
+
+    my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file",'','',{ AutoCommit => 0, RaiseError => 0 });
+    unless($dbh) {
+        Carp::croak("Can't create DB handle for file $db_file: $DBI::errstr");
+    }
+
+    my $dump_file_contents = do { local( $/ ) ; <$fh> };
+    my @sql = split(';',$dump_file_contents);
+
+    for (my $i = 0; $i < @sql; $i++) {
+        my $sql = $sql[$i];
+        next unless ($sql =~ m/\S/);  # Skip blank lines
+        next if ($sql =~ m/BEGIN TRANSACTION|COMMIT/i);  # We're probably already in a transaction
+        unless ($dbh->do($sql)) {
+            Carp::croak("Error processing SQL statement $i from DB dump file:\n$sql\nDBI error was: $DBI::errstr\n");
+        }
+    }
+
+    $dbh->commit();
+    $dbh->disconnect();
+
+    return 1;
+}
+
+sub _dump_db_to_file_internal {
+    my $self = shift;
+
+    my $file_name = $self->_data_dump_path();
+    my $fh = IO::File->new($file_name, '>');
+    unless ($fh) {
+        Carp::croak("Can't open DB dump file $file_name for writing: $!");
+    }
+
+    my $db_file = $self->server;
+    my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file",'','',{ AutoCommit => 0, RaiseError => 0 });
+    unless ($dbh) {
+        Carp::croak("Can't create DB handle for file $db_file: $DBI::errstr");
+    }
+
+    $fh->print("BEGIN TRANSACTION;\n");
+
+    my @tables = $self->_get_table_names_from_data_dictionary();
+    foreach my $table ( @tables ) {
+        my($item_info) = $self->_get_info_from_sqlite_master($table);
+        my $creation_sql = $item_info->{'sql'};
+        $creation_sql .= ";" unless(substr($creation_sql, -1, 1) eq ";");
+        $creation_sql .= "\n" unless(substr($creation_sql, -1, 1) eq "\n");
+
+        $fh->print($creation_sql);
+
+        if ($item_info->{'type'} eq 'table') {
+            my $sth = $dbh->prepare("select * from $table");
+            unless ($sth) {
+                Carp::croak("Can't retrieve data from table $table: $DBI::errstr");
+            }
+            unless($sth->execute()) {
+                Carp::croak("execute() failed while retrieving data for table $table: $DBI::errstr");
+            }
+
+            while(my @row = $sth->fetchrow_array) {
+                foreach my $col ( @row ) {
+                    if (! defined $col) {
+                        $col = 'null';
+                    } elsif ($col =~ m/\D/) {
+                        $col = "'" . $col . "'";  # Put quotes around non-numeric stuff
+                    }
+                }
+                $fh->printf("INSERT INTO \"%s\" VALUES (%s);\n",
+                            $table,
+                            join(',', @row));
+            }
+        }
+    }
+    $fh->print("COMMIT;\n");
+    $fh->close();
+
+    $dbh->disconnect();
+
+    return 1;
+}
+            
 
 1;

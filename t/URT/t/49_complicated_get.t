@@ -2,6 +2,7 @@ use strict;
 use warnings;
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 
@@ -17,10 +18,6 @@ use URT::DataSource::SomeSQLite;
 # UR::DataSource::RDBMS was modified to properly determine table/column when the subclass
 # inherits that table/column from a parent.  It also needed to traverse delegated properties
 # to arbitrary depth to know what the final accessor is.
-
-END {
-    unlink URT::DataSource::SomeSQLite->server;
-}
 
 &setup_classes_and_db();
 

@@ -21,11 +21,7 @@ UR::Object::Type->define(
                                  doc => 'when set, this property is a positional argument when run from a shell' },
     ],
     has_optional => [
-        # use the above shell_args_position to map to named args instead
-        bare_args   => { is => 'ARRAY', is_deprecated => 1 },
-        
         is_executed => { is => 'Boolean' },
-        
         result      => { is => 'Scalar', is_output => 1 },
     ],
 );
@@ -97,7 +93,10 @@ sub execute {
         $self->usage_message($self->help_usage_complete_text);
         #print $self->help_usage_complete_text;
         for my $problem (@problems) {
-            $self->error_message($problem->desc);
+            my @properties = $problem->properties;
+            $self->error_message("Property " .
+                                 join(',', map { "'$_'" } @properties) .
+                                 ': ' . $problem->desc);
         }
         $self->delete() if $was_called_as_class_method;
         return;
@@ -125,9 +124,10 @@ sub _execute_body
 
 
 #
-# Standard external interface for two-line wrappers
+# Standard external interface for shell dispatchers 
 #
 
+# TODO: abstract out all dispatchers for commands into a given API
 sub execute_with_shell_params_and_exit
 {
     # This automatically parses command-line options and "does the right thing":
@@ -169,14 +169,24 @@ sub _execute_with_shell_params_and_return_exit_code
     @argv = map { ($_ =~ /^(--\w+?)\=(.*)/) ? ($1,$2) : ($_) } @argv;
     my ($delegate_class, $params) = $class->resolve_class_and_params_for_argv(@argv);
 
+    my $rv = $class->_execute_delegate_class_with_params($delegate_class,$params);
+    
+    my $exit_code = $delegate_class->exit_code_for_return_value($rv);
+    return $exit_code;
+}
+
+# this is called by both the shell dispatcher and http dispatcher for now
+sub _execute_delegate_class_with_params {
+    my ($class, $delegate_class, $params) = @_;
+
     unless ($delegate_class) {
         $class->usage_message($class->help_usage_complete_text);
-        return 1;
+        return;
     }
     
     if (!$params or $params->{help}) {
         $delegate_class->usage_message($delegate_class->help_usage_complete_text,"\n");
-        return 1;
+        return;
     }
 
     $delegate_class->dump_status_messages(1);
@@ -190,7 +200,7 @@ sub _execute_with_shell_params_and_return_exit_code
         # The delegate class should have emitted an error message.
         # This is just in case the developer is sloppy, and the user will think the task did not fail.
         print STDERR "Exiting.\n";
-        return 1;;
+        return;
     }
 
     $command_object->dump_status_messages(1);
@@ -204,8 +214,7 @@ sub _execute_with_shell_params_and_return_exit_code
         $command_object->delete;
     }
 
-    my $exit_code = $delegate_class->exit_code_for_return_value($rv);
-    return $exit_code;
+    return $rv;
 }
 
 #
@@ -216,11 +225,9 @@ sub create
 {
     my $class = shift;
     my ($rule,%extra) = $class->define_boolexpr(@_);
-    my $bare_args = delete $extra{" "};
     my @params_list = $rule->params_list;
     my $self = $class->SUPER::create(@params_list, %extra);
     return unless $self;
-    $self->bare_args($bare_args) if $bare_args;
 
     # set non-optional boolean flags to false.
     for my $property_meta ($self->_shell_args_property_meta) {
@@ -301,10 +308,6 @@ sub help_brief
     }
 }
 
-sub help_bare_args
-{
-    return ''
-}
 
 sub help_synopsis 
 {
@@ -316,6 +319,11 @@ sub help_detail
 {
     my $self = shift;
     return "!!! define help_detail() in module " . ref($self) || $self . "!";
+}
+
+sub sub_command_category 
+{
+    return;
 }
 
 sub sub_command_sort_position 
@@ -369,32 +377,6 @@ sub _time_now
     UR::Time->now;    
 }
 
-sub command_name 
-{
-    my $self = shift;
-    my $class = ref($self) || $self;
-    my @words;
-    if ( my ($base,$ext) = $class->_base_command_class_and_extension() ) {
-        $ext = $class->_command_name_for_class_word($ext);
-        unless ($base->can("command_name")) {
-            local $SIG{__DIE__};
-            eval "use $base";
-        }
-        if ($base->can("command_name")) {
-            return $base->command_name . " " . $ext;
-        }
-        elsif ($ext eq "command") {
-            return $base;
-        }
-        else {
-            return $base . " " . $ext;
-        }
-    }
-    else {
-        return $class;
-    }
-}
-
 sub color_command_name 
 {
     my $text = shift;
@@ -427,20 +409,23 @@ sub _command_name_for_class_word
     return $s;
 }
 
+sub command_name
+{
+    my $self = shift;
+    my $class = ref($self) || $self;
+    my @words = grep { $_ ne 'Command' } split(/::/,$class);
+    my $n = join(' ', map { $self->_command_name_for_class_word($_) }  @words);
+    return $n;
+}
+
 sub command_name_brief
 {
     my $self = shift;
     my $class = ref($self) || $self;
-    my @words;
-    if ( my ($base,$ext) = $class->_base_command_class_and_extension() ) {
-        $ext = $class->_command_name_for_class_word($ext);
-        return $ext;
-    }
-    else {
-        return $self->command_name;
-    }
+    my @words = grep { $_ ne 'Command' } split(/::/,$class);
+    my $n = join(' ', map { $self->_command_name_for_class_word($_) } $words[-1]);
+    return $n;
 }
-
 #
 # Methods to transform shell args into command properties
 #
@@ -546,14 +531,12 @@ sub resolve_class_and_params_for_argv
         push @spec, "help!";
     }
 
-    # Previously, these nasty GetOptions modules insisted on working on
-    # the real @ARGV, while we like a little more flexibility.
-    # Getopt::Long now supports working on an arbitrary list with GetOptionsFromArray,
-    # but the proper version doesn't seem to be supplied with OSX.  So, we stay
-    # with the old method
+    # Thes nasty GetOptions modules insist on working on
+    # the real @ARGV, while we like a little moe flexibility.
+    # Not a problem in Perl. :)  (which is probably why it was never fixed)
     local @ARGV;
     @ARGV = @argv;
-
+   
     do {
         # GetOptions also likes to emit warnings instead of return a list of errors :( 
         my @errors;
@@ -572,8 +555,6 @@ sub resolve_class_and_params_for_argv
     # A: Yes.  Use '<>'.  But we need to process this anyway, so it won't help us.
 
     if (my @names = $self->_bare_shell_argument_names) {
-        # for now we only do this for selfes which explicitly implement the method
-        # this lets us stay backward compatible with old stuff for now
         for (my $n=0; $n < @ARGV; $n++) {
             my $name = $names[$n];
             unless ($name) {
@@ -596,13 +577,11 @@ sub resolve_class_and_params_for_argv
                 $params_hash->{$name} = $value;
             }
         }
+    } elsif (@ARGV) {
+        ## argv but no names
+        $self->error_message("Unexpected bare arguments: @ARGV!");
+        return($self, undef);
     }
-
-
-
-    #TODO when everything is converted to use bare_shell_argument_names, 
-    # this should throw an error if there are any @ARGV left.
-    $params_hash->{" "} = [@ARGV];
 
     for my $key (keys %$params_hash) {
         # handle any has-many comma-sep values
@@ -617,9 +596,16 @@ sub resolve_class_and_params_for_argv
         }
 
         # turn dashes into underscores
-        next unless $key =~ /-/;
         my $new_key = $key;
-        $new_key =~ s/\-/_/g;
+
+        next unless ($new_key =~ tr/-/_/);
+        if (exists $params_hash->{$new_key} && exists $params_hash->{$key}) {
+            # this corrects a problem where is_many properties badly interact
+            # with bare args leaving two entries in the hash like:
+            # a-bare-opt => [], a_bare_opt => ['with','vals']
+            delete $params_hash->{$key};
+            next;
+        }
         $params_hash->{$new_key} = delete $params_hash->{$key};
     }
 
@@ -672,7 +658,7 @@ sub help_usage_complete_text {
                 ' ', 
                 '    ', 
                 Term::ANSIColor::colored($self->command_name, 'bold'),
-                $self->_shell_args_usage_string,
+                $self->_shell_args_usage_string || '',
             ),
             ( $synopsis 
                 ? sprintf("%s\n%s\n", Term::ANSIColor::colored("SYNOPSIS", 'underline'), $synopsis)
@@ -689,7 +675,7 @@ sub help_usage_complete_text {
             sprintf(
                 "%s\n%s\n", 
                 Term::ANSIColor::colored("DESCRIPTION", 'underline'), 
-                Text::Wrap::wrap(' ', ' ', $self->help_detail)
+                Text::Wrap::wrap(' ', ' ', $self->help_detail || '')
             ),
             ( $sub_commands 
                 ? sprintf("%s\n%s\n", Term::ANSIColor::colored("SUB-COMMANDS", 'underline'), $sub_commands)
@@ -743,12 +729,12 @@ sub help_usage_command_pod
                 )
             .   (
                     $required_args
-                    ? "=head1 REQUIRED ARGUMENTS\n\n" . $required_args . "\n\n"
+                    ? "=head1 REQUIRED ARGUMENTS\n\n=over\n\n" . $required_args . "\n\n=back\n\n"
                     : ''
                 )
             .   (
                     $optional_args
-                    ? "=head1 OPTIONAL ARGUMENTS\n\n" . $optional_args . "\n\n"
+                    ? "=head1 OPTIONAL ARGUMENTS\n\n=over\n\n" . $optional_args . "\n\n=back\n\n"
                     : ''
                 )
             . "=head1 DESCRIPTION:\n\n"
@@ -792,9 +778,21 @@ sub help_options
         #$param_name = "--$param_name";
         my $doc = $property_meta->doc;
         my $valid_values = $property_meta->valid_values;
+        unless ($doc) {
+            # Maybe a parent class has documentation for this property
+            eval {
+                foreach my $ancestor_class_meta ( $property_meta->class_meta->ancestry_class_metas ) {
+                    my $ancestor_property_meta = $ancestor_class_meta->property_meta_for_name($property_meta->property_name);
+                    if ($ancestor_property_meta and $doc = $ancestor_property_meta->doc) {
+                        last;
+                    }
+                }
+            };
+        }
+
         if (!$doc) {
             if (!$valid_values) {
-                $doc = "undocumented";
+                $doc = "(undocumented)";
             }
             else {
                 $doc = '';
@@ -809,21 +807,50 @@ sub help_options
             chomp $doc;
         }
         $max_name_length = length($param_name) if $max_name_length < length($param_name);
-        push @data, [$param_name, $doc];
+
+        my $param_type = $property_meta->data_type || '';
+        if (defined($param_type) and $param_type !~ m/::/) {
+            $param_type = ucfirst(lc($param_type));
+        }
+
+        my $default_value = $property_meta->default_value;
+        if (defined $default_value) {
+            if ($param_type eq 'Boolean') {
+                $default_value = $default_value ? "'true'" : "'false' (--no$param_name)";
+            } elsif ($property_meta->is_many && ref($default_value) eq 'ARRAY') {
+                if (@$default_value) {
+                    $default_value = "('" . join("','",@$default_value) . "')";
+                } else {
+                    $default_value = "()";
+                }
+            } else {
+                $default_value = "'$default_value'";
+            }
+            $default_value = "\nDefault value $default_value if not specified";
+        }
+
+        push @data, [$param_name, $param_type, $doc, $default_value];
+        if ($param_type eq 'Boolean') {
+            push @data, ['no'.$param_name, $param_type, "Make $param_name 'false'" ];
+        }
     }
     my $text = '';
     for my $row (@data) {
         if (defined($format) and $format eq 'pod') {
-            $text .= "\n=item " . $row->[0] . "\n  " . $row->[1] . "\n"; 
+            $text .= "\n=item " . $row->[0] . "\n\n" . $row->[2] . "\n". $row->[3] . "\n";
+        }
+        elsif (defined($format) and $format eq 'html') {
+            $text .= "\n\t<br>" . $row->[0] . "<br> " . $row->[2] . "<br>" . $row->[3]."<br>\n";
         }
         else {
             $text .= sprintf(
-                " %s\n%s\n",
-                Term::ANSIColor::colored($row->[0], 'bold'),
+                "  %s\n%s\n",
+                Term::ANSIColor::colored($row->[0], 'bold') . "   " . $row->[1],
                 Text::Wrap::wrap(
-                    "  ", # 1st line indent,
-                    "  ", # all other lines indent,
-                    $row->[1],
+                    "    ", # 1st line indent,
+                    "    ", # all other lines indent,
+                    $row->[2],
+                    $row->[3] || '',
                 ),
             );
         }
@@ -834,12 +861,13 @@ sub help_options
 
 sub sorted_sub_command_classes {
     no warnings;
+    my @c = shift->sub_command_classes;
     return sort {
             ($a->sub_command_sort_position <=> $b->sub_command_sort_position)
             ||
             ($a->sub_command_sort_position cmp $b->sub_command_sort_position)
         } 
-        shift->sub_command_classes;
+        @c;
 }
 
 sub help_sub_commands
@@ -850,33 +878,77 @@ sub help_sub_commands
     #my $command_name_method = ($params{brief} ? 'command_name_brief' : 'command_name');
     
     my @sub_command_classes = $class->sorted_sub_command_classes;
+
+    my %categories;
+    my @categories;
+    for my $sub_command_class (@sub_command_classes) {
+        my $category = $sub_command_class->sub_command_category;
+        $category = '' if not defined $category;
+        my $sub_commands_within_category = $categories{$category};
+        unless ($sub_commands_within_category) {
+            if (defined $category and length $category) {
+                push @categories, $category;
+            }
+            else {
+                unshift @categories,''; 
+            }
+            $sub_commands_within_category = $categories{$category} = [];
+        }
+        push @$sub_commands_within_category,$sub_command_class;
+    }
+
     no warnings;
     local  $Text::Wrap::columns = 60;
-    my @data =
-    map {
-        my @rows = split("\n",Text::Wrap::wrap('', ' ', $_->help_brief));
-        chomp @rows;
-        (
-            [
-            $_->$command_name_method,
-            $_->_shell_args_usage_string_abbreviated,
-            $rows[0],
-            ],
-            map { 
-                [ 
-                '',
-                ' ',
-                $rows[$_],
-                ]
-            } (1..$#rows)
-        );
-    } 
     
-    @sub_command_classes;
+    my $full_text = '';
+    my @full_data;
+    for my $category (@categories) {
+        my $sub_commands_within_this_category = $categories{$category};
+        my @data = map {
+                my @rows = split("\n",Text::Wrap::wrap('', ' ', $_->help_brief));
+                chomp @rows;
+                (
+                    [
+                        $_->$command_name_method,
+                        $_->_shell_args_usage_string_abbreviated,
+                        $rows[0],
+                    ],
+                    map { 
+                        [ 
+                            '',
+                            ' ',
+                            $rows[$_],
+                        ]
+                    } (1..$#rows)
+                );
+            } 
+            @$sub_commands_within_this_category;
 
-    $DB::single = 1;
+        if ($category) {
+            # add a space between categories
+            push @full_data, ['','',''] if @full_data;
+
+            if ($category =~ /\D/) {
+                # non-numeric categories show their category as a header
+                $category .= ':' if $category =~ /\S/;
+                push @full_data, 
+                    [
+                        Term::ANSIColor::colored(uc($category), 'blue'),
+                        '',
+                        ''
+                    ];
+
+            }
+            else {
+                # numeric categories just sort
+            }
+        }
+
+        push @full_data, @data;
+    }
+
     my @max_width_found = (0,0,0);
-    for (@data) {
+    for (@full_data) {
         for my $c (0..2) {
             $max_width_found[$c] = length($_->[$c]) if $max_width_found[$c] < length($_->[$c]);
         }
@@ -884,15 +956,16 @@ sub help_sub_commands
 
     my @colors = (qw/ red   bold /);
     my $text = '';
-    for my $row (@data) {
+    for my $row (@full_data) {
         for my $c (0..2) {
-            $text .= '  ';
+            $text .= ' ';
             $text .= Term::ANSIColor::colored($row->[$c], $colors[$c]),
             $text .= ' ';
             $text .= ' ' x ($max_width_found[$c]-length($row->[$c]));
         }
         $text .= "\n";
     }
+        
     return $text;
 }
 
@@ -904,14 +977,20 @@ sub _shell_args_property_meta
 {
     my $self = shift;
     my $class_meta = $self->__meta__;
-    my @property_meta = $class_meta->get_all_property_metas(@_);
-    my @result;
+
+    # Find which property metas match the rules.  We have to do it this way
+    # because just calling 'get_all_property_metas()' will product multiple matches 
+    # if a property is overridden in a child class
+    my $rule = UR::Object::Property->define_boolexpr(@_);
     my %seen;
     my (@positional,@required,@optional);
-    for my $property_meta (@property_meta) {
+    foreach my $property_meta ( $class_meta->get_all_property_metas() ) {
         my $property_name = $property_meta->property_name;
+
+        next if $seen{$property_name}++;
+        next unless $rule->evaluate($property_meta);
+
         next if $property_name eq 'id';
-        next if $property_name eq 'bare_args';
         next if $property_name eq 'result';
         next if $property_name eq 'is_executed';
         next if $property_name =~ /^_/;
@@ -921,8 +1000,6 @@ sub _shell_args_property_meta
         next if $property_meta->is_calculated;
 #        next if $property_meta->{is_output}; # TODO: This was breaking the G::M::T::Annotate::TranscriptVariants annotator. This should probably still be here but temporarily roll back
         next if $property_meta->is_transient;
-        next if $seen{$property_name};
-        $seen{$property_name} = 1;
         next if $property_meta->is_constant;
         if ($property_meta->{shell_args_position}) {
             push @positional, $property_meta;
@@ -935,10 +1012,11 @@ sub _shell_args_property_meta
         }
     }
     
+    my @result;
     @result = ( 
-        (sort { $a->{shell_args_position} <=> $b->{shell_args_position} } @positional),
         (sort { $a->property_name cmp $b->property_name } @required),
-        (sort { $a->property_name cmp $b->property_name } @optional)
+        (sort { $a->property_name cmp $b->property_name } @optional),
+        (sort { $a->{shell_args_position} <=> $b->{shell_args_position} } @positional),
     );
     
     return @result;
@@ -1118,7 +1196,6 @@ sub sub_command_dirs
     $module .= '.pm';
     my $path = $INC{$module};
     unless ($path) {
-        print Dumper("no $module in \%INC: ", \%INC);
         return;
     }
     $path =~ s/.pm$//;
@@ -1389,7 +1466,7 @@ Command - Base class for modules implementing the Command Pattern
   }
 
   # Another part of the code
-  
+ 
   my $cmd = TopLevelNamespace::SomeObj::Command->create(some_obj_id => $some_obj->id);
   $cmd->execute();
 

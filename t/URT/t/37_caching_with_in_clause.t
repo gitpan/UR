@@ -4,16 +4,12 @@ use warnings;
 use Test::More tests => 42;
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT; # dummy namespace
 
 # Turn this on for debugging
 #$ENV{UR_DBI_MONITOR_SQL}=1;
-
-END {
-    my $db_file = URT::DataSource::SomeSQLite->server;
-    unlink $db_file;
-}
 
 my $dbh = URT::DataSource::SomeSQLite->get_default_dbh;
 ok($dbh, "got a db handle");

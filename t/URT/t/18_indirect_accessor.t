@@ -2,9 +2,10 @@ use warnings;
 use strict;
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use UR;
-use Test::More tests => 13;
+use Test::More tests => 19;
 
 UR::Object::Type->define(
     class_name => 'Acme',
@@ -55,3 +56,15 @@ is($e1->company,$b2->company, "company check works");
 # Hmmm... this only triggered the bug on DataSources backed by a real database
 my @matches = Acme::Employee->get(boss => 'nonsensical');
 ok(scalar(@matches) == 0, 'get employees by boss without boss objects correctly returns 0 items');
+
+
+my $e2 = Acme::Employee->create(name => 'Bob', boss_name => 'Chief');
+ok($e2, 'created an employee via a boss_name that already exists');
+is($e2->boss_id, $b2->id, 'boss_id of new employee is correct, did not make a new Acme::Boss');
+
+my %existing_boss_ids = map { $_->id => $_ } Acme::Boss->get();
+my $e3 = Acme::Employee->create(name => 'Freddy', boss_name => 'New Boss');
+ok($e3, 'Created an employee via a boss_name that did not previously exist');
+ok($e3->boss_id, 'it has a boss_id');
+ok($e3->boss, 'it has a boss object');
+ok(! exists $existing_boss_ids{$e3->boss_id}, 'The new boss_id did not exist before creating this employee');

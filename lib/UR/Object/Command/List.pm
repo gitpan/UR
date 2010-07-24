@@ -48,8 +48,8 @@ sub help_detail {
 
     return join(
         "\n",
-        $self->_filter_doc,
         $self->_style_doc,
+        $self->_filter_doc,
     );
 }
 
@@ -428,31 +428,21 @@ sub format_and_print{
     my $self = shift;
     my $tab_delimited;
 
-$DB::single=1;
     unless ($self->{noheaders}){
         $tab_delimited .= $self->_get_header_string."\n";
     }
 
-    my $viewer = UR::Object::Viewer->create_viewer(
+    my $view = UR::Object::View->create(
                        subject_class_name => 'UR::Object',
                        perspective => 'lister',
                        toolkit => 'text',
                        aspects => [ @{$self->{'show'}} ],
                   );
 
-    my $this_row_tab_delimited;
-    open(my $fh, '>',  \$this_row_tab_delimited);
-    $viewer->{'widget'} = $fh;
-
     my $count = 0;
     while (my $object = $self->_get_next_object_from_iterator()) {
-        $fh->seek(0,0);
-        $this_row_tab_delimited = '';
-
-        $viewer->set_subject($object);
-        $viewer->show();
-        $tab_delimited .= $this_row_tab_delimited;
-        #$tab_delimited .= $viewer->buf();
+        $view->subject($object);
+        $tab_delimited .= $view->content() . "\n";
         $count++;
     }
 

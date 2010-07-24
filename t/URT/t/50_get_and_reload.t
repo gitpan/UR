@@ -2,15 +2,13 @@ use strict;
 use warnings;
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 
 use Test::More tests => 64;
 use URT::DataSource::SomeSQLite;
 
-END {
-    unlink URT::DataSource::SomeSQLite->server;
-}
 my $dbh = URT::DataSource::SomeSQLite->get_default_dbh;
 &setup_classes_and_db($dbh);
 
@@ -67,7 +65,7 @@ foreach my $class ( 'URT::Thing', 'URT::SubclassedThing' ) {
     my $message = $@;
     $message =~ s/\s+/ /gm;
     like($message,
-         qr/A change has occurred in the database for $class property color on object 3 from 'red' to 'orange'. At the same time, this application has made a change to that value to blue./,
+         qr/A change has occurred in the database for $class property 'color' on object ID 3 from 'red' to 'orange'. At the same time, this application has made a change to that value to 'blue'./,
          'Error message looks correct');
     is($things[0]->color, 'blue', 'color remains what we set it to');
     #is($things[0]->{'db_committed'}->{'color'}, 'orange', 'db_committed for the color was updated to what we set the database to');

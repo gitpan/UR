@@ -17,6 +17,7 @@ use strict;
 use warnings;
 
 use Fcntl qw(:DEFAULT :flock);
+ use Errno qw(EINTR EAGAIN);
 use File::Temp;
 use File::Basename;
 
@@ -45,11 +46,6 @@ class UR::DataSource::File {
 };
 
 
-my $sql_fh;
-if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-    $sql_fh = UR::DBI->sql_fh();
-}
-
 sub can_savepoint { 0;}  # Doesn't support savepoints
  
 sub get_default_handle {
@@ -58,7 +54,7 @@ sub get_default_handle {
     unless ($self->{'_fh'}) {
         if ($ENV{'UR_DBI_MONITOR_SQL'}) {
             my $time = time();
-            $sql_fh->printf("\nFILE OPEN AT %d [%s]\n",$time, scalar(localtime($time)));
+            UR::DBI->sql_fh->printf("\nFILE OPEN AT %d [%s]\n",$time, scalar(localtime($time)));
         }
 
         my $filename = $self->server;
@@ -76,7 +72,7 @@ sub get_default_handle {
         $self->_invalidate_cache();
 
         if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-            $sql_fh->printf("FILE: opened %s fileno %d\n\n",$self->server, $fh->fileno);
+            UR::DBI->sql_fh->printf("FILE: opened %s fileno %d\n\n",$self->server, $fh->fileno);
         }
 
         $self->{'_fh'} = $fh;
@@ -156,7 +152,7 @@ sub _generate_loading_templates_arrayref {
     my $sql_cols;
     foreach my $column_data ( @$old_sql_cols ) {
         my $propertys_column_name = $column_data->[1]->column_name;
-        next unless (exists $column_to_position_map{$propertys_column_name});
+        next unless ($propertys_column_name and exists($column_to_position_map{$propertys_column_name}));
 
         push @$sql_cols, $column_data;
     }
@@ -285,7 +281,7 @@ sub _comparator_for_operator_and_property {
 
     } elsif ($operator eq '[]' or $operator eq 'in') {
         if ($property->is_numeric and $self->_things_in_list_are_numeric($value)) {
-            # Numeric 'in' comparison  returns undef is we're within the range of the list
+            # Numeric 'in' comparison  returns undef if we're within the range of the list
             # but don't actually match any of the items in the list
             @$value = sort { $a <=> $b } @$value;  # sort the values first
             return sub {
@@ -346,8 +342,8 @@ sub _comparator_for_operator_and_property {
         # Not that this isn't precisely correct, as \\% should really mean a literal \
         # followed by a wildcard, but we can't be correct in all cases without including 
         # a real parser.  This will catch most cases.
-        $value =~ s/(?<!\\)%/*/;
-        $value =~ s/(?<!\\)_/./;
+        $value =~ s/(?<!\\)%/.*/g;
+        $value =~ s/(?<!\\)_/./g;
         my $regex = qr($value);
         return sub {
                    if ($$next_candidate_row->[$index] =~ $regex) {
@@ -573,7 +569,7 @@ sub create_iterator_closure_for_rule {
             push @filters_list, $filter_string;
         }
         my $filter_list = join("\n\t", @filters_list);
-        $sql_fh->printf("\nFILE: %s\nFILTERS %s\n\n", $self->server, $filter_list);
+        UR::DBI->sql_fh->printf("\nFILE: %s\nFILTERS %s\n\n", $self->server, $filter_list);
     }
 
     unless ($matched_in_cache) {
@@ -590,7 +586,7 @@ sub create_iterator_closure_for_rule {
     my $fh;  # File handle we'll be reading from
     my $iterator = sub {
 
-	unless (ref($fh)) {
+        unless (ref($fh)) {
             $fh = $self->get_default_handle();
             # Lock the file for reading...  For more fine-grained locking we could move this to
             # after READ_LINE_FROM_FILE: but that would slow down read operations a bit.  If
@@ -599,12 +595,12 @@ sub create_iterator_closure_for_rule {
         }
 
         if ($monitor_start_time && ! $monitor_printed_first_fetch) {
-            $sql_fh->printf("FILE: FIRST FETCH TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
+            UR::DBI->sql_fh->printf("FILE: FIRST FETCH TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
             $monitor_printed_first_fetch = 1;
         }
 
         if ($self->{'_last_read_fingerprint'} != $fingerprint) {
-            $sql_fh->printf("FILE: Resetting file position to $file_pos\n") if $ENV{'UR_DBI_MONITOR_SQL'};
+            UR::DBI->sql_fh->printf("FILE: Resetting file position to $file_pos\n") if $ENV{'UR_DBI_MONITOR_SQL'};
             # The last read was from a different request, reset the position and invalidate the cache
             $fh->seek($file_pos,0);
             #$fh->getline() if ($self->skip_first_line());
@@ -630,16 +626,32 @@ sub create_iterator_closure_for_rule {
             } else {
                 $self->{'_last_read_fingerprint'} = $fingerprint;
 
+                # Hack for OSX 10.5.
+                # At EOF, the getline below will return undef.  Most builds of Perl
+                # will also set $! to 0 at EOF so you can distinguish between the cases
+                # of EOF (which may have actually happened a while ago because of buffering)
+                # and an actual read error.  OSX 10.5's Perl does not, and so $!
+                # retains whatever value it had after the last failed syscall, likely 
+                # a stat() while looking for a Perl module.  This should have no effect
+                # other platforms where you can't trust $! at arbitrary points in time
+                # anyway
+                $! = 0;
                 $line = <$fh>;
 
                 unless (defined $line) {
+                    if ($!) {
+                        redo READ_LINE_FROM_FILE if ($! == EAGAIN or $! == EINTR);
+                        my $pathname = $self->server();
+                        Carp::confess("getline() failed for DataSource $self pathname $pathname boolexpr $rule: $!");
+                    }
+
                     # at EOF.  Close up shop and return
                     flock($fh,LOCK_UN);
                     $fh = undef;
                     $self->_invalidate_cache();
                  
                     if ($monitor_start_time) {
-                        $sql_fh->printf("FILE: at EOF\nFILE: TOTAL EXECUTE-FETCH TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
+                        UR::DBI->sql_fh->printf("FILE: at EOF\nFILE: TOTAL EXECUTE-FETCH TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
                     }
 
                     return;
@@ -670,7 +682,7 @@ sub create_iterator_closure_for_rule {
                     $self->file_cache_index($file_cache_index);
 
                     if ($monitor_start_time) {
-                        $sql_fh->printf("FILE: TOTAL EXECUTE-FETCH TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
+                        UR::DBI->sql_fh->printf("FILE: TOTAL EXECUTE-FETCH TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
                     }
 
                     flock($fh,LOCK_UN);
@@ -689,6 +701,8 @@ sub create_iterator_closure_for_rule {
             return $next_candidate_row;
         }
     }; # end sub $iterator
+
+    Sub::Name::subname('UR::DataSource::File::__datasource_iterator(closure)__', $iterator);
 
     my $count = $self->_open_query_count() || 0;
     $self->_open_query_count($count+1);
@@ -711,7 +725,7 @@ sub UR::DataSource::File::Tracker::DESTROY {
 	# file handle and undef it so get_default_handle() will re-open if necessary
         my $fh = $ds->{'_fh'};
 
-        $sql_fh->printf("FILE: CLOSING fileno ".fileno($fh)."\n") if ($ENV{'UR_DBI_MONITOR_SQL'} && $sql_fh);
+        UR::DBI->sql_fh->printf("FILE: CLOSING fileno ".fileno($fh)."\n") if ($ENV{'UR_DBI_MONITOR_SQL'});
         flock($fh,LOCK_UN);
 	$fh->close();
 	$ds->{'_fh'} = undef;
@@ -914,8 +928,8 @@ sub _sync_database {
     if ($ENV{'UR_DBI_MONITOR_SQL'}) {
         $monitor_start_time = Time::HiRes::time();
         my $time = time();
-        $sql_fh->printf("\nFILE: SYNC_DATABASE AT %d [%s].  Started transaction for %s to temp file %s\n",
-                        $time, scalar(localtime($time)), $original_data_file, $write_fh->filename);
+        UR::DBI->sql_fh->printf("\nFILE: SYNC_DATABASE AT %d [%s].  Started transaction for %s to temp file %s\n",
+                                $time, scalar(localtime($time)), $original_data_file, $write_fh->filename);
 
     }
 
@@ -951,7 +965,7 @@ sub _sync_database {
                 my $new_line = join($join_pattern, @$new_row) . $record_separator;
 
                 if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-                    $sql_fh->print("INSERT >>$new_line<<\n");
+                    UR::DBI->sql_fh->print("INSERT >>$new_line<<\n");
                 }
 
                 $write_fh->print($new_line);
@@ -962,14 +976,14 @@ sub _sync_database {
 
         if (my $obj = delete $delete->{$line}) {
             if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-                $sql_fh->print("DELETE >>$line<<\n");
+                UR::DBI->sql_fh->print("DELETE >>$line<<\n");
             }
             $line = undef;
             next;
            
         } elsif (my $changed = delete $update->{$line}) {
             if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-                $sql_fh->print("UPDATE replace >>$line<< with >>$changed<<\n");
+                UR::DBI->sql_fh->print("UPDATE replace >>$line<< with >>$changed<<\n");
             }
             $write_fh->print($changed);
             $line = undef;
@@ -994,7 +1008,7 @@ sub _sync_database {
         no warnings 'uninitialized';   # Some of the object's data may be undef
         my $new_line = join($join_pattern, @$new_row) . $record_separator;
         if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-            $sql_fh->print("INSERT >>$new_line<<\n");
+            UR::DBI->sql_fh->print("INSERT >>$new_line<<\n");
         }
         $write_fh->print($new_line);
     }
@@ -1002,7 +1016,7 @@ sub _sync_database {
     
     if ($use_quick_rename) {
         if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-            $sql_fh->print("FILE: COMMIT rename $temp_file_name over $original_data_file\n");
+            UR::DBI->sql_fh->print("FILE: COMMIT rename $temp_file_name over $original_data_file\n");
         }
 
         unless(rename($temp_file_name, $original_data_file)) {
@@ -1013,7 +1027,7 @@ sub _sync_database {
         # We have to copy the data from the temp file to the original file
 
         if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-            $sql_fh->print("FILE: COMMIT write over $original_data_file in place\n");
+            UR::DBI->sql_fh->print("FILE: COMMIT write over $original_data_file in place\n");
         }
         my $new_write_fh = IO::File->new($original_data_file, O_WRONLY|O_TRUNC);
         unless ($new_write_fh) {
@@ -1039,7 +1053,7 @@ sub _sync_database {
     $self->{_fh} = undef; 
 
     if ($ENV{'UR_DBI_MONITOR_SQL'}) {
-        $sql_fh->printf("FILE: TOTAL COMMIT TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
+        UR::DBI->sql_fh->printf("FILE: TOTAL COMMIT TIME: %.4f s\n", Time::HiRes::time() - $monitor_start_time);
     }
 
     flock($read_fh, LOCK_UN);

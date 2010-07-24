@@ -22,6 +22,8 @@ UR::Object::Type->define(
     class_name => __PACKAGE__,
     is => "UR::Namespace::Command",
     has => [
+       bare_args => { is_optional => 1, is_many => 1, shell_args_position => 1, is_input => 1
+       },
         recurse           => { is => 'Boolean', doc => 'Run all .t files in the current directory, and in recursive subdirectories.'                                                },
         'time'            => { is => 'String',  doc => 'Write timelog sum to specified file',                                                is_optional => 1                       },
         long              => { is => 'Boolean', doc => 'Run tests including those flagged as long',                                          is_optional => 1                       },
@@ -38,22 +40,25 @@ UR::Object::Type->define(
         callcount         => { is => 'Boolean', doc => 'Count the number of calls to each subroutine/method',                                is_optional => 1                       },
         jobs              => { is => 'Number',  doc => 'How many tests to run in parallel',                                                  is_optional => 1, default_value => 1,  },
         lsf               => { is => 'Boolean', doc => 'If true, tests will be submitted as jobs via bsub' },
-        lsf_params        => { is => 'String',  doc => 'Params passed to bsub while submitting jobs to lsf',        is_optional => 1, default_value => '-q short -R select[type=LINUX64]',},
+        lsf_params        => { is => 'String',  doc => 'Params passed to bsub while submitting jobs to lsf',        is_optional => 1, default_value => '-q short -R select[type==LINUX64]',},
         run_as_lsf_helper => { is => 'String',  doc => 'Used internally by the test harness',                                                is_optional => 1, },
         inc               => { is => 'String',  doc => 'Additional paths for @INC, alias for -I',                              is_many => 1, is_optional => 1, },
+        color             => { is => 'Boolean', doc => 'Use TAP::Harness::Color to generate color output', default_value => 0 },
+        junit             => { is => 'Boolean', doc => 'Run all tests with junit style XML output. (requires TAP::Formatter::JUnit)' },
     ],
 );
 
 sub help_brief { "Run the test suite against the source tree." }
 
 sub help_synopsis {
-    return <<EOS
+    return <<'EOS'
 cd MyNamespace
 ur test run --recurse                   # run all tests in the namespace
 ur test run                             # runs all tests in the t/ directory under pwd
 ur test run t/mytest1.t My/Class.t      # run specific tests
 ur test run -v -t --cover-svk-changes   # run tests to cover latest svk updates
 ur test run -I ../some/path/            # Adds ../some/path to perl's @INC through -I
+ur test run --junit                     # writes test output in junit's xml format (consumable by Hudson integration system)
 EOS
 }
 
@@ -84,6 +89,20 @@ sub execute {
 
     $DB::single = 1;
 
+    # calling _init() will produce an error if not run within a UR namespace dir
+    my $err_setting = $self->dump_error_messages();
+    $self->dump_error_messages(0);
+    eval {
+        if ($self->SUPER::_init(@_)) {
+            $self->status_message("Running tests within namespace ".$self->namespace_name);
+        }
+    };
+    $self->dump_error_messages($err_setting);
+    if ($@) {
+        $self->error_message("There was an exception initializing the test harness:\n$@");
+        return;
+    }
+
     if ($self->run_as_lsf_helper) {
         $self->_lsf_test_worker($self->run_as_lsf_helper);
         exit(0);
@@ -96,7 +115,7 @@ sub execute {
 
     # nasty parsing of command line args
     # this may no longer be needed..
-    my @tests = @{ $self->bare_args || [] }; 
+    my @tests = $self->bare_args; 
 
     if ($self->recurse) {
         if (@tests) {
@@ -224,7 +243,6 @@ sub _run_tests {
         push @cover_specific_modules, get_status_file_list('cvs');
     }
 
-
     if (@cover_specific_modules) {
         my $dbh = DBI->connect("dbi:SQLite:/gsc/var/cache/testsuite/coverage_metrics.sqlitedb","","");
         $dbh->{PrintError} = 0;
@@ -283,23 +301,41 @@ sub _run_tests {
     if ($self->callcount()) {
         $perl_opts .= ' -d:callcount';
     }
-    if (my @inc = $self->inc) {
-        $perl_opts .= join(' ', map { '-I' . Path::Class::Dir->new($_)->absolute } @inc);
+
+    if (UR::Util::used_libs()) {
+        $ENV{'PERL5LIB'} = UR::Util::used_libs_perl5lib_prefix() . $ENV{'PERL5LIB'};
     }
 
-    $ENV{'PERL5LIB'} = join(':', @INC);
-
-    my $formatter = TAP::Formatter::Console->new( {
-                        jobs => $self->jobs,
-                        show_count => 1,
-                    } );
-    $formatter->quiet();
-
-    my %harness_args = ( formatter => $formatter );
+    my %harness_args;
+    my $formatter;
+    if ($self->junit) {
+        eval "use TAP::Formatter::JUnit;";
+        if ($@) {
+            Carp::croak("Couldn't use TAP::Formatter::JUnit for junit output: $@");
+        }
+        %harness_args = ( formatter_class => 'TAP::Formatter::JUnit',
+                          merge => 1,
+                          timer => 1,
+                        );
+    } else {
+        $formatter = TAP::Formatter::Console->new( {
+                            jobs => $self->jobs,
+                            show_count => 1,
+                            color => $self->color,
+                        } );
+        $formatter->quiet();
+        %harness_args = ( formatter => $formatter );
+    }
 
     $harness_args{'jobs'} = $self->jobs if ($self->jobs > 1);
-    $harness_args{'switches'} = $perl_opts if $perl_opts;
     $harness_args{'test_args'} = $self->script_opts if $self->script_opts;
+    $harness_args{'multiplexer_class'} = 'My::TAP::Parser::Multiplexer';
+    $harness_args{'scheduler_class'} = 'My::TAP::Parser::Scheduler';
+    
+    if ($self->perl_opts || $self->inc) {
+        $harness_args{'switches'} = [ split(' ', $self->perl_opts),
+                                      map { '-I' . Path::Class::Dir->new($_)->absolute } $self->inc];
+    }
 
     my $timelog_sum = $self->time();
     my $timelog_dir;
@@ -320,12 +356,15 @@ sub _run_tests {
         # running concurrently and using lsf will always use the last object's lsf_params.
         # though I doubt anyone would ever really need to do that...
         My::TAP::Parser::IteratorFactory::LSF->lsf_params($self->lsf_params);
+        My::TAP::Parser::IteratorFactory::LSF->max_jobs($self->jobs);
 
         $harness->callback('parser_args',
                            sub {
                                my($args, $job_as_arrayref) = @_;
                                $args->{'iterator_factory_class'} = 'My::TAP::Parser::IteratorFactory::LSF';
                            });
+
+
     }
 
     my $aggregator = TAP::Parser::Aggregator->new();
@@ -345,6 +384,18 @@ sub _run_tests {
         $ENV{UR_DBI_NO_COMMIT} = 1;
         $DB::single=1;
 
+        $SIG{'INT'} = sub {
+                              print "\n\nInterrupt.\nWaiting for running tests to finish...\n\n";
+                              
+                              $My::TAP::Parser::Iterator::Process::LSF::SHOULD_EXIT = 1;
+                              $SIG{'INT'} = 'DEFAULT';
+                              #My::TAP::Parser::IteratorFactory::LSF->_kill_running_jobs();
+                              #sleep(1);
+                              #$aggregator->stop();
+                              #$formatter->summary($aggregator);
+                              #exit(0);
+                          };
+ 
         #runtests(@tests);
         $harness->aggregate_tests( $aggregator, @tests );
     };
@@ -364,7 +415,7 @@ sub _run_tests {
             system("chmod -R g+rwx cover_db");
             system("/gsc/bin/cover | tee > coverage.txt");
         }
-        $formatter->summary($aggregator);
+        $formatter->summary($aggregator) if ($formatter);
     }
 
     if ($timelog_sum) {
@@ -380,7 +431,7 @@ sub _run_tests {
         $timelog_dir->rmtree;
     }
 
-    return 1;
+    return !$aggregator->has_problems;
 }
 
 
@@ -410,6 +461,9 @@ sub get_status_file_list {
         }
         elsif ($tool eq "cvs") {
             @lines = IO::File->new("cvs -q up |")->getlines;
+        } 
+        elsif ($tool eq "git") {
+            @lines = IO::File->new("git diff --name-status")->getlines;
         }
         else {
             die "Unknown tool $tool.  Try svn, svk, or cvs.\n";
@@ -441,6 +495,30 @@ sub get_status_file_list {
     return @modules;
 }
 
+package My::TAP::Parser::Multiplexer;
+use base 'TAP::Parser::Multiplexer';
+
+sub _iter {
+    my $self = shift;
+
+    my $original_iter = $self->SUPER::_iter(@_);
+    return sub {
+        for(1) {
+            # This is a hack...
+            # the closure _iter returns does a select() on the subprocess' output handle
+            # which returns immediately after you hit control-C with no results, and the
+            # existing code in there expects real results from select().  This way, we catch
+            # the exception that happens when you do that, and give it a chance to try again
+            my @retval = eval { &$original_iter };
+            if (index($@, q(Can't use an undefined value as an ARRAY reference))>= 0) {
+                redo;
+            } elsif ($@) {
+                die $@;
+            }
+            return @retval;
+        }
+    };
+}
 
 package My::TAP::Parser::IteratorFactory::LSF;
 
@@ -461,16 +539,22 @@ my $state = { 'listen'     => undef, # The listening socket
               # running_jobs => [],  # we're not tracking workers that are working for now...
               lsf_jobids   => [],    # jobIDs of the worker processes
               lsf_params   => '',    # params when running bsub
+              max_jobs     => 0,     # Max number of jobs
             };
 
-END  {
+sub _kill_running_jobs  {
     # The worker processes should notice when the master goes away,
     # but just in case, we'll kill them off
     foreach my $jobid ( @{$state->{'lsf_jobids'}} ) {
-        print STDERR "bkilling LSF jobid $jobid\n";
+        print "bkilling LSF jobid $jobid\n";
         `bkill $jobid`;
     }
 }
+
+END {
+    &_kill_running_jobs();
+}
+
 
 sub lsf_params {
     my $proto = shift;
@@ -479,6 +563,15 @@ sub lsf_params {
         $state->{'lsf_params'} = shift;
     }
     return $state->{'lsf_params'};
+}
+
+sub max_jobs {
+    my $proto = shift;
+
+    if (@_) {
+        $state->{'max_jobs'} = shift;
+    }
+    return $state->{'max_jobs'};
 }
 
 
@@ -493,19 +586,42 @@ sub next_idle_worker {
 
     $proto->process_events();
 
-    my $did_create_worker = 0;
     while(! @{$state->{'idle_jobs'}} ) {
 
-        $proto->create_new_worker unless ($did_create_worker++);
+        my $did_create_new_worker = 0;
+        if (@{$state->{'lsf_jobids'}} < $state->{'max_jobs'}) {
+            $proto->create_new_worker();
+            $did_create_new_worker = 1;
+        }
 
-        sleep(3);
+        sleep(1);
 
-        $proto->process_events();
+        my $count = $proto->process_events($did_create_new_worker ? 10 : 0);
+        if (! $did_create_new_worker and ! $count) {
+            unless ($proto->_verify_lsf_jobs_are_still_alive()) {
+                print "\n*** The LSF worker jobs are having trouble starting up... Exiting\n";
+                kill 'INT', $$;
+                sleep 2;
+                kill 'INT', $$;
+            }
+        }
     }
 
     my $worker = shift @{$state->{'idle_jobs'}};
     return $worker;
 }
+
+sub _verify_lsf_jobs_are_still_alive {
+    my $alive = 0;
+    foreach my $jobid ( @{$state->{'lsf_jobids'}} ) {
+        my @output = `bjobs $jobid`;
+        next unless $output[1];  # expired jobs only have 1 line of output: Job <xxxx> is not found
+        my @stat = split(/\s+/, $output[1]);
+        $alive++ if ($stat[2] eq 'RUN' or $stat[2] eq 'PEND');
+    }
+    return $alive;
+}
+        
 
 #sub worker_is_now_idle {
 #    my($proto, $worker) = @_;
@@ -542,6 +658,7 @@ sub create_new_worker {
 
 sub process_events {
     my $proto = shift;
+    my $timeout = shift || 0;
 
     my $listen = $state->{'listen'};
     unless ($listen) {
@@ -557,11 +674,13 @@ sub process_events {
         $select = $state->{'select'} = IO::Select->new($listen);
     }
 
+    my $processed_events = 0;
     while(1) {
-        my @ready = $select->can_read(0);
+        my @ready = $select->can_read($timeout);
         last unless (@ready);
 
         foreach my $handle ( @ready ) {
+            $processed_events++;
             if ($handle eq $listen) {
                 my $socket = $listen->accept();
                 unless ($socket) {
@@ -573,8 +692,10 @@ sub process_events {
             } else {
                 # shoulnd't get here...
             }
+            $timeout = 0;  # just do a poll() next time around
         }
     }
+    return $processed_events;
 }
 
 
@@ -634,9 +755,35 @@ sub _timelog_file_for_command_list {
     Carp::croak("Can't determine time log file for command line: ",join(' ',@$command_list));
 }
 
+package My::TAP::Parser::Scheduler;
+
+use base 'TAP::Parser::Scheduler';
+
+sub get_job {
+    my $self = shift;
+
+    if ($My::TAP::Parser::Iterator::Process::LSF::SHOULD_EXIT) {
+        our $already_printed;
+
+        unless ($already_printed) {
+            print "\n\n  ",$self->{'count'}," Tests not yet run before interrupt\n";
+            print "------------------------------------------\n";
+            foreach my $job ( $self->get_all ) {
+                print $job->{'description'},"\n";
+            }
+            print "------------------------------------------\n";
+            $already_printed = 1;
+        }
+        return;
+    }
+
+    $self->SUPER::get_job(@_);
+}
 
 
 package My::TAP::Parser::Iterator::Process::LSF;
+
+our $SHOULD_EXIT = 0;
 
 use base 'TAP::Parser::Iterator::Process';
 
@@ -654,9 +801,11 @@ sub _initialize {
     }
 
     my $handle = My::TAP::Parser::IteratorFactory::LSF->next_idle_worker();
-
     # Tell the worker to run the command
-    $handle->print(join(' ', @command) . "\n");
+    unless($handle->print(join(' ', @command) . "\n")) {
+        print "Couldn't send command to worker on host ".$handle->peeraddr." port ".$handle->peerport.": $!\n";
+        print "Handle is " . ( $handle->connected ? '' : '_not_' ) . " connected\n";
+    }
 
     $self->{'out'} = $handle;
     $self->{'err'} = '';
@@ -677,6 +826,19 @@ sub next_raw {
     my $self = shift;
 
     My::TAP::Parser::IteratorFactory::LSF->process_events();
+
+    if ($SHOULD_EXIT) {
+        $DB::single=1;
+        if  ($self->{'sel'}) {
+            foreach my $h ( $self->{'sel'}->handles ) {
+                $h->close;
+                $self->{'sel'}->remove($h);
+            }
+            return "1..0 # Skipped: Interrupted by user";
+        } else {
+           return;
+        }
+    }
     $self->SUPER::next_raw(@_);
 }
 
@@ -772,7 +934,7 @@ directory, and runs ALL tests under that directory.
 =item --lsf-params
 
  Parameters given to bsub when sceduling jobs.  The default is
- "-q short -R select[type=LINUX64]"
+ "-q short -R select[type==LINUX64]"
 
 =item --jobs <number>
 

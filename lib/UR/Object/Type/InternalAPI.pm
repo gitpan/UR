@@ -6,6 +6,7 @@ use strict;
 use Sys::Hostname;
 use Cwd;
 use Scalar::Util qw(blessed);
+use Sub::Name;
 
 our %meta_classes;
 our $bootstrapping = 1;
@@ -352,6 +353,7 @@ sub get_composite_id_decomposer {
                 }
             };
         }
+        Sub::Name::subname('UR::Object::Type::InternalAPI::composite_id_decomposer(closure)',$decomposer);
         $self->{get_composite_id_decomposer} = $decomposer;
     }
     return $decomposer;
@@ -407,6 +409,7 @@ sub get_composite_id_resolver {
                 }
             };
         }
+        Sub::Name::subname('UR::Object::Type::InternalAPI::composite_id_resolver(closure)',$resolver);
         $self->{get_composite_id_resolver} = $resolver;
     }    
     return $resolver;
@@ -559,7 +562,7 @@ sub autogenerate_new_object_id {
 }
 
 # from ::Object->generate_support_class
-our %support_class_suffixes = map { $_ => 1 } qw/Set Viewer Ghost Iterator/;
+our %support_class_suffixes = map { $_ => 1 } qw/Set View Viewer Ghost Iterator Value/;
 sub generate_support_class_for_extension {
     my $self = shift;
     my $extension_for_support_class = shift;
@@ -730,7 +733,7 @@ sub _load {
 
     # While core entity classes are actually loaded,
     # support classes dynamically generate for them as needed.
-    # Examples are Acme::Employee::Viewer::emp_id, and Acme::Equipment::Ghost
+    # Examples are Acme::Employee::View::emp_id, and Acme::Equipment::Ghost
 
     # Try to parse the class name.
     my $class_name = $params->{class_name};
@@ -814,7 +817,7 @@ sub _load {
 
         # See if a class exists for the same name w/o the suffix.
         # This may cause this function to be called recursively for
-        # classes like Acme::Equipment::Set::Viewer::upc_code,
+        # classes like Acme::Equipment::Set::View::upc_code,
         # which would fire recursively for three extensions of
         # Acme::Equipment.
         my $full_base_class_name = $prefix . ($base ? "::" . $base : "");
@@ -824,7 +827,7 @@ sub _load {
         {
             # If so, that class may be able to generate a support
             # class.
-            $class_obj = $full_base_class_name->generate_support_class($suffix);
+            $class_obj = $full_base_class_name->__extend_namespace__($suffix);
             if ($class_obj)
             {
                 # Autogeneration worked.
@@ -881,9 +884,10 @@ sub use_module_with_namespace_constraints {
 #        $path = undef;
 #    }
 #    elsif ($path = $INC{$namespace_expected_module}) {
+
     if ($path = $INC{$namespace_expected_module}) {
         #print "got mod $namespace_expected_module at $path for $target_class\n";
-        $path =~ s/$namespace_expected_module//g;
+        $path =~ s/\/*$namespace_expected_module//g;
     }
     else {
         my $namespace_obj =  UR::Object::Type->is_loaded(class_name => $namespace_name);
@@ -930,7 +934,7 @@ sub _use_safe {
     my $class_path = $target_class . ".pm";
     $class_path =~ s/\:\:/\//g;
 
-    local @INC = @INC;
+    my @INC_COPY = @INC;
     if ($expected_directory) {
         unshift @INC, $expected_directory;
     }
@@ -944,11 +948,13 @@ sub _use_safe {
 
     if (!$found) {
         # not found
+        @INC = @INC_COPY;
         return;
     }
 
     if ($expected_directory and $expected_directory ne $found) {
         # not found in the specified location
+        @INC = @INC_COPY;
         return;
     }
 
@@ -963,7 +969,16 @@ sub _use_safe {
     # and isn't propogating the error message about what caused the compile to fail
     if ($@) {
         #local $SIG{__DIE__};
+
+        @INC = @INC_COPY;
         die ("ERROR DYNAMICALLY LOADING CLASS $target_class\n$@");
+    }
+
+    for (0..$#INC) {
+        if ($INC[$_] eq $expected_directory) {
+            splice @INC, $_, 1;
+            last;
+        }
     }
 
     return 1;

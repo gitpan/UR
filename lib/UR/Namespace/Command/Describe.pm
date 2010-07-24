@@ -25,43 +25,45 @@ our @CLASS_PROPERTIES_NOT_TO_PRINT = qw(
 );
     
     
-our $viewer;
+our $view;
 sub for_each_class_object {
     my $self = shift;
     my $class_meta = shift;
 
-$DB::single=1;
-    $viewer ||= UR::Object::Viewer->create_viewer(
-                    subject_class_name => 'UR::Object::Type',
+    $view ||= UR::Object::Type->create_view(
                     perspective => 'default',
                     toolkit => 'text',
                     aspects => [
                         'namespace', 'table_name', 'data_source_id', 'is_abstract', 'is_final',
                         'is_singleton', 'is_transactional', 'schema_name', 'meta_class_name',
                         'first_sub_classification_method_name', 'sub_classification_method_name',
-                        'Properties' => {
-                            method => 'all_property_metas',
+                        {
+                            label => 'Properties',
+                            name => 'properties',
                             subject_class_name => 'UR::Object::Property',
                             perspective => 'description line item',
                             toolkit => 'text',
                             aspects => ['is_id', 'property_name', 'column_name', 'data_type', 'is_optional' ],
                         },
-                        'Relationships' => {
-                            method => 'all_reference_metas',
+                        {
+                            label => 'References',
+                            name => 'all_reference_metas',
                             subject_class_name => 'UR::Object::Reference',
                             perspective => 'description line item',
                             toolkit => 'text',
+                            aspects => [],
                         }
                     ],
                 );
-    unless ($viewer) {
-        $self->error_message("Can't initialize viewer");
+    unless ($view) {
+        $self->error_message("Can't initialize view");
         return;
     }
 
-    $viewer->set_subject($class_meta);
-    $viewer->show();
-    print "\n";
+    $view->subject($class_meta);
+    $view->show();
+    #print $view->content();
+    #print "\n";
 }
 
     

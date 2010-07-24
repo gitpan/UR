@@ -156,6 +156,28 @@ sub via_property_meta {
     return $class_meta->property_meta_for_name($self->via);
 }
 
+sub final_property_meta {
+    my $self = shift;
+
+    my $closure;
+    $closure = sub { 
+        return unless defined $_[0];
+        if ($_[0]->is_delegated and $_[0]->via) {
+            if ($_[0]->to) {
+                return $closure->($_[0]->to_property_meta);
+            } else {
+                return $closure->($_[0]->via_property_meta);
+            }
+        } else {
+            return $_[0];
+        }
+    };
+    my $final = $closure->($self);
+
+    return if !defined $final || $final->id eq $self->id;
+    return $final;
+}
+
 # For via/to delegated properties, return the property meta on the foreign
 # class that this property delegates to
 sub to_property_meta {
@@ -377,11 +399,11 @@ sub generic_data_type {
     return $generic_data_type_for_vendor_data_type{$_[0]->{data_type}};
 }
 
-sub is_indirect {
-    my $self = shift;
-
-    return ($self->is_delegated || $self->is_calculated || $self->is_legacy_eav);
-}
+#sub is_indirect {
+#    my $self = shift;
+#
+#    return ($self->is_delegated || $self->is_calculated || $self->is_legacy_eav);
+#}
 
 
 

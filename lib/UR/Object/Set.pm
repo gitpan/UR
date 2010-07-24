@@ -7,16 +7,27 @@ use UR;
 class UR::Object::Set {
     is => 'UR::Value',
     is_abstract => 1,
-    subclassify_by => 'member_class_name',
-    type_has => [
-        member_class_name   => { is => 'Text' },
-    ],
     has => [
         rule                => { is => 'UR::BoolExpr', id_by => 'id' },
+        rule_display        => { via => 'rule', to => '__display_name__'},
         member_class_name   => { via => 'rule', to => 'subject_class_name' },
+        members             => { is => 'UR::Object' }
     ],
     doc => 'an unordered group of distinct UR::Objects'
 };
+
+sub get_with_special_parameters {
+    my $class = shift;
+    my $bx = shift;
+    my @params = @_;
+
+    my $member_class = $class;
+    $member_class =~ s/::Set$//;
+
+    my $rule = UR::BoolExpr->resolve($member_class, $bx->params_list, @params);
+
+    return $class->get($rule->id);
+}
 
 sub members {
     my $self = shift;

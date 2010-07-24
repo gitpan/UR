@@ -9,6 +9,7 @@ use Test::More tests => 50;
 # than the alphabetic order
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT; # dummy namespace
 
@@ -130,12 +131,15 @@ is($related_load_count, 0, "correctly loaded 0 Related objects");
 
 
 sub create_data_sources {
+
+    IO::File->new($DB_FILE_1, 'w')->close();
     class URT::DataSource::SomeSQLite1 {
         is => 'UR::DataSource::SQLite',
         type_name => 'urt datasource somesqlite1',
     };
     sub URT::DataSource::SomeSQLite1::server { $DB_FILE_1 };
 
+    IO::File->new($DB_FILE_2, 'w')->close();
     class URT::DataSource::SomeSQLite2 {
         is => 'UR::DataSource::SQLite',
         type_name => 'urt datasource somesqlite2',
@@ -157,6 +161,7 @@ return;
     my $f = IO::File->new("$tmp_path/URT/Related.pm",'>');
     $f->print(q(
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 UR::Object::Type->define(
@@ -177,6 +182,7 @@ UR::Object::Type->define(
     $f = IO::File->new("$tmp_path/URT/Primary.pm",'>');
     $f->print(q(
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 UR::Object::Type->define(

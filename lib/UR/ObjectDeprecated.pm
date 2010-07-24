@@ -439,7 +439,7 @@ sub cancel_change_subscription ($@)
             or
             ($callback eq $cancel_callback)
             or
-            ($note =~ $callback)
+            (defined $note && $note =~ $callback)
         )
         {
             # Remove the callback from the subscription list.
@@ -468,7 +468,7 @@ sub cancel_change_subscription ($@)
             # Tell the class that a subscription has been cancelled, if it cares
             # (most classes do not impliment this, and the default UR::Object version is ignored.
 
-            unless($class->inform_subscription_cancellation($property,$id,$callback))
+            unless($class eq '' || $class->inform_subscription_cancellation($property,$id,$callback))
             {
                 Carp::confess("Failed to validate requested subscription cancellation: @_\n");
                 return 0; # If/when the above is removed.
@@ -498,18 +498,6 @@ sub ghost_class {
     return $class;
 }
 
-
-# KEEP FUNCTIONALITY, BUT RENAME/REFACTOR
-
-sub generate_support_class {
-    # A class Foo can implement this method to have a chance to auto-define Foo::Bar 
-    # TODO: make a Class::Autouse::ExtendNamespace Foo => sub { } to handle this.
-    # Right now, UR::ModuleLoader will try it after "use".
-    my $class  = shift;
-    my $ext = shift;
-    my $class_meta = $class->__meta__;
-    return $class_meta->generate_support_class_for_extension($ext);
-}
 
 # Old things still use this directly, sadly.
 

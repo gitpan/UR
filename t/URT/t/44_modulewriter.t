@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use File::Basename;
+use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 
@@ -41,10 +42,11 @@ $c = UR::Object::Type->define(
     ],
     has => [
 #        test_obj => { is => 'URT::TestClass', id_by => ['prop1','prop2','prop3'] },
+        something => { is => 'String' },
     ],
 );
 ok($c, 'Defined URT::Remote class');
-    
+
 # Make up a class definition with all the different kinds of properties we can think of...
 # FIXME - I'm not sure how the attributes_have and id_implied stuff is meant to work
 my $test_class_definition =
@@ -70,10 +72,13 @@ my $test_class_definition =
         some_enum           => { is => 'Integer', valid_values => [100,200,300] },
         another_enum        => { is => 'String', valid_values => ["one","two","three",3,"four"] },
         my_subclass_name    => { is => 'Text', calculate_from => [ 'property_a', 'property_b' ], calculate => q("URT::TestClass") },
+        subclass_by_prop    => { is => 'String' },
+        subclass_by_id      => { is => 'Integer', implied_by => 'subclass_by_obj' },
+        subclass_by_obj     => { is => 'UR::Object', id_by => 'subclass_by_id', id_class_by => 'subclass_by_prop' },
     ],
     has_many => [
         property_cs => { is => 'String', is_optional => 1 },
-        remotes => { is => 'URT::Remote', reverse_as => 'testobj' },
+        remotes => { is => 'URT::Remote', reverse_as => 'testobj', where => [ something => { operator => 'like', value => '%match%' } ] },
     ],
     has_optional => [
         property_d => { is => 'Number' },

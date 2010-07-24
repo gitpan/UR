@@ -88,7 +88,23 @@ sub values {
     }
     my $value_id = $self->value_id;    
     return unless defined($value_id) and length($value_id);
-    return UR::BoolExpr::Util->value_id_to_values($value_id);
+    if (my $non_ur_object_refs = $self->{non_ur_object_refs}) {
+        # real objects cannot be serialized into the id easily, and require extra work extracting
+        my $rule_template = $self->template;
+        my @keys_sorted = $rule_template->_underlying_keys;
+        my @values_sorted = UR::BoolExpr::Util->value_id_to_values($value_id);
+        my $n = 0;
+        for my $key (@keys_sorted) {
+            if (exists $non_ur_object_refs->{$key}) {
+                $values_sorted[$n] = $non_ur_object_refs->{$key};
+            }
+            $n++;
+        }
+        return @values_sorted;
+    }
+    else {
+        UR::BoolExpr::Util->value_id_to_values($value_id);
+    }
 }
 
 sub value_for_id {
@@ -167,15 +183,6 @@ sub params_list {
     my @keys_sorted = $rule_template->_underlying_keys;
     my @constant_values_sorted = $rule_template->_constant_values;
     my @values_sorted = $self->values;    
-    if (my $non_ur_object_refs = $self->{non_ur_object_refs}) {
-        my $n = 0;
-        for my $key (@keys_sorted) {
-            if (exists $non_ur_object_refs->{$key}) {
-                $values_sorted[$n] = $non_ur_object_refs->{$key};
-            }
-            $n++;
-        }
-    }
     
     my ($v,$c) = (0,0);
     for (my $k=0; $k<@keys_sorted; $k++) {
@@ -304,7 +311,7 @@ sub resolve {
     my $subject_class = shift;
     my $subject_class_meta = $subject_class->__meta__;
     unless ($subject_class_meta) {
-        die "No meta for $subject_class?!";
+        Carp::croak("No class metadata for $subject_class?!");
     }    
 
     my %subject_class_props = map {$_, 1}  ( $subject_class_meta->all_property_type_names);
@@ -361,7 +368,7 @@ sub resolve {
             # not match an actual property 
             if (!exists $subject_class_props{$property_name}) {
                 if (my $attr = $subject_class_meta->property_meta_for_name($property_name)) {
-                    die "Property found but not in array of properties?";
+                    Carp::croak("Property '$property_name' found but not in array of properties in class metadata for $subject_class");
                 }
                 else {
                     push @extra, ($key => $value);
@@ -394,28 +401,14 @@ sub resolve {
                 # replace the arrayref
                 $value = [ @$value ];
                 
+                # ensure we re-constitute the original array not a copy
+                push @non_ur_object_refs, $key, $value;
+
                 # transform objects into IDs if applicable
                 my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
-                if ($property_meta && $property_meta->is_delegated) {
-                    my $is_all_objects = 1;
-                    for (@$value) { 
-                        unless (blessed($_)) {
-                            $is_all_objects = 0;
-                            last;
-                        }
-                    }
-                    if ($is_all_objects) {
-                        
-                        my ($method) = ($key =~ /^(\w+)/);
-                        if (my $subref = $subject_class->can($method) and $subject_class->isa("UR::Object")) {
-                            for (@$value) { $_ =  $subref->($_) };
-                        }
-                    }
-                }
-    
                 my $one_or_many = $subject_class_props{$property_name};
                 unless (defined $one_or_many) {
-                    die "$subject_class: '$property_name' ($key => $value)\n" . Data::Dumper::Dumper({ @_ });
+                    Carp::croak("No property metadata for $subject_class property '$property_name' for rule parameters ($key => $value)\n" . Data::Dumper::Dumper({ @_ }));
                 }
                 
                 my $is_many;
@@ -426,7 +419,7 @@ sub resolve {
                 }
                 else {
                     if ($UR::initialized) {
-                        Carp::confess("no meta for property $subject_class $property_name?\n");
+                        Carp::croak("No property metadata for $subject_class property '$property_name'?\n");
                     }
                     else {
                         # this has to run during bootstrapping in 2 cases currently...
@@ -476,20 +469,26 @@ sub resolve {
                         last if $property_type;
                     }
                     unless ($property_type) {
-                        die "No property type found for $subject_class $key?";
+                        Carp::croak("No property metadata for $subject_class property '$key'");
                     }
                 }
 
                 if ($property_type->is_delegated) {
                     my $property_meta = $subject_class_meta->property_meta_for_name($key);
                     unless ($property_meta) {
-                        die "Failed to find meta for $key on " . $subject_class_meta->class_name . "?!";
+                        Carp::croak("No property metadata for $subject_class property '$key'");
                     }
                     my @joins = $property_meta->get_property_name_pairs_for_join();
                     for my $join (@joins) {
                         my ($my_method, $their_method) = @$join;
                         push @keys, $my_method;
                         push @values, $value->$their_method;
+                    }
+                    # TODO: this may need to be moved into the above get_property_name_pairs_for_join(),
+                    # but the exact syntax for expressing that this is part of the join is unclear.
+                    if (my $id_class_by = $property_type->id_class_by) {
+                        push @keys, $id_class_by;
+                        push @values, ref($value);
                     }
 
                     #
@@ -505,7 +504,7 @@ sub resolve {
                     $value = $value->$key;
                 }
                 else {
-                    die "Incorrect data type " . ref($value) . " for $subject_class property $key!";    
+                    Carp::croak("Incorrect data type in rule " . ref($value) . " for $subject_class property '$key'!");    
                 }
             }
         }
@@ -531,7 +530,7 @@ sub resolve {
     if (wantarray) {
         return ($rule, @extra);
     } elsif (@extra && defined wantarray) {
-        Carp::confess("Unknown parameters for $subject_class: @extra");
+        Carp::confess("Unknown parameters in rule for $subject_class: " . join(",", map { defined($_) ? "'$_'" : "(undef)" } @extra));
     }
     else {
         return $rule;
@@ -546,10 +545,13 @@ sub normalize {
     if ($rule_template->{is_normalized}) {
         return $self;
     }
-    
     my @unnormalized_values = $self->values();
     
-    return $rule_template->get_normalized_rule_for_values(@unnormalized_values);
+    my $normalized = $rule_template->get_normalized_rule_for_values(@unnormalized_values);
+    return unless $normalized;
+
+    $normalized->{non_ur_object_refs} = $self->{non_ur_object_refs} if exists $self->{non_ur_object_refs};
+    return $normalized;
 }
 
 sub legacy_params_hash {
