@@ -694,6 +694,13 @@ sub resolve_class_name_for_table_name {
         $addl = '';
     }
     $class_name = $namespace . "::" . $addl . join("",@words);
+
+    if (substr($class_name, -6) eq '::Type') {
+        # Don't overwrite class metadata objects for a table called 'type'
+        $class_name .= 'Table';
+        $self->warning_message("Class for table $table_name will be $class_name");
+    }
+
     return $class_name;
 }
 
@@ -744,9 +751,10 @@ sub resolve_attribute_name_for_column_name {
 }
 
 sub refresh_database_metadata_for_table_name {
-    my ($self,$table_name) = @_;
+    my ($self,$db_table_name) = @_;
     my $data_source = $self;
 
+    my $ur_table_name = uc($db_table_name);
     my @column_objects;
     my @all_constraints;
 
@@ -759,7 +767,7 @@ sub refresh_database_metadata_for_table_name {
 
     # The class definition can specify a table name as <schema>.<table_name> to override the
     # data source's default schema/owner.
-    my($ds_owner,$dd_table_name) = $self->_resolve_owner_and_table_from_table_name($table_name);
+    my($ds_owner,$dd_table_name) = $self->_resolve_owner_and_table_from_table_name($ur_table_name);
     #my $dd_table_name = $table_name;
     #if ($table_name =~ m/(\w+)\.(\w+)/) {
     #    $ds_owner = $1;
@@ -767,7 +775,7 @@ sub refresh_database_metadata_for_table_name {
     #}
 
     # TABLE
-    my $table_sth = $data_source->get_table_details_from_data_dictionary('%', $ds_owner, $dd_table_name, "TABLE,VIEW");
+    my $table_sth = $data_source->get_table_details_from_data_dictionary('%', $ds_owner, $db_table_name, "TABLE,VIEW");
     my $table_data = $table_sth->fetchrow_hashref();
     unless ($table_data && %$table_data) {
         #$self->error_message("No data for table $table_name in data source $data_source.");
@@ -776,7 +784,7 @@ sub refresh_database_metadata_for_table_name {
 
     my $data_source_id = $data_source->id;
     my $table_object = UR::DataSource::RDBMS::Table->get(data_source => $data_source_id,
-                                                         table_name => $table_name);
+                                                         table_name => $ur_table_name);
     if ($table_object) {
         # Already exists, update the existing entry
         # Instead of deleting and recreating the table object (the old way),
@@ -792,7 +800,7 @@ sub refresh_database_metadata_for_table_name {
         # Create a brand new one from scratch
 
         $table_object = UR::DataSource::RDBMS::Table->create(
-            table_name => $table_name,
+            table_name => $ur_table_name,
             table_type => $table_data->{TABLE_TYPE},
             owner => $table_data->{TABLE_SCHEM},
             data_source => $data_source_id,
@@ -800,7 +808,7 @@ sub refresh_database_metadata_for_table_name {
             last_object_revision => $revision_time,
         );
         unless ($table_object) {
-            Carp::confess("Failed to get/create table object for $table_name");
+            Carp::confess("Failed to get/create table object for $db_table_name");
         }
     }
 
@@ -808,18 +816,18 @@ sub refresh_database_metadata_for_table_name {
     # COLUMNS
     # mysql databases seem to require you to actually put in the database name in the first arg
     my $db_name = ($data_source->can('db_name')) ? $data_source->db_name : '%';
-    my $column_sth = $data_source->get_column_details_from_data_dictionary($db_name, $ds_owner, $dd_table_name, '%');
+    my $column_sth = $data_source->get_column_details_from_data_dictionary($db_name, $ds_owner, $db_table_name, '%');
     unless ($column_sth) {
-        $self->error_message("Error getting column data for table $table_name in data source $data_source.");
+        $self->error_message("Error getting column data for table $db_table_name in data source $data_source.");
         return;
     }
     my $all_column_data = $column_sth->fetchall_arrayref({});
     unless (@$all_column_data) {
-        $self->error_message("No column data for table $table_name in data source $data_source_id");
+        $self->error_message("No column data for table $db_table_name in data source $data_source_id");
         return;
     }
 
-    my %columns_to_delete = map {$_->column_name, $_} UR::DataSource::RDBMS::TableColumn->get(table_name => $table_name,
+    my %columns_to_delete = map {$_->column_name, $_} UR::DataSource::RDBMS::TableColumn->get(table_name => $ur_table_name,
                                                                                               data_source => $data_source_id);
 
 
@@ -831,7 +839,7 @@ sub refresh_database_metadata_for_table_name {
 
         delete $columns_to_delete{$column_data->{'COLUMN_NAME'}};
 
-        my $column_obj = UR::DataSource::RDBMS::TableColumn->get(table_name => $table_name,
+        my $column_obj = UR::DataSource::RDBMS::TableColumn->get(table_name => $ur_table_name,
                                                                  data_source => $data_source_id,
                                                                  column_name => $column_data->{'COLUMN_NAME'});
         if ($column_obj) {
@@ -851,8 +859,8 @@ sub refresh_database_metadata_for_table_name {
             # It's new, create it from scratch
 
             $column_obj = UR::DataSource::RDBMS::TableColumn->create(
-                column_name => $column_data->{COLUMN_NAME},
-                table_name  => $table_object->{table_name},
+                column_name => uc($column_data->{COLUMN_NAME}),
+                table_name  => $ur_table_name,
                 owner       => $table_object->{owner},
                 data_source => $table_object->{data_source},
 
@@ -867,7 +875,7 @@ sub refresh_database_metadata_for_table_name {
         }
 
         unless ($column_obj) {
-            Carp::confess("Failed to create a column ".$column_data->{'COLUMN_NAME'}." for table $table_name");
+            Carp::confess("Failed to create a column ".$column_data->{'COLUMN_NAME'}." for table $db_table_name");
         }
 
         push @column_objects, $column_obj;
@@ -880,7 +888,7 @@ sub refresh_database_metadata_for_table_name {
     }
 
 
-    my $bitmap_data = $data_source->get_bitmap_index_details_from_data_dictionary($table_name);
+    my $bitmap_data = $data_source->get_bitmap_index_details_from_data_dictionary($db_table_name);
     for my $index (@$bitmap_data) {
         #push @{ $embed{bitmap_index_names}{$table_object} }, $index->{'index_name'};
 
@@ -894,9 +902,9 @@ sub refresh_database_metadata_for_table_name {
 
     # Make a note of what FKs exist in the Meta DB involving this table
     my @fks_in_meta_db = UR::DataSource::RDBMS::FkConstraint->get(data_source => $data_source_id,
-                                                                  table_name => $table_name);
+                                                                  table_name => $ur_table_name);
     push @fks_in_meta_db, UR::DataSource::RDBMS::FkConstraint->get(data_source => $data_source_id,
-                                                                   r_table_name => $table_name);
+                                                                   r_table_name => $ur_table_name);
     my %fks_in_meta_db_by_fingerprint;
     foreach my $fk ( @fks_in_meta_db ) {
         my $fingerprint = $self->_make_foreign_key_fingerprint($fk);
@@ -907,7 +915,7 @@ sub refresh_database_metadata_for_table_name {
 
 
     #my $db_owner = $data_source->owner;
-    my $fk_sth = $data_source->get_foreign_key_details_from_data_dictionary('', $ds_owner, $dd_table_name, '', '', '');
+    my $fk_sth = $data_source->get_foreign_key_details_from_data_dictionary('', $ds_owner, $db_table_name, '', '', '');
 
     my %fk;     # hold the fk constraints that this invocation of foreign_key_info created
 
@@ -915,28 +923,39 @@ sub refresh_database_metadata_for_table_name {
     my %fks_in_real_db;
     if ($fk_sth) {
         while (my $data = $fk_sth->fetchrow_hashref()) {
-            #push @$ref_fks, [@$data{qw(FK_NAME FK_TABLE_NAME)}];
 
-            foreach ( qw( FK_TABLE_NAME UK_TABLE_NAME FK_NAME FK_COLUMN_NAME UK_COLUMN_NAME ) ) {
+            foreach ( qw( FK_NAME FK_TABLE_NAME FKTABLE_NAME UK_TABLE_NAME PKTABLE_NAME FK_COLUMN_NAME FKCOLUMN_NAME UK_COLUMN_NAME PKCOLUMN_NAME ) ) {
                 $data->{$_} = uc($data->{$_});
+
+                # Postgres puts quotes around things that look like keywords
+                $data->{$_} =~ s/"|'//g;
             }
 
-            my $fk = UR::DataSource::RDBMS::FkConstraint->get(table_name => $data->{'FK_TABLE_NAME'},
+            my $constraint_name = $data->{'FK_NAME'};
+            my $fk_table_name = $data->{'FK_TABLE_NAME'}
+                                || $data->{'FKTABLE_NAME'};
+            my $r_table_name = $data->{'UK_TABLE_NAME'}
+                               || $data->{'PKTABLE_NAME'};
+            my $fk_column_name = $data->{'FK_COLUMN_NAME'}
+                                 || $data->{'FKCOLUMN_NAME'};
+            my $r_column_name = $data->{'UK_COLUMN_NAME'}
+                                || $data->{'PKCOLUMN_NAME'};
+
+            # MySQL returns primary key info with foreign_key_info()!?
+            # They show up here with no $r_table_name or $r_column_name
+            next unless ($r_table_name and $r_column_name);
+
+            my $fk = UR::DataSource::RDBMS::FkConstraint->get(fk_constraint_name => $constraint_name,
+                                                              table_name => $fk_table_name,
                                                               data_source => $data_source_id,
-                                                              fk_constraint_name => $data->{'FK_NAME'},
-                                                              r_table_name => $data->{'UK_TABLE_NAME'},
+                                                              r_table_name => $r_table_name
                                                           );
 
             unless ($fk) {
-                # Postgres puts quotes around things that look like keywords
-                foreach ( $data->{'FK_TABLE_NAME'}, $data->{'UK_TABLE_NAME'}, $data->{'UK_TABLE_NAME'}, $data->{'UK_COLUMN_NAME'}) {
-                    s/"|'//g;
-                }
-
                 $fk = UR::DataSource::RDBMS::FkConstraint->create(
-                    fk_constraint_name => $data->{'FK_NAME'},
-                    table_name      => $data->{'FK_TABLE_NAME'},
-                    r_table_name    => $data->{'UK_TABLE_NAME'},
+                    fk_constraint_name => $constraint_name,
+                    table_name      => $fk_table_name,
+                    r_table_name    => $r_table_name,
                     owner           => $table_object->{owner},
                     r_owner         => $table_object->{owner},
                     data_source     => $table_object->{data_source},
@@ -949,11 +968,11 @@ sub refresh_database_metadata_for_table_name {
 
             if ($fk{$fk->id}) {
                 my $fkcol = UR::DataSource::RDBMS::FkConstraintColumn->get_or_create(
-                    fk_constraint_name => $data->{'FK_NAME'},
-                    table_name      => $data->{'FK_TABLE_NAME'},
-                    column_name     => $data->{'FK_COLUMN_NAME'},
-                    r_table_name    => $data->{'UK_TABLE_NAME'},
-                    r_column_name   => $data->{'UK_COLUMN_NAME'},
+                    fk_constraint_name => $constraint_name,
+                    table_name      => $fk_table_name,
+                    column_name     => $fk_column_name,
+                    r_table_name    => $r_table_name,
+                    r_column_name   => $r_column_name,
                     owner           => $table_object->{owner},
                     data_source     => $table_object->{data_source},
                 );
@@ -970,7 +989,7 @@ sub refresh_database_metadata_for_table_name {
     # get foreign_key_info the other way
     # constraints on other tables against columns in this table
 
-    my $fk_reverse_sth = $data_source->get_foreign_key_details_from_data_dictionary('', '', '', '', $ds_owner, $dd_table_name);
+    my $fk_reverse_sth = $data_source->get_foreign_key_details_from_data_dictionary('', '', '', '', $ds_owner, $db_table_name);
 
     %fk = ();   # resetting this prevents data_source referencing
     # tables from fouling up their fk objects
@@ -979,25 +998,37 @@ sub refresh_database_metadata_for_table_name {
     if ($fk_reverse_sth) {
         while (my $data = $fk_reverse_sth->fetchrow_hashref()) {
 
-            foreach ( qw( FK_TABLE_NAME UK_TABLE_NAME FK_NAME FK_COLUMN_NAME UK_COLUMN_NAME ) ) {
+            foreach ( qw( FK_NAME FK_TABLE_NAME FKTABLE_NAME UK_TABLE_NAME PKTABLE_NAME FK_COLUMN_NAME FKCOLUMN_NAME UK_COLUMN_NAME PKCOLUMN_NAME ) ) {
                 $data->{$_} = uc($data->{$_});
+
+                # Postgres puts quotes around things that look like keywords
+                $data->{$_} =~ s/"|'//g;
             }
 
-            my $fk = UR::DataSource::RDBMS::FkConstraint->get(fk_constraint_name => $data->{'FK_NAME'},
-                                                              table_name => $data->{'FK_TABLE_NAME'},
-                                                              r_table_name => $data->{'UK_TABLE_NAME'},
+            my $constraint_name = $data->{'FK_NAME'};
+            my $fk_table_name = $data->{'FK_TABLE_NAME'}
+                                || $data->{'FKTABLE_NAME'};
+            my $r_table_name = $data->{'UK_TABLE_NAME'}
+                               || $data->{'PKTABLE_NAME'};
+            my $fk_column_name = $data->{'FK_COLUMN_NAME'}
+                                 || $data->{'FKCOLUMN_NAME'};
+            my $r_column_name = $data->{'UK_COLUMN_NAME'}
+                                || $data->{'PKCOLUMN_NAME'};
+
+            # MySQL returns primary key info with foreign_key_info()?!
+            # They show up here with no $r_table_name or $r_column_name
+            next unless ($r_table_name and $r_column_name);
+
+            my $fk = UR::DataSource::RDBMS::FkConstraint->get(fk_constraint_name => $constraint_name,
+                                                              table_name => $fk_table_name,
+                                                              r_table_name => $r_table_name,
                                                               data_source => $table_object->{'data_source'},
                                                           );
             unless ($fk) {
-                # Postgres puts quotes around things that look like keywords
-                foreach ( $data->{'FK_TABLE_NAME'}, $data->{'UK_TABLE_NAME'}, $data->{'UK_TABLE_NAME'}, $data->{'UK_COLUMN_NAME'}) {
-                    s/"|'//g;
-                }
-
                 $fk = UR::DataSource::RDBMS::FkConstraint->create(
-                    fk_constraint_name => $data->{'FK_NAME'},
-                    table_name      => $data->{'FK_TABLE_NAME'},
-                    r_table_name    => $data->{'UK_TABLE_NAME'},
+                    fk_constraint_name => $constraint_name,
+                    table_name      => $fk_table_name,
+                    r_table_name    => $r_table_name,
                     owner           => $table_object->{owner},
                     r_owner         => $table_object->{owner},
                     data_source     => $table_object->{data_source},
@@ -1013,11 +1044,11 @@ sub refresh_database_metadata_for_table_name {
 
             if ($fk{$fk->fk_constraint_name}) {
                 UR::DataSource::RDBMS::FkConstraintColumn->get_or_create(
-                    fk_constraint_name => $data->{'FK_NAME'},
-                    table_name      => $data->{'FK_TABLE_NAME'},
-                    column_name     => $data->{'FK_COLUMN_NAME'},
-                    r_table_name    => $data->{'UK_TABLE_NAME'},
-                    r_column_name   => $data->{'UK_COLUMN_NAME'},
+                    fk_constraint_name => $constraint_name,
+                    table_name      => $fk_table_name,
+                    column_name     => $fk_column_name,
+                    r_table_name    => $r_table_name,
+                    r_column_name   => $r_column_name,
                     owner           => $table_object->{owner},
                     data_source     => $table_object->{data_source},
                 );
@@ -1043,14 +1074,14 @@ sub refresh_database_metadata_for_table_name {
 
     # get primary_key_info
 
-    my $pk_sth = $data_source->get_primary_key_details_from_data_dictionary(undef, $ds_owner, $dd_table_name);
+    my $pk_sth = $data_source->get_primary_key_details_from_data_dictionary(undef, $ds_owner, $db_table_name);
 
     if ($pk_sth) {
         my @new_pk;
         while (my $data = $pk_sth->fetchrow_hashref()) {
             $data->{'COLUMN_NAME'} =~ s/"|'//g;  # Postgres puts quotes around things that look like keywords
             my $pk = UR::DataSource::RDBMS::PkConstraintColumn->get(
-                table_name => $table_name,
+                table_name => $ur_table_name,
                 data_source => $data_source_id,
                 column_name => $data->{'COLUMN_NAME'},
             );
@@ -1062,7 +1093,7 @@ sub refresh_database_metadata_for_table_name {
             }
 
             push @new_pk, [
-                            table_name => $table_name,
+                            table_name => $ur_table_name,
                             data_source => $data_source_id,
                             owner => $ds_owner,
                             column_name => $data->{'COLUMN_NAME'},
@@ -1092,8 +1123,8 @@ sub refresh_database_metadata_for_table_name {
     # and each other DataSource class needs its own implementation
 
     # The above was moved into each data source's class
-    if (my $uc = $data_source->get_unique_index_details_from_data_dictionary($dd_table_name)) {
-        my %uc = %$uc;
+    if (my $uc = $data_source->get_unique_index_details_from_data_dictionary($db_table_name)) {
+        my %uc = map { uc($_) => $uc->{$_} } keys(%$uc);  # make the constraint names upper-case
 
         # check for redundant unique constraints
         # there may be both an index and a constraint
@@ -1122,7 +1153,7 @@ sub refresh_database_metadata_for_table_name {
                 sort map { $_->column_name }
                     UR::DataSource::RDBMS::PkConstraintColumn->get(
                         data_source => $data_source_id,
-                        table_name => $table_name,
+                        table_name => $ur_table_name,
                         owner => $ds_owner,
                     )
                 );
@@ -1153,18 +1184,19 @@ sub refresh_database_metadata_for_table_name {
                 map { $_->column_name => $_ }
                 UR::DataSource::RDBMS::UniqueConstraintColumn->get(
                     data_source => $data_source_id,
-                    table_name => $table_name,
+                    table_name => $ur_table_name,
                     owner => $ds_owner || '',
                     constraint_name => $uc_name,
                 );
 
             foreach my $col_name ( @{$uc{$uc_name}} ) {
+                $col_name = uc($col_name);
                 if ($constraint_objs{$col_name} ) {
                     delete $constraint_objs{$col_name};
                 } else {
                     my $uc = UR::DataSource::RDBMS::UniqueConstraintColumn->create(
                         data_source => $data_source_id,
-                        table_name => $table_name,
+                        table_name => $ur_table_name,
                         owner => $ds_owner,
                         constraint_name => $uc_name,
                         column_name => $col_name,

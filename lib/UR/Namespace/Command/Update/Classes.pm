@@ -425,7 +425,6 @@ $DB::single=1;
 #   ->_sync_filesystem()
 #
 
-
 sub _update_database_metadata_objects_for_schema_changes {
     my ($self, %params) = @_;
     my $data_source = delete $params{data_source};
@@ -448,7 +447,7 @@ sub _update_database_metadata_objects_for_schema_changes {
 
     # from the database now
     my @current_table_names = $data_source->_get_table_names_from_data_dictionary();
-    my %current_table_names = map { s/"|'//g; uc($_) => 1 } @current_table_names;
+    my %current_table_names = map { s/"|'//g; uc($_) => $_ } @current_table_names;
 
     my %all_table_names = (%current_table_names, %previous_table_names);
 
@@ -464,6 +463,10 @@ sub _update_database_metadata_objects_for_schema_changes {
         my $table_object;
         my $last_recorded_ddl_time;
         my $last_object_revision;
+
+        # UR always keeps table names stored in upper-case.  Some databases (mysql)
+        # are case sensitive when querying the data dictionary
+        my $db_table_name = $current_table_names{$table_name};
 
         eval {
             #($table_object) = $data_source->get_tables(table_name => $table_name);
@@ -483,7 +486,7 @@ sub _update_database_metadata_objects_for_schema_changes {
                     $dsn . " " . $table_name
                 )
             );
-            my $table_object = $data_source->refresh_database_metadata_for_table_name($table_name);
+            my $table_object = $data_source->refresh_database_metadata_for_table_name($db_table_name);
             next unless $table_object; 
 
             $table_object->last_ddl_time($last_ddl_time_for_table_name->{$table_name});
@@ -497,7 +500,7 @@ sub _update_database_metadata_objects_for_schema_changes {
             ) {
                 my $last_update = $table_object->last_ddl_time || $table_object->last_object_revision;
                 my $this_update = $last_ddl_time_for_table_name->{$table_name} || "<unknown date>";
-                my $table_object = $data_source->refresh_database_metadata_for_table_name($table_name);
+                my $table_object = $data_source->refresh_database_metadata_for_table_name($db_table_name);
                 unless ($table_object) {
                     #$DB::single = 1;
                     print;
@@ -998,10 +1001,8 @@ sub  _update_class_metadata_objects_to_match_database_metadata_changes {
 
             unless ($class->class_name->isa('UR::Entity')) {
                 my $inheritance = UR::Object::Inheritance->create(
-                    type_name => $class->type_name,
                     class_name => $class->class_name,
                     parent_class_name => "UR::Entity",
-                    parent_type_name => "table row",
                     inheritance_priority => 0,
                 );
                 Carp::confess("Failed to generate inheritance link!?") unless $inheritance;
@@ -1261,7 +1262,7 @@ sub  _update_class_metadata_objects_to_match_database_metadata_changes {
         my $class_meta = $classes_to_check_id_properties{$class_name};
         my $property_meta = $class_meta->property_meta_for_name('id');
         if ($property_meta && $property_meta->column_name && scalar($class_meta->direct_id_property_metas) > 1) {
-            $self->warning_message("Class $class_name cannot have multiple ID properties when one concrete ID property is named 'id'");
+            $self->warning_message("Class $class_name cannot have multiple ID properties when one concrete ID property is named 'id'. It will likely not function correctly unless it is renamed");
         }
         unless ($property_meta->is_id) {
             $self->warning_message("Class $class_name has a property named 'id' that is not an ID property.  It will likely not function correctly unless it is renamed");
