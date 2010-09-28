@@ -280,7 +280,8 @@ sub resolve_normalized {
     return ($normalized_rule,@extra) if wantarray;
     if (@extra) {
         no warnings;
-        Carp::confess("Extra params found: @extra\n");
+        my $rule_class = $normalized_rule->subject_class_name;
+        Carp::confess("Extra params for class $rule_class found: @extra\n");
     }
     return $normalized_rule;
 }
@@ -548,7 +549,7 @@ sub normalize {
     my @unnormalized_values = $self->values();
     
     my $normalized = $rule_template->get_normalized_rule_for_values(@unnormalized_values);
-    return unless $normalized;
+    return unless defined $normalized;
 
     $normalized->{non_ur_object_refs} = $self->{non_ur_object_refs} if exists $self->{non_ur_object_refs};
     return $normalized;

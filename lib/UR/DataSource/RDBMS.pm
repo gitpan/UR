@@ -925,6 +925,7 @@ sub refresh_database_metadata_for_table_name {
         while (my $data = $fk_sth->fetchrow_hashref()) {
 
             foreach ( qw( FK_NAME FK_TABLE_NAME FKTABLE_NAME UK_TABLE_NAME PKTABLE_NAME FK_COLUMN_NAME FKCOLUMN_NAME UK_COLUMN_NAME PKCOLUMN_NAME ) ) {
+                next unless defined($data->{$_});
                 $data->{$_} = uc($data->{$_});
 
                 # Postgres puts quotes around things that look like keywords
@@ -999,6 +1000,7 @@ sub refresh_database_metadata_for_table_name {
         while (my $data = $fk_reverse_sth->fetchrow_hashref()) {
 
             foreach ( qw( FK_NAME FK_TABLE_NAME FKTABLE_NAME UK_TABLE_NAME PKTABLE_NAME FK_COLUMN_NAME FKCOLUMN_NAME UK_COLUMN_NAME PKCOLUMN_NAME ) ) {
+                next unless defined($data->{$_});
                 $data->{$_} = uc($data->{$_});
 
                 # Postgres puts quotes around things that look like keywords
@@ -2414,6 +2416,7 @@ sub _id_values_for_primary_key {
 
     my $class_obj; # = $object_to_save->__meta__;
     foreach my $possible_class_obj ($object_to_save->__meta__->all_class_metas) {
+        next unless ($possible_class_obj->table_name);
         if (lc($possible_class_obj->table_name) eq lc($table_obj->table_name)) {
             $class_obj = $possible_class_obj;
             last;
@@ -3164,9 +3167,12 @@ sub _generate_template_data_for_loading {
     my %joins_done;
     my @joins_done;
 
+    # FIXME - this needs to be broken out into delegated-property-join-resolver
+    # and inheritance-join-resolver methods that can be called recursively.
+    # It would better encapsulate what's going on and avoid bugs with complicated
+    # get()s
     DELEGATED_PROPERTY:
     for my $delegated_property (@delegated_properties) {
-        my $last_alias_for_this_chain;
         my $alias_for_property_value;
 
         my $property_name = $delegated_property->property_name;
@@ -3211,8 +3217,10 @@ sub _generate_template_data_for_loading {
 
         my $final_join = $joins[-1];
 
+        my $join_aliases_for_this_delegate;
+        my $join_aliases_for_this_object;
+
         my @source_table_and_column_names;
-        my %aliases_for_this_delegate;
         while (my $object_join = shift @joins) {
             #$DB::single = 1;
             #print "\tjoin $object_join\n";
@@ -3224,6 +3232,7 @@ sub _generate_template_data_for_loading {
             my @joins_for_object = ($object_join);
 
             my $joins_for_object = 0;
+
             while (my $join = shift @joins_for_object) {
 
                 $joins_for_object++;
@@ -3305,7 +3314,7 @@ sub _generate_template_data_for_loading {
                     # some calculated properties, be sure to re-check for a match after loading the object
                     $needs_further_boolexpr_evaluation_after_loading = 1;
                 }
-                if ($foreign_table_name =~ /^(.*)\s+(\w+)\s*$/s) {
+                if ($foreign_table_name and $foreign_table_name =~ /^(.*)\s+(\w+)\s*$/s) {
                     $foreign_table_name = $1;
                 }
 
@@ -3321,7 +3330,7 @@ sub _generate_template_data_for_loading {
 
                 my $alias = $joins_done{$join->{id}};
 
-                unless ($alias) {            
+                unless ($alias) {
                     $alias = "${relationship_name}_${alias_num}";
                     $alias_num++;
 
@@ -3364,9 +3373,9 @@ sub _generate_template_data_for_loading {
                                 (
                                     map {
                                         $foreign_column_names[$_] => { 
-                                            link_table_name     => $last_alias_for_this_chain                # join alias
-                                            || $source_table_and_column_names[$_][2]  # SQL inline view alias
-                                            || $source_table_and_column_names[$_][0], # table_name
+                                            link_table_name     => $join_aliases_for_this_object->{$source_table_and_column_names[$_][0]} # join alias
+                                                                   || $source_table_and_column_names[$_][2]  # SQL inline view alias
+                                                                   || $source_table_and_column_names[$_][0], # table_name
                                             link_column_name    => $source_table_and_column_names[$_][1] 
                                         }
                                     }
@@ -3396,7 +3405,7 @@ sub _generate_template_data_for_loading {
                 }
 
                 if ($foreign_class_object->table_name) {
-                    $last_alias_for_this_chain = $alias;
+                    $join_aliases_for_this_object->{$foreign_table_name} = $alias;
                     @source_table_and_column_names = ();  # Flag that we need to re-derive this at the top of the loop
                 }
 
@@ -3454,19 +3463,8 @@ sub _generate_template_data_for_loading {
                 $last_class_name = $foreign_class_name;
                 $last_class_object = $foreign_class_object;
 
-                if (!@joins and not $alias_for_property_value) {
-                    if (grep { $_->[1]->property_name eq $final_accessor } @{ $foreign_class_loading_data->{direct_table_properties} }) {
-                        $alias_for_property_value = $alias;
-                        #print "found alias for $property_name on $foreign_class_name: $alias\n";
-                    }
-                    else {
-                        # The thing we're joining to isn't a database-backed column (maybe calculated?)
-                        $needs_further_boolexpr_evaluation_after_loading = 1;
-                        next DELEGATED_PROPERTY;
-                    }
-                }
-
                 if ($joins_for_object == 1) {
+                    #$last_alias_for_this_delegate = $alias;
                     $last_class_object_excluding_inherited_joins = $last_class_object if ($last_class_object->property_meta_for_name($final_accessor));
                     # on the first iteration, we figure out the remaining inherited iterations
                     # TODO: get this into the join logic itself in the property meta
@@ -3490,6 +3488,19 @@ sub _generate_template_data_for_loading {
                         next;
                     }
                 }
+
+                if (!@joins and not $alias_for_property_value) {
+                    if (grep { $_->[1]->property_name eq $final_accessor } @{ $foreign_class_loading_data->{direct_table_properties} }) {
+                        $alias_for_property_value = $alias;
+                        #print "found alias for $property_name on $foreign_class_name: $alias\n";
+                    }
+                    else {
+                        # The thing we're joining to isn't a database-backed column (maybe calculated?)
+                        $needs_further_boolexpr_evaluation_after_loading = 1;
+                        next DELEGATED_PROPERTY;
+                    }
+                }
+
 
             } # next join for this object
         } # next object join

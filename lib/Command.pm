@@ -10,6 +10,9 @@ use Getopt::Long;
 use Term::ANSIColor;
 require Text::Wrap;
 
+our $entry_point_class;
+our $entry_point_bin;
+
 UR::Object::Type->define(
     class_name => __PACKAGE__,
     is_abstract => 1,
@@ -134,6 +137,9 @@ use My::Command;
 My::Command->execute_with_shell_params_and_exit;
 |;
     }
+
+    $entry_point_class ||= $class;
+    $entry_point_bin ||= File::Basename::basename($0);
 
     if ($ENV{COMP_LINE}) {
         require Getopt::Complete;
@@ -405,9 +411,17 @@ sub command_name
 {
     my $self = shift;
     my $class = ref($self) || $self;
+    my $prepend = '';
+    if ($class =~ /^($entry_point_class)(::.+|)$/) {
+        $prepend = $entry_point_bin;
+        $class = $2;
+        if ($class =~ s/^:://) {
+            $prepend .= ' ';
+        }
+    }
     my @words = grep { $_ ne 'Command' } split(/::/,$class);
     my $n = join(' ', map { $self->_command_name_for_class_word($_) }  @words);
-    return $n;
+    return $prepend . $n;
 }
 
 sub command_name_brief
@@ -1329,7 +1343,7 @@ for my $type (qw/error warning status debug usage/) {
             chomp $msg if defined $msg;
 
             unless (defined ($msgdata->{'dump_' . $type . '_messages'})) {
-                $msgdata->{'dump_' . $type . '_messages'} = $type eq "status" ? 0 : 1;
+                $msgdata->{'dump_' . $type . '_messages'} = $type eq "status" ? (exists $ENV{'UR_COMMAND_DUMP_STATUS_MESSAGES'} && $ENV{'UR_COMMAND_DUMP_STATUS_MESSAGES'} ? 1 : 0) : 1;
             }
 
             if (my $code = $msgdata->{ $type . "_messages_callback"}) {

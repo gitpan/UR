@@ -392,9 +392,10 @@ sub query {
     {
         no warnings;
         if (exists $UR::Context::all_objects_loaded->{$_[0]}) {
+            my $is_monitor_query = $self->monitor_query;
             if (my $obj = $UR::Context::all_objects_loaded->{$_[0]}->{$_[1]}) {
                 # Matched the class and ID directly - pull it right out of the cache
-                if ($self->monitor_query) {
+                if ($is_monitor_query) {
                     $self->_log_query_for_rule($_[0], undef, Carp::shortmess("QUERY: class $_[0] by ID $_[1]"));
                     $self->_log_query_for_rule($_[0], undef, "QUERY: matched 1 cached object\nQUERY: returning 1 object\n\n");
                 }
@@ -410,7 +411,7 @@ sub query {
                     if (exists $UR::Context::all_objects_loaded->{$subclass} and
                         my $obj = $UR::Context::all_objects_loaded->{$subclass}->{$_[1]}
                     ) {
-                        if ($self->monitor_query) {
+                        if ($is_monitor_query) {
                             $self->_log_query_for_rule($_[0], undef, Carp::shortmess("QUERY: class $_[0] by ID $_[1]"));
                             $self->_log_query_for_rule($_[0], undef, "QUERY: matched 1 cached object in subclass $subclass\nQUERY: returning 1 object\n\n");
                         }
@@ -1229,6 +1230,7 @@ sub prune_object_cache {
     # and increases by another 10% each attempt
     #my $target_serial_increment = int(($GET_COUNTER - $cache_last_prune_serial) * $cache_size_lowwater / $cache_size_highwater );
     my $target_serial_increment = int(($GET_COUNTER - $cache_last_prune_serial) * 0.1);
+    $target_serial_increment = 1 if ($target_serial_increment < 1);
     my $target_serial = $cache_last_prune_serial;
     CACHE_IS_TOO_BIG:
     while ($all_objects_cache_size > $cache_size_lowwater) {
@@ -1704,7 +1706,7 @@ sub _get_template_data_for_loading {
             $operator ||= '=';  # FIXME - shouldn't the template return this for us?
             my @secondary_params = ($delegated_property->to . ' ' . $operator);
 
-            my $class_meta = UR::Object::Type->get(class_name => $delegated_property->class_name);
+            my $class_meta = UR::Object::Type->get($delegated_property->class_name);
             my $relation_property = $class_meta->property_meta_for_name($delegated_property->via);
      
             my $secondary_class = $relation_property->data_type;
