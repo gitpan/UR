@@ -18,6 +18,8 @@ use Scalar::Util qw(blessed);
 use Data::Dumper;
 use UR;
 
+our @CARP_NOT = qw(UR::BoolExpr);
+
 UR::Object::Type->define(
     class_name  => __PACKAGE__, 
     is_transactional => 0,
@@ -176,8 +178,6 @@ sub is_unique {
                     @properties_used_from_constraint = 
                         grep {  
                             $_->{operator} !~ /^(not |)like(-.|)$/i
-                            and
-                            $_->{operator} ne '[]'
                             and
                             $_->{operator} !~ /^(not |)in/i
                         }                                              
@@ -525,14 +525,13 @@ sub get {
                     }
                 }    
                 elsif ($id_related->{$property}) {
-                    #if ($op eq "" or $op eq "eq" or $op eq "=" or $op eq '[]') {
                     if ($op eq "" or $op eq "eq" or $op eq "=") {
                         $id_parts{$id_pos->{$property}} = $key_pos;                        
                     }
                     else {
                         # We're doing some sort of gray-area comparison on an ID                        
                         # field, and though we could possibly resolve an ID
-                        # from things like an [] op, it's more than we've done
+                        # from things like an 'in' op, it's more than we've done
                         # before.
                         $id_only = 0;
                     }
@@ -796,12 +795,12 @@ sub legacy_params_hash {
     }
 
     if ($self->is_unique and not $legacy_params_hash->{_unique}) {
-        warn "is_unique IS set but legacy params hash is NO for $self->{id}";
+        Carp::carp "is_unique IS set but legacy params hash is NO for $self->{id}";
         $DB::single = 1;
         $self->is_unique; 
     }
     if (!$self->is_unique and $legacy_params_hash->{_unique}) {        
-        warn "is_unique NOT set but legacy params hash IS for $self->{id}";
+        Carp::carp "is_unique NOT set but legacy params hash IS for $self->{id}";
         $DB::single = 1;
         $self->is_unique; 
     }       

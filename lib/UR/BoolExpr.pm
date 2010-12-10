@@ -91,11 +91,16 @@ sub values {
     if (my $non_ur_object_refs = $self->{non_ur_object_refs}) {
         # real objects cannot be serialized into the id easily, and require extra work extracting
         my $rule_template = $self->template;
+        #my @constant_values_sorted = $rule_template->_constant_values;
         my @keys_sorted = $rule_template->_underlying_keys;
         my @values_sorted = UR::BoolExpr::Util->value_id_to_values($value_id);
+
         my $n = 0;
         for my $key (@keys_sorted) {
-            if (exists $non_ur_object_refs->{$key}) {
+            if (substr($key,0,1) eq '-') {
+                # keys starting with '-' come from the constant_values in the template
+                next;
+            } elsif (exists $non_ur_object_refs->{$key}) {
                 $values_sorted[$n] = $non_ur_object_refs->{$key};
             }
             $n++;
@@ -203,7 +208,7 @@ sub params_list {
             }
             my $value = $values_sorted[$v];
             if ($op) {
-                if ($op ne "[]") {
+                if ($op ne 'in') {
                     if ($op =~ /^(.+)-(.+)$/) {
                         $value = { operator => $1, value => $value, escape => $2 };
                     }
@@ -325,7 +330,6 @@ sub resolve {
     }
     
     # Handle the single ID.
-    #if (@in_params % 2 == 1) {
     if (@in_params == 1) {
         unshift @in_params, "id";
     } elsif (@in_params % 2 == 1) {
@@ -397,14 +401,22 @@ sub resolve {
                     $value = $value->{value};
                 }
             }
-            elsif ($ref eq "ARRAY" and $operator ne 'between') {
-                $key .= " []";
+            elsif ($ref eq "ARRAY" and $operator ne 'between' and $operator ne 'not between') {
+                if (substr($key, -3, 3) ne ' in') {
+                    $key = join(' ', $key, 'in');
+                }
                 
                 # replace the arrayref
                 $value = [ @$value ];
                 
-                # ensure we re-constitute the original array not a copy
-                push @non_ur_object_refs, $key, $value;
+                # listrefs containing references (blessed or not) need to store
+                # their values verbatim, since the value_id cannot recreate them properly
+                foreach my $val (@$value) {
+                    if (ref($val)) {
+                        push @non_ur_object_refs, $key, $value;
+                        last;
+                    }
+                }
 
                 # transform objects into IDs if applicable
                 my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
@@ -657,10 +669,12 @@ sub _resolve_from_filter_array {
             
             if (@list_parts > 1) {
                 # rule component
-                $key .= " []";
+                if (substr($key, -3, 3) ne ' in') {
+                    $key = join(' ', $key, 'in');
+                }
                 $value = \@list_parts;
         
-                $rule_filter = [$fdata->[0],"[]",\@list_parts];
+                $rule_filter = [$fdata->[0],"in",\@list_parts];
             }
             elsif (@range_parts >= 2) {
                 if (@range_parts > 2) {

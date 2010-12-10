@@ -2651,11 +2651,11 @@ sub __create_object_fabricator_for_loading_template {
     # $rule can contain params that may not apply to the subclass that's currently loading.
     # define_boolexpr() in array context will return the portion of the rule that actually applies
     #my($load_rule, undef) = $load_class_name->define_boolexpr($rule->params_list);
-    my($load_rule, undef) = UR::BoolExpr->resolve($load_class_name, $rule->params_list);
+    my($load_rule, @extra_params) = UR::BoolExpr->resolve($load_class_name, $rule->params_list);
     my $load_rule_id = $load_rule->id;
 
     my @rule_properties_with_in_clauses =
-        grep { $rule_template_without_recursion_desc->operator_for($_) eq '[]' } 
+        grep { $rule_template_without_recursion_desc->operator_for($_) eq 'in' } 
              $rule_template_without_recursion_desc->_property_names;
 
     #my $rule_template_without_in_clause = $rule_template_without_recursion_desc;
@@ -2667,7 +2667,7 @@ sub __create_object_fabricator_for_loading_template {
             # but the two result in different rules in the end.
             #$rule_template_without_in_clause = $rule_template_without_in_clause->remove_filter($property_name);
             #$rule_template_without_in_clause = $rule_template_without_in_clause->add_filter($property_name);
-            $rule_template_id_without_in_clause =~ s/($property_name) \[\]/$1/;
+            $rule_template_id_without_in_clause =~ s/($property_name) in/$1/;
         }
         $rule_template_without_in_clause = UR::BoolExpr::Template->get($rule_template_id_without_in_clause);
     }
@@ -2872,7 +2872,7 @@ sub __create_object_fabricator_for_loading_template {
             # Make a note in all_params_loaded (essentially, the query cache) that we've made a
             # match on this rule, and some equivalent rules
             if ($loading_base_object and not $rule_specifies_id) {
-                if ($rule_class_name ne $load_class_name) {
+                if ($rule_class_name ne $load_class_name and scalar(@extra_params) == 0) {
                     $pending_db_object->{load}{param_key}{$load_class_name}{$load_rule_id}++;
                     $UR::Context::all_params_loaded->{$load_class_name}{$load_rule_id} = undef;
                     $all_params_loaded_items->{$load_class_name}{$load_rule_id}++;
@@ -3141,7 +3141,7 @@ sub __create_object_fabricator_for_loading_template {
         return $pending_db_object;
         
     }; # end of per-class object fabricator
-    Sub::Name::subname('UR::Context::__object_fabricator(closure)__', $object_fabricator);
+    Sub::Name::subname("UR::Context::__object_fabricator(closure)__ ($class_name)", $object_fabricator);
 
     # remember all the changes to $UR::Context::all_params_loaded that should be made.
     # This fixes the problem where you create an iterator for a query, read back some of
@@ -3491,6 +3491,11 @@ sub _get_objects_for_class_and_rule_from_cache {
             }
             
             my @properties = sort keys %params;
+            unless (@properties) {
+                # All the supplied filters were is_many properties
+                return grep { $rule->evaluate($_) } $self->all_objects_loaded($class);
+            }
+
             my @values = map { $params{$_} } @properties;
             
             unless (@properties == @values) {
