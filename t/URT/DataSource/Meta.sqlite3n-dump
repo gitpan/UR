@@ -1,3 +1,4 @@
+PRAGMA foreign_keys=OFF;
 BEGIN TRANSACTION;
 CREATE TABLE dd_bitmap_index (
     data_source varchar NOT NULL,
@@ -19,7 +20,7 @@ CREATE TABLE dd_fk_constraint (
 CREATE TABLE dd_fk_constraint_column (
     fk_constraint_name varchar NOT NULL,
     data_source varchar NOT NULL,
-    owner varchar,
+    owner varchar NOT NULL,
     table_name varchar NOT NULL,
     r_table_name varchar NOT NULL,
     column_name varchar NOT NULL,

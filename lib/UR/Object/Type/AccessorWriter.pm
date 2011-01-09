@@ -35,7 +35,7 @@ sub mk_rw_accessor {
             }
             return $new;
         }
-        return $_[0]->{ $property_name };  # properties with default values are filled in at _create_object()
+        return $_[0]->{ $property_name };  # properties with default values are filled in at _construct_object()
     };
 
     Sub::Install::reinstall_sub({
@@ -747,8 +747,8 @@ sub mk_object_set_accessors {
         my $loading_r_class_error = '';
         if (defined $r_class_name) {
             eval {
-                eval "use $r_class_name";
-                if ($@) {
+                unless (__PACKAGE__->use_module_with_namespace_constraints($r_class_name)) {
+                #if ($@) {
                     # Don't die yet.  The named class may not have a file associated with it
                     $loading_r_class_error = "Couldn't load class $r_class_name: $@";
                     $@ = '';

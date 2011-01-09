@@ -38,12 +38,11 @@ sub data_tree
 
 sub create {
     my $class = shift;
-    #my $params = $class->preprocess_params(@_);
-    #$params->{data_tree} ||= {};
-    #my $self = $class->_create_object($params);
-    #return unless $self;
-
-    my $self = $class->_create_object(@_);
+    
+    # NOTE: This is called from one location in UR::Context and relies
+    # on all properties including the ID being specifically defined.
+    
+    my $self = $UR::Context::current->_construct_object($class, @_);
     return unless $self;
     $self->{data_tree} ||= {};   
  
@@ -282,18 +281,6 @@ sub get_objects_matching
     return (map { values(%$_) } @hr);
 }
 
-
-# this is called by delete() and unload() to do cleanup
-
-sub _delete_object
-{
-    my $self = shift;
-    if (my $subscription = delete $self->{_get_change_subscription})
-    {
-        # cancel this
-    }
-    return $self->SUPER::_delete_object(@_);
-}
 
 # private methods
 

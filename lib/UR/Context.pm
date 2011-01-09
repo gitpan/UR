@@ -288,6 +288,7 @@ sub infer_property_value_from_rule {
 }
 
 our $sig_depth = 0;
+my %subscription_classes;
 sub add_change_to_transaction_log {
     my ($self,$subject, $property, @data) = @_;
 
@@ -331,8 +332,9 @@ sub add_change_to_transaction_log {
     # Before firing signals, we must update indexes to reflect the change.
     # This is currently a standard callback.
 
-    my @check_classes  =
-        (
+    my $check_classes = $subscription_classes{$class};
+    unless ($check_classes) {
+        $subscription_classes{$class} = $check_classes  = [
             $class
             ? (
                 $class,
@@ -340,7 +342,8 @@ sub add_change_to_transaction_log {
                 ''
             )
             : ('')
-        );
+        ];
+    }
     my @check_properties    = ($property    ? ($property, '')    : ('') );
     my @check_ids           = (defined($id) ? ($id, '')          : ('') );
 
@@ -353,7 +356,7 @@ sub add_change_to_transaction_log {
         map { @$_ }
         grep { defined $_ } map { @$_{@check_ids} }
         grep { defined $_ } map { @$_{@check_properties} }
-        grep { defined $_ } @$UR::Context::all_change_subscriptions{@check_classes};
+        grep { defined $_ } @$UR::Context::all_change_subscriptions{@$check_classes};
 
     return unless @matches;
 
@@ -367,16 +370,15 @@ sub add_change_to_transaction_log {
     #print STDOUT "fire __signal_change__: class $class id $id method $property data @data -> \n" . join("\n", map { "@$_" } @matches) . "\n";
 
     $sig_depth++;
-    do {
+    if (@matches > 1) {
         no warnings;
         @matches = sort { $a->[2] <=> $b->[2] } @matches;
     };
     
     #print scalar(@matches) . " index matches\n";
-    foreach my $callback_info (@matches)
-    {
+    foreach my $callback_info (@matches) {
         my ($callback, $note) = @$callback_info;
-        &$callback($subject, $property, @data)
+        $callback->($subject, $property, @data)
     }
     $sig_depth--;
 
@@ -460,7 +462,6 @@ sub query {
     # in order to have metadata for regular loading....
     if (!$rule->has_meta_options and ($class->isa("UR::Object::Type") or $class->isa("UR::Singleton") or $class->isa("UR::Value"))) {
         my $normalized_rule = $rule->normalize;
-        
         my @objects = $class->_load($normalized_rule);
         
         return unless defined wantarray;
@@ -616,22 +617,140 @@ sub _create_entity_from_abstract_class {
     return $sub_class_name->$construction_method(@_); 
 }
 
-
+my %memos;
+my %memos2;
 sub create_entity {
     my $self = shift;
 
-    my $class = shift;        
-    my $class_meta = $class->__meta__;
+    my $class = shift;
+
+    my $memo = $memos{$class};
+    unless ($memo) {
+        # we only want to grab the data necessary for object construction once
+        # this occurs the first time a new object is created for a given class
+        
+        my $class_meta = $class->__meta__;
+        my @inheritance = reverse ($class_meta, $class_meta->ancestry_class_metas);
+
+        # %property_objects maps property names to UR::Object::Property objects
+        # by going through the reversed list of UR::Object::Type objects below
+        # We set up this hash to have the correct property objects for each property
+        # name.  This is important in the case of property name overlap via
+        # inheritance.  The property object used should be the one "closest"
+        # to the class.  In other words, a property directly on the class gets
+        # used instead of an inherited one.
+        my %property_objects;
+        my %direct_properties;
+        my %indirect_properties; 
+        my %set_properties;
+        my %default_values;
+        my %immutable_properties;
+        my @deep_copy_default_values;
+
+        for my $co ( @inheritance ) {
+            # Reverse map the ID into property values.
+            # This has to occur for all subclasses which represent table rows.
     
+            # deal with %property_objects
+            my @property_objects = $co->direct_property_metas;
+            my @property_names = map { $_->property_name } @property_objects;
+            @property_objects{@property_names} = @property_objects;            
+    
+            foreach my $prop ( @property_objects ) {
+                my $name = $prop->property_name;
+    
+                my $default_value = $prop->default_value;
+                if (defined $default_value) {
+                    if (ref($default_value)) {
+                        #warn (
+                        #    "a reference value $default_value is used as a default on "
+                        #    . $co->class_name 
+                        #    . " forcing a copy during construction "
+                        #    . " of $class $name..."
+                        #);
+                        push @deep_copy_default_values, $name;
+                    }
+                    $default_values{$name} = $default_value; 
+                }
+    
+                if ($prop->is_many) {
+                    $set_properties{$name} = $prop;
+                }
+                elsif ($prop->is_delegated || $prop->is_legacy_eav) {
+                    $indirect_properties{$name} = $prop;
+                }
+                else {
+                    $direct_properties{$name} = $prop;
+                }
+                
+                unless ($prop->is_mutable) {
+                    $immutable_properties{$name} = 1;
+                }
+            }
+         }
+    
+        my @indirect_property_names = keys %indirect_properties;
+        my @direct_property_names = keys %direct_properties;
+
+        my @subclassify_by_methods;
+        foreach my $co ( @inheritance ) {
+            # If this class inherits from something with subclassify_by, make sure the param
+            # actually matches.  If it's not supplied, then set it to the same as the class create()
+            # is being called on
+            if ( $class ne $co->class_name
+                     and $co->is_abstract
+                     and my $method = $co->subclassify_by
+               ) {
+                push @subclassify_by_methods, $method;
+            }
+        }
+
+        $memos{$class} = $memo = [
+            $class_meta,
+            $class_meta->first_sub_classification_method_name,
+            $class_meta->is_abstract,
+            \@inheritance,
+            \%property_objects,
+            \%direct_properties,
+            \%indirect_properties, 
+            \%set_properties,
+            \%immutable_properties,
+            \@subclassify_by_methods,
+            \%default_values,
+            (@deep_copy_default_values ? \@deep_copy_default_values : undef),
+        ];
+    }
+    
+    my (
+        $class_meta,
+        $first_sub_classification_method_name, 
+        $is_abstract,
+        $inheritance,
+        $property_objects,
+        $direct_properties,
+        $indirect_properties,
+        $set_properties,
+        $immutable_properties,
+        $subclassify_by_methods,
+        $initial_default_values,
+        $deep_copy_default_values,
+    ) = @$memo;
+
+    my %default_values = %$initial_default_values;
+
+    if ($deep_copy_default_values) {
+        for my $name (@$deep_copy_default_values) {
+            $default_values{$name} = UR::Util::deep_copy($default_values{$name});
+        }
+    }
+
     # The old way of automagic subclassing...
     # The class specifies that we should call a class method (sub_classification_method_name)
     # to determine the correct subclass
-    if (my $method_name = $class_meta->first_sub_classification_method_name) {
-        my($rule, %extra) = UR::BoolExpr->resolve_normalized($class, @_);
-        my $sub_class_name = $class->$method_name(@_);
+    if ($first_sub_classification_method_name) {
+        my $sub_class_name = $class->$first_sub_classification_method_name(@_);
         if (defined($sub_class_name) and ($sub_class_name ne $class)) {
             # delegate to the sub-class to create the object
-            #no warnings;
             unless ($sub_class_name->can($construction_method)) {
                 $DB::single = 1;
                 Carp::croak("Can't locate object method '$construction_method' via package '$sub_class_name' "
@@ -643,121 +762,57 @@ sub create_entity {
         # fall through if the class names match
     }
 
-    if ($class_meta->is_abstract) {
+    if ($is_abstract) {
         # The new way of automagic subclassing.  The class specifies a property (subclassify_by)
         # that holds/returns the correct subclass name
         return $self->_create_entity_from_abstract_class($class, @_);
     }
 
-    # Normal case... just make a rule out of the passed-in params
-    my $rule = UR::BoolExpr->resolve_normalized($class, @_);
-    my $id = $rule->value_for_id;
+    # normal case: make a rule out of the passed-in params
+    # rather than normalizing the rule, we just do the extension part which is fast
+    my $rule = UR::BoolExpr->resolve($class, @_); 
+    my $template = $rule->{template};
+    my $params = { @{$rule->{_params_list}}, $template->extend_params_list_for_values(@{$rule->{values}}) };
+    if (my $a = $template->{_ambiguous_keys}) {
+        my $p = $template->{_ambiguous_property_names};
+        @$params{@$p} = delete @$params{@$a};
+    }
 
-    # Process parameters.  We do this here instead of 
-    # waiting for _create_object to do it so that we can ensure that
-    # we have an ID, and autogenerate an ID if necessary.
-    my $params = $rule->legacy_params_hash;
-    #my $id = $params->{id};        
-
-    # Whenever no params, or a set which has no ID, make an ID.
-    unless (defined($id)) {
+    my $id = $params->{id};
+    unless (defined $id) {
         $id = $self->_resolve_id_for_class_and_rule($class_meta,$rule);
         unless ($id) {
             return;
         }
+        $rule = UR::BoolExpr->resolve_normalized($class, %$params, id => $id);
+        unless ($rule->value_for_id) {
+            $DB::single = 1;
+        }
+        $params = { $rule->params_list }; ;
     }
 
     # @extra is extra values gotten by inheritance
     my @extra;
 
-    # %property_objects maps property names to UR::Object::Property objects
-    # by going through the reversed list of UR::Object::Type objects below
-    # We set up this hash to have the correct property objects for each property
-    # name.  This is important in the case of property name overlap via
-    # inheritance.  The property object used should be the one "closest"
-    # to the class.  In other words, a property directly on the class gets
-    # used instead of an inherited one.
-    my %property_objects;
-    my %direct_properties;
-    my %indirect_properties; 
-    my %set_properties;
-    my %default_values;
-    my %immutable_properties;
-
-    my @inheritance = ( $class_meta, $class_meta->ancestry_class_metas );
-    for my $co ( reverse @inheritance ) {
-        # Reverse map the ID into property values.
-        # This has to occur for all subclasses which represent table rows.
-
-        my @id_property_names = $co->id_property_names;
-        my @values = $co->resolve_ordered_values_from_composite_id( $id );
-        $#values = $#id_property_names;
-        push @extra, map { $_ => shift(@values) } @id_property_names;
-
-        # deal with %property_objects
-        my @property_objects = $co->direct_property_metas;
-        my @property_names = map { $_->property_name } @property_objects;
-        @property_objects{@property_names} = @property_objects;            
-
-        foreach my $prop ( @property_objects ) {
-            my $name = $prop->property_name;
-
-            my $default_value = $prop->default_value;
-            if (defined $default_value) {
-                if (ref($default_value)) {
-                    #warn (
-                    #    "a reference value $default_value is used as a default on "
-                    #    . $co->class_name 
-                    #    . " forcing a copy during construction "
-                    #    . " of $class $name..."
-                    #);
-                    $default_value = UR::Util::deep_copy($default_value);
-                }
-                $default_values{$name} = $default_value; 
-            }
-
-            if ($prop->is_many) {
-                $set_properties{$name} = $prop;
-            }
-            elsif ($prop->is_delegated || $prop->is_legacy_eav) {
-                $indirect_properties{$name} = $prop;
-            }
-            else {
-                $direct_properties{$name} = $prop;
-                #delete $indirect_properties{$name};  # If this overrides a parent property
-                #delete $default_values{$name};  # If this overrides a parent property
-            }
-            
-            unless ($prop->is_mutable) {
-                $immutable_properties{$name} = 1;
-            }
-        }
-     }
-
-    my @indirect_property_names = keys %indirect_properties;
-    my @direct_property_names = keys %direct_properties;
-
-    $params = { %$params };
-
     my $indirect_values = {};
-    for my $property_name (keys %indirect_properties) {
-        # We can get values from indirect properties either from the params
-        # passed to create_entity, or from default values of those properties
+    for my $property_name (keys %$indirect_properties) {
+        # pull indirect values out of the constructor hash
+        # so we can apply them separately after making the object
         if ( exists $params->{ $property_name } ) {
             $indirect_values->{ $property_name } = delete $params->{ $property_name };
             delete $default_values{$property_name};
-        } elsif (exists $default_values{$property_name}) {
+        }
+        elsif (exists $default_values{$property_name}) {
             $indirect_values->{ $property_name } = delete $default_values{$property_name};
         }
     }
-
 
     # if the indirect property is immutable, but it is via something which is
     # mutable, we use those values to get or create the bridge.
     my %indirect_immutable_properties_via;
     for my $property_name (keys %$indirect_values) {
-        if ($immutable_properties{$property_name}) {
-            my $meta = $indirect_properties{$property_name};
+        if ($immutable_properties->{$property_name}) {
+            my $meta = $indirect_properties->{$property_name};
             my $via = $meta->via;
             $indirect_immutable_properties_via{$via}{$property_name} = delete $indirect_values->{$property_name};
         }
@@ -765,8 +820,7 @@ sub create_entity {
 
     for my $via (keys %indirect_immutable_properties_via) {
         my $via_property_meta = $class_meta->property_meta_for_name($via);
-
-        my($source_indirect_property, $source_value) = each %{$indirect_immutable_properties_via{$via}};  # There'll only ever be one key/value
+        my ($source_indirect_property, $source_value) = each %{$indirect_immutable_properties_via{$via}};  # There'll only ever be one key/value
 
         unless ($via_property_meta) {
             Carp::croak("No metadata for class $class property $via while resolving indirect value for property $source_indirect_property");
@@ -798,7 +852,6 @@ sub create_entity {
                 Carp::croak("Can't create object of class $foreign_class with params ($foreign_property => '$source_value')"
                             . " while resolving indirect value for class $class property $source_indirect_property");
             }
-
         }
 
         my @joins = $indirect_property_meta->_get_joins();
@@ -806,7 +859,7 @@ sub create_entity {
         foreach my $join ( @joins ) {
             for (my $i = 0; $i < @{$join->{'source_property_names'}}; $i++) {
                 my $source_property_name = $join->{'source_property_names'}->[$i];
-                next unless (exists $direct_properties{$source_property_name});
+                next unless (exists $direct_properties->{$source_property_name});
                 my $foreign_property_name = $join->{'foreign_property_names'}->[$i];
                 my $value = $foreign_object->$foreign_property_name;
 
@@ -830,75 +883,49 @@ sub create_entity {
     }
 
     my $set_values = {};
-    for my $property_name (keys %set_properties) {
+    for my $property_name (keys %$set_properties) {
         if (exists $params->{ $property_name }) {
             delete $default_values{ $property_name };
             $set_values->{ $property_name } = delete $params->{ $property_name };
         }
-
     }
 
-    # create the object.
-    my $entity = $class->_create_object(%default_values, %$params, @extra, id => $id);
+    my $entity = $self->_construct_object($class, %default_values, %$params, @extra);
     return unless $entity;
-    #if ($class_meta->is_abstract) {
-    #    # The new way of automagic subclassing with the class meta's subclassify_by property
-    #    #return $self->_subclassify_entity_of_abstract_class($entity, %extra, %default_values, %$params, @extra, id => $id);
-    #    return $self->_subclassify_entity_of_abstract_class($entity, %extra, %default_values, %$params, @extra, id => $id, @_);
-    #    # FIXME - don't forget to remove the object cache entry that was created for the parent class obj
-    #}
-
 
     # If a property is calculated + immutable, and it wasn't supplied in the params,
     # that means we need to run the calculation once and store the value in the
     # object as a read-only attribute
-    foreach my $property_name ( keys %immutable_properties )  {
-        my $property_meta = $property_objects{$property_name};
+    foreach my $property_name ( keys %$immutable_properties )  {
+        my $property_meta = $property_objects->{$property_name};
         if (!exists($params->{$property_name}) and $property_meta and $property_meta->is_calculated) {
-            # If we call the regular accessor here, it'll go into the read-only
-            # accessor closure.  Instead, we need to look up the 'calculate'
-            # meta-property
-            #my $sub = $property_meta->calculate;
-            #unless ($sub) {
-            #    Carp::croak("Can't use an undefined value as subroutine reference while resolving value for class $class property '$property_name'");
-            #}
-            #my $value = eval { $sub->($entity) };
             my $value = $entity->$property_name;
-            #if ($@) {
-            #    Carp::croak("Can't resolve value for class $class property '$property_name': $@");
-            #}
             $params->{$property_name} = $value;
         }
-     }
+    }
 
-     foreach my $co ( @inheritance ) {
-        # If this class inherits from something with subclassify_by, make sure the param
-        # actually matches.  If it's not supplied, then set it to the same as the class create()
-        # is being called on
-        if ( $class ne $co->class_name
-                 and $co->is_abstract
-                 and my $subclassify_by = $co->subclassify_by
-           ) {
-            my $param_value = $rule->value_for($subclassify_by);
-            $param_value = eval { $entity->$subclassify_by } unless (defined $param_value);
-            $param_value = $default_values{$subclassify_by} unless (defined $param_value);
-            if (! defined $param_value) {
-                # This should have been taken care of by the time we got here...
-                Carp::croak("Invalid parameters for $class->$construction_method(): " .
-                            "Can't use an undefined value as a subclass name for param '$subclassify_by'");
+    for my $subclassify_by (@$subclassify_by_methods) {
+        my $param_value = $rule->value_for($subclassify_by);
+        $param_value = eval { $entity->$subclassify_by } unless (defined $param_value);
+        $param_value = $default_values{$subclassify_by} unless (defined $param_value);
+        
+        if (! defined $param_value) {
+            
+            # This should have been taken care of by the time we got here...
+            Carp::croak("Invalid parameters for $class->$construction_method(): " .
+                        "Can't use an undefined value as a subclass name for param '$subclassify_by'");
 
-            } elsif ($param_value ne $class) {
-                Carp::croak("Invalid parameters for $class->$construction_method(): " .
-                            "Value for subclassifying param '$subclassify_by' " .
-                            "($param_value) does not match the class it was called on ($class)");
-            }
+        } elsif ($param_value ne $class) {
+            Carp::croak("Invalid parameters for $class->$construction_method(): " .
+                        "Value for subclassifying param '$subclassify_by' " .
+                        "($param_value) does not match the class it was called on ($class)");
         }
     }
 
     # add items for any multi properties
     if (%$set_values) {
         for my $property_name (keys %$set_values) {
-            my $meta = $set_properties{$property_name};
+            my $meta = $set_properties->{$property_name};
             my $singular_name = $meta->singular_name;
             my $adder = 'add_' . $singular_name;
             my $value = $set_values->{$property_name};
@@ -926,7 +953,7 @@ sub create_entity {
         }
     }
 
-    if (%immutable_properties) {
+    if (%$immutable_properties) {
         my @problems = $entity->__errors__();
         if (@problems) {
             my @errors_fatal_to_construction;
@@ -935,7 +962,7 @@ sub create_entity {
             for my $problem (@problems) {
                 my @problem_properties;
                 for my $name ($problem->properties) {
-                    if ($immutable_properties{$name}) {
+                    if ($immutable_properties->{$name}) {
                         push @problem_properties, $name;                        
                     }
                 }
@@ -947,12 +974,10 @@ sub create_entity {
             if (@errors_fatal_to_construction) {
                 my $msg = 'Failed to $construction_method ' . $class . ' with invalid immutable properties:'
                     . join("\n", @errors_fatal_to_construction);
-                #$entity->_delete_object;
-                #die $msg;
             }
         }
     }
-    
+
     $entity->__signal_change__($construction_method);
     $entity->__signal_change__('load') if $construction_method eq '__define__';
     $entity->{'__get_serial'} = $UR::Context::GET_COUNTER++;
@@ -964,11 +989,7 @@ sub _construct_object {
     my $self = shift;
     my $class = shift;
  
-    #my $params = { $class->define_bx(@_)->params_list };
-    my $params;
-    my ($bx,@extra) = $class->define_boolexpr(@_);
-    my $bxn = $bx->normalize;
-    $params = { $bxn->params_list, @extra };
+    my $params = { @_ };    
 
     my $id = $params->{id};
     unless (defined($id)) {
@@ -978,54 +999,39 @@ sub _construct_object {
         );
     }
 
-    # Ensure that we're not remaking things which exist.
     if ($UR::Context::all_objects_loaded->{$class}->{$id}) {
-        # The object exists.  This is not an exception for some reason?  
+        # The object exists.  This is not an exception for some reason?
         # We just return false to indicate that the object is not creatable.
         $class->error_message("An object of class $class already exists with id value '$id'");
         return;
     }
 
-    # get rid of internal flags (which start with '-' or '_', unless it's a named property)
-    #delete $params->{$_} for ( grep { /^_/ } keys %$params );
-    my %subject_class_props = map {$_, 1}  ( $class->__meta__->all_property_type_names);
-    delete $params->{$_} foreach ( grep { substr($_, 0, 1) eq '_' and ! $subject_class_props{$_} } keys %$params );
-
-    # TODO: The reference to UR::Entity can be removed when non-tablerow classes impliment property function for all critical internal data.
-    # Make the object.
-    my $object = bless {
-        map { $_ => $params->{$_} }
-        grep { $class->can($_) or not $class->isa('UR::Entity') }
-        keys %$params
-    }, $class;
-
-    # See if we're making something which was previously deleted and is pending save.
-    # We must capture the old db_committed data to ensure eventual saving is done correctly.
+    my $object = bless $params, $class;
+    
     if (my $ghost = $UR::Context::all_objects_loaded->{$class . "::Ghost"}->{$id}) {    
-        # Note this object's database state in the new object so saves occurr correctly,
+        # we're making something which was previously deleted and is pending save.
+        # we must capture the old db_committed data to ensure eventual saving is done correctly.
+        # note this object's database state in the new object so saves occurr correctly,
         # as an update instead of an insert.
-        if (my $committed_data = $ghost->{db_committed})
-        {
+        if (my $committed_data = $ghost->{db_committed}) {
             $object->{db_committed} = { %$committed_data };
         }
 
-        if (my $unsaved_data = $ghost->{'db_saved_uncommitted'})
-        {
+        if (my $unsaved_data = $ghost->{'db_saved_uncommitted'}) {
             $object->{'db_saved_uncommitted'} = { %$unsaved_data };
         }
         $ghost->__signal_change__("delete");
         $self->_abandon_object($ghost);
     }
 
-    # Put the object in the master repository of objects for the application.
-    $UR::Context::all_objects_loaded->{$class}->{$id} = $object;
+    # put the object in the master repository of objects for the application.
+    $UR::Context::all_objects_loaded->{$class}{$id} = $object;
 
     # If we're using a light cache, weaken the reference.
-    if ($UR::Context::light_cache and substr($class,0,5) ne 'App::') {
+    if ($UR::Context::light_cache) { # and substr($class,0,5) ne 'App::') {
         Scalar::Util::weaken($UR::Context::all_objects_loaded->{$class}->{$id});
     }
 
-    # Return the new object.
     return $object;
 }
 
@@ -1071,7 +1077,7 @@ sub delete_entity {
             }    
 
             # create ghost object
-            my $ghost = $entity->ghost_class->_create_object(id => $entity->id, %ghost_params);
+            my $ghost = $self->_construct_object($entity->ghost_class, id => $entity->id, %ghost_params);
             unless ($ghost) {
                 $DB::single = 1;
                 Carp::confess("Failed to constructe a deletion record for an unsync'd delete.");
@@ -1085,7 +1091,7 @@ sub delete_entity {
 
         }
         $entity->__signal_change__('delete');
-        $entity->_delete_object;
+        $self->_abandon_object($entity);
         return $entity;
     }
     else {
@@ -2343,7 +2349,7 @@ sub _create_import_iterator_for_underlying_context {
                     # we can set it to true.  This is needed in the case where the user
                     # gets an iterator for all the objects of some class, but unloads
                     # one or more of the instances (be calling unload or through the 
-                    # cache pruner) before the iterator completes.  If so, _delete_object()
+                    # cache pruner) before the iterator completes.  If so, _abandon_object()
                     # will have removed the key from the hash
                     if (exists($UR::Context::all_objects_are_loaded->{$class_name})) {
                         $class_name->all_objects_are_loaded(1);
@@ -2717,7 +2723,7 @@ sub __create_object_fabricator_for_loading_template {
         grep { $rule_template_without_recursion_desc->operator_for($_) eq 'in' } 
              $rule_template_without_recursion_desc->_property_names;
 
-    my($rule_template_without_in_clause,$rule_template_id_without_in_clause);
+    my($rule_template_without_in_clause,$rule_template_id_without_in_clause,%in_clause_values);
     if (@rule_properties_with_in_clauses) {
         $rule_template_id_without_in_clause = $rule_template_without_recursion_desc->id;
         foreach my $property_name ( @rule_properties_with_in_clauses ) {
@@ -2728,6 +2734,28 @@ sub __create_object_fabricator_for_loading_template {
             $rule_template_id_without_in_clause =~ s/($property_name) in/$1/;
         }
         $rule_template_without_in_clause = UR::BoolExpr::Template->get($rule_template_id_without_in_clause);
+
+        # Make a note of all the values in the in-clauses.  As the objects get returned from the 
+        # data source, we'll remove these notes.  Anything that's left by the time the iterator is
+        # finalized must be values that matched nothing.  Then, finalize can put data in
+        # all_params_loaded showing it matches nothing
+        my %rule_properties_with_in_clauses = map { $_ => 1 } @rule_properties_with_in_clauses;
+        foreach my $property ( @rule_properties_with_in_clauses ) {
+            my @other_values = map { exists $rule_properties_with_in_clauses{$_}
+                                     ? undef   # placeholder filled in below
+                                     : $rule_without_recursion_desc->value_for($_) }
+                               $rule_template_without_in_clause->_property_names;
+            my $position_for_this_property = $rule_template_without_in_clause->value_position_for_property_name($property);
+
+            my $values_for_in_clause = $rule_without_recursion_desc->value_for($property);
+            foreach my $value ( @$values_for_in_clause ) {
+                $other_values[$position_for_this_property] = $value;
+                my $rule_with_this_in_property = $rule_template_without_in_clause->get_rule_for_values(@other_values);
+                $in_clause_values{$property}->{$value}
+                    = [$rule_template_id_without_in_clause, $rule_with_this_in_property->id];
+            }
+        }
+
     }
 
 
@@ -2767,6 +2795,7 @@ sub __create_object_fabricator_for_loading_template {
     # This is a local copy of what we want to put in all_params_loaded, when the object fabricator is
     # finalized
     my $local_all_params_loaded = {};
+    $local_all_params_loaded->{'__in_clause_values__'} = \%in_clause_values;
 
     my $object_fabricator = sub {
         my $next_db_row = $_[0];
@@ -2920,7 +2949,6 @@ sub __create_object_fabricator_for_loading_template {
             # note that we do this on the base class even if we know it's going to be put into a subclass below
             $UR::Context::all_objects_loaded->{$class}{$pending_db_object_id} = $pending_db_object;
             $UR::Context::all_objects_cache_size++;
-            #$pending_db_object->__signal_change__('_create_object', $pending_db_object_id)
             
             # If we're using a light cache, weaken the reference.
             if ($UR::Context::light_cache and substr($class,0,5) ne 'App::') {
@@ -2947,6 +2975,13 @@ sub __create_object_fabricator_for_loading_template {
                     
                     $UR::Context::all_params_loaded->{$rule_template_id_without_in_clause}{$r_id} = undef;
                     $local_all_params_loaded->{$rule_template_id_without_in_clause}{$r_id}++;
+
+                    # remove the notes about these in-clause values since they matched something
+                    foreach my $property (@rule_properties_with_in_clauses) {
+                        my $value = $pending_db_object->{$property};
+                        delete $in_clause_values{$property}->{$value};
+                    }
+                        
                 }
             }
             
@@ -3228,11 +3263,21 @@ sub UR::Context::object_fabricator_tracker::finalize {
     my $local_all_params_loaded = delete $UR::Context::object_fabricators->{$self};
 
     foreach my $template_id ( keys %$local_all_params_loaded ) {
+        next if ($template_id eq '__in_clause_values__');
         while(1) {
             my($rule_id,$val) = each %{$local_all_params_loaded->{$template_id}};
             last unless defined $rule_id;
             next unless exists $UR::Context::all_params_loaded->{$template_id}->{$rule_id};  # Has unload() removed this one earlier?
             $UR::Context::all_params_loaded->{$template_id}->{$rule_id} += $val; 
+        }
+    }
+
+    # Anything left in here is in-clause values that matched nothing.  Make a note in
+    # all_params_loaded showing that so later queries for those values won't hit the 
+    # data source
+    foreach my $property ( keys %{$local_all_params_loaded->{'__in_clause_values__'}} ) {
+        while (my($value, $data) = each %{$local_all_params_loaded->{'__in_clause_values__'}->{$property}} ) {
+            $UR::Context::all_params_loaded->{$data->[0]}->{$data->[1]} = 0;
         }
     }
 }
@@ -3249,6 +3294,7 @@ sub UR::Context::object_fabricator_tracker::DESTROY {
         # completion, and we should add our data to it.  Otherwise, we're the only query like
         # this and all_params_loaded should be cleaned out
         foreach my $template_id ( keys %$local_all_params_loaded ) {
+            next if ($template_id eq '__in_clause_values__');
             while(1) {
                 my($rule_id, $val) = each %{$local_all_params_loaded->{$template_id}};
                 last unless $rule_id;
@@ -3566,13 +3612,14 @@ sub _get_objects_for_class_and_rule_from_cache {
             }
             
             # find or create the index
-            my $index_id = UR::Object::Index->__meta__->resolve_composite_id_from_ordered_values($class,join(",",@properties));
-            #my $index_id2 = $rule->index_id;
-            #unless ($index_id eq $index_id2) {
-            #    Carp::confess("Index ids don't match: $index_id, $index_id2\n");
-            #}
+            my $pstring = join(",",@properties);
+            my $index_id = UR::Object::Index->__meta__->resolve_composite_id_from_ordered_values($class,$pstring);
             my $index = $all_objects_loaded->{'UR::Object::Index'}{$index_id};
-            $index ||= UR::Object::Index->create($index_id);
+            $index ||= UR::Object::Index->create(
+                id => $index_id,
+                indexed_class_name => $class,
+                indexed_property_string => $pstring
+            );
             
 
             # add the indexed objects to the results list

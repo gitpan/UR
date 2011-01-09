@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-# Test the different ways that SQL's handling of NULL might differ
+# Test the different ways that File datasources handling of NULL might differ
 # with the way Perl and UR convert NULL to undef and the various
 # numeric and string conversions when doing comparisions.  We want UR's
 # object cache to return the same results that a query against the database
@@ -12,20 +12,21 @@ use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
 
-use Test::More tests => 227;
-use URT::DataSource::SomeSQLite;
+use Test::More tests => 226;
+use IO::File;
+use URT::DataSource::SomeFile;
 
+my $ds = URT::DataSource::SomeFile->get();
+my $filename = $ds->server;
+my $fh = IO::File->new($filename, O_WRONLY|O_CREAT);
+ok($fh, 'Got file handle');
 
-my $dbh = URT::DataSource::SomeSQLite->get_default_handle;
+my $delim = $ds->delimiter;
+$fh->print(join($delim, 1,'',''),"\n");
+$fh->print(join($delim, 2,'',''),"\n");
 
-ok($dbh, 'Got DB handle');
+ok($fh->close(),'Write file data');
 
-ok( $dbh->do("create table things (thing_id integer, value integer)"),
-   'Created things table');
-
-$dbh->do("insert into things (thing_id, value) values (1, NULL)");
-$dbh->do("Insert into things (thing_id, value) values (2, NULL)");
-ok($dbh->commit(), 'DB commit');
            
 UR::Object::Type->define(
     class_name => 'URT::Thing',
@@ -33,9 +34,10 @@ UR::Object::Type->define(
         thing_id => { is => 'Integer' },
     ],
     has_optional => [
-        value => { is => 'Integer' },
+        value => { is => 'Integer', column_name => 'THING_NAME' },
+        color => { is => 'String', column_name => 'THING_COLOR' },
     ],
-    data_source => 'URT::DataSource::SomeSQLite',
+    data_source => 'URT::DataSource::SomeFile',
     table_name => 'things',
 );
 
@@ -57,20 +59,17 @@ foreach my $value ( undef ) {
     URT::Thing->unload();  # clear object and query cache
 }
 
-TODO: {
-    local $TODO = "empty string and undef in a rule will mean the same thing soonly";
-    foreach my $value ( '') {
-        # undef and the empty string both mean NULL
+foreach my $value ( '') {
+    # undef and the empty string both mean NULL
 
-        @result = URT::Thing->get(value => $value);
-        is(scalar(@result), 2, 'value => undef loaded 2 items');
+    @result = URT::Thing->get(value => $value);
+    is(scalar(@result), 2, 'value => undef loaded 2 items');
 
-        @result = URT::Thing->get(value => $value);
-        is(scalar(@result), 2, 'value => undef returned all 2 items');
+    @result = URT::Thing->get(value => $value);
+    is(scalar(@result), 2, 'value => undef returned all 2 items');
 
-        URT::Thing->unload();  # clear object and query cache
-    }
-};
+    URT::Thing->unload();  # clear object and query cache
+}
 
 # For other values using the equality operator, it should return nothing
 foreach my $value ( 0, 1, -1) {

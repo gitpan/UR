@@ -298,13 +298,7 @@ sub help_brief
             }
         }
         if ($self->is_sub_command_delegator) {
-            my @names = $self->sub_command_names;
-            if (@names) {
-                return ""
-            }
-            else {
-                return "no sub-commands implemented!"
-            }
+            return "";
         }
         else {
             return "no description!!!: define 'doc' in $self";
@@ -828,10 +822,10 @@ sub help_options
     my $text = '';
     for my $row (@data) {
         if (defined($format) and $format eq 'pod') {
-            $text .= "\n=item " . $row->[0] . "\n\n" . $row->[2] . "\n". $row->[3] . "\n";
+            $text .= "\n=item " . $row->[0] . ($row->[1]? '  I<' . $row->[1] . '>' : '') . "\n\n" . $row->[2] . "\n". ($row->[3]? $row->[3] . "\n" : '');
         }
         elsif (defined($format) and $format eq 'html') {
-            $text .= "\n\t<br>" . $row->[0] . "<br> " . $row->[2] . "<br>" . $row->[3]."<br>\n";
+            $text .= "\n\t<br>" . $row->[0] . ($row->[1]? ' <em>' . $row->[1] . '</em>' : '') . "<br> " . $row->[2] . ($row->[3]? "<br>" . $row->[3] : '') . "<br>\n";
         }
         else {
             $text .= sprintf(

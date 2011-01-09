@@ -9,7 +9,7 @@ use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
-use Test::More tests => 17;
+use Test::More tests => 21;
 use Data::Dumper;
 use IO::Handle;
 
@@ -93,12 +93,18 @@ is_deeply(\@values, $expected, "Normalized rule's values are correct");
 
 
 
-$r = URT::Item->define_boolexpr(name => [$fh], score => 1, foo => undef, -hints => ['ritem']);
+my @p = (name => [$fh], score => 1, foo => undef, -hints => ['ritem']);
+$r = URT::Item->define_boolexpr(@p);
+my @p2 = $r->params_list();
+#is("@p","@p2",'params return correctly with hint');
+is_deeply(\@p,\@p2, "match deeply");
+
 # These values are in the same order as the original rule definition
 @values = $r->values();
 is(scalar(@values), 3, 'Got back 3 values from rule');
 $expected = [[$fh], 1, undef];
 is_deeply(\@values, $expected, "Rule's values are correct");
+is($values[0][0], $p[1][0], 'object is preserved within the arrayref of references');
 
 $n = $r->normalize;
 ok($n, 'Normalized rule');
@@ -107,6 +113,14 @@ ok($n, 'Normalized rule');
 @values = $n->values();
 $expected = [undef, [$fh], 1];
 is_deeply(\@values, $expected, "Normalized rule's values are correct");
+
+
+# Check that duplicate values in an in-clause are handled correctly
+my $rule = URT::Item->define_boolexpr(name => ['Bob', 'Bob', 'Rob', 'Rob', 'Joe', 'Foo']);
+ok($rule, 'rule with duplicate values created');
+my $values = $rule->value_for('name');
+my @expected = ('Bob', 'Foo', 'Joe','Rob');
+is_deeply($values, \@expected, 'duplicates were filtered out correctly');
 
 
 

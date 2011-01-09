@@ -26,7 +26,7 @@ UR::Object::Type->define(
         subject_class_name  => { via => 'template' },
         logic_type          => { via => 'template' },
         logic_detail        => { via => 'template' },
-
+        
         num_values          => { via => 'template' },
         is_normalized       => { via => 'template' },
         is_id_only          => { via => 'template' },
@@ -47,6 +47,11 @@ sub UR::BoolExpr::Type::resolve_ordered_values_from_composite_id {
      my ($self,$id) = @_;
      my $pos = index($id,$UR::BoolExpr::Util::id_sep);
      return (substr($id,0,$pos), substr($id,$pos+1));
+}
+
+sub template {
+    my $self = $_[0];
+    return $self->{template} ||= $self->__template;
 }
 
 # override the UR/system display name
@@ -120,10 +125,10 @@ sub values {
     }
     my $value_id = $self->value_id;    
     return unless defined($value_id) and length($value_id);
-    if (my $non_ur_object_refs = $self->{non_ur_object_refs}) {
+    if (my $hard_refs = $self->{hard_refs}) {
         my @values_sorted = UR::BoolExpr::Util->value_id_to_values($value_id);
-        for my $n (keys %$non_ur_object_refs) {
-            $values_sorted[$n] = $non_ur_object_refs->{$n};
+        for my $n (keys %$hard_refs) {
+            $values_sorted[$n] = $hard_refs->{$n};
         }
         return @values_sorted;
     }
@@ -147,9 +152,10 @@ sub specifies_value_for {
 }
 
 sub value_for {
-    # TODO: refactor to be more efficient
     my $self = shift;
-    my $property_name = shift; 
+    my $property_name = shift;
+    
+    # TODO: refactor to be more efficient
     my $h = $self->legacy_params_hash;
     my $v;
     if (exists $h->{$property_name}) {
@@ -171,7 +177,7 @@ sub value_for {
     }
     return $v unless ref($v);
     return $v->{value} if ref($v) eq "HASH";
-    return [@$v];
+    return $v;
 }
 
 sub value_for_position {
@@ -277,29 +283,19 @@ sub resolve_for_template_id_and_values {
     $class->get($rule_id);
 }
 
-our $resolve_depth;
+my $resolve_depth;
 sub resolve {
     $resolve_depth++;
     Carp::confess("Deep recursion!") if $resolve_depth > 10;
 
-    # Handle the case in which we've already processed the params into a boolexpr
+    # handle the case in which we've already processed the params into a boolexpr
     if ( @_ == 3 and ref($_[2]) and ref($_[2])->isa("UR::BoolExpr") ) {
         $resolve_depth--;
         return $_[2];
     }
 
-    # this class.
     my $class = shift;
-
-    # the subject class is the class which the expression applies-to
     my $subject_class = shift;
-    my $subject_class_meta = $subject_class->__meta__;
-    unless ($subject_class_meta) {
-        Carp::croak("No class metadata for $subject_class?!");
-    }    
-
-    # this allows us to validate which params are real and which are not rapidly
-    my %subject_class_props = map {$_, 1}  ( $subject_class_meta->all_property_type_names);
 
     # support for legacy passing of hashref instead of object or list
     # TODO: eliminate the need for this
@@ -309,8 +305,7 @@ sub resolve {
     } else {
 	   @in_params = @_;
     }
-
-    # when a parameter is a single value, it is expected to be an id or an array of ids
+    
     if (@in_params == 1) {
         unshift @in_params, "id";
     } elsif (@in_params % 2 == 1) {
@@ -320,7 +315,7 @@ sub resolve {
     # split the params into keys and values
     # where an operator is on the right-side, it is moved into the key
     my $count = @in_params;
-    my (@keys,@values,@constant_values,$key,$value,$op,@extra,@non_ur_object_refs,$property_name, $operator);
+    my (@keys,@values,@constant_values,$key,$value,$property_name,$operator,@hard_refs);
     for(my $n = 0; $n < $count;) {
         $key = $in_params[$n++];
         $value = $in_params[$n++];
@@ -331,230 +326,395 @@ sub resolve {
             push @constant_values, $value;
             next;
         }
+
+        if ($key eq '_id_only' or $key eq '_param_key' or $key eq '_unique' or $key eq '__get_serial' or $key eq '_change_count') {
+            # skip the pair: legacy cruft
+            next;
+        } 
         
-        if (!exists $subject_class_props{$key}) {
-            if (my $pos = index($key,' ')) {
-                # Maybe this is the new syntax with "property operator" => value
-                $property_name = substr($key,0,$pos);
-                $operator = substr($key,$pos+1);
-                if (substr($operator,0,1) eq ' ') {
-                   $operator =~ s/^\s+//; 
-                }
+        my $pos = index($key,' ');
+        if ($pos != -1) {
+            # the key is "propname op"
+            $property_name = substr($key,0,$pos);
+            $operator = substr($key,$pos+1);
+            if (substr($operator,0,1) eq ' ') {
+               $operator =~ s/^\s+//; 
             }
-            else {
-                $property_name = $key;
-                $operator = '';
-            }
-            
         }
         else {
+            # the key is "propname"
             $property_name = $key;
             $operator = '';
         }
-       
-        # account for the case where this parameter does
-        # not match an actual property 
-        if (!exists $subject_class_props{$property_name}) {
-            if ((substr($key,0,1)  eq '_')) {
-                # TODO: we silently ignore seemingly private undeclared properties
-                # because they were part of pre-boolexpr params lists.
-                # Eliminate the special handling for this b/c it hides typo errors.
-                next;
-            } 
-            push @extra, ($key => $value);
-            next;
-        }
-
-        # TODO: the rule template can be made w/o looking at the value passed-in,
-        # and it could have a custom closure to process its values.  
-        # This would buy some speed in this logic.
-        my $ref = ref($value);
-        if($ref) {
-            my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
-            my $is_many;
-            my $data_type;
-            if ($property_meta) {
-                $is_many = $property_meta->is_many;
-                $data_type = $property_meta->data_type;
-            }
-            else {
-                if ($UR::initialized) {
-                    Carp::croak("No property metadata for $subject_class property '$property_name'?\n");
-                }
-                else {
-                    # this has to run during bootstrapping in 2 cases currently...
-                    $is_many = $subject_class_meta->{has}{$property_name}{is_many};
-                    $data_type = $subject_class_meta->{has}{$property_name}{data_type};
-                }
-            }
-            $data_type ||= '';  # avoid a warning about undefined below
-
-            if ($ref eq 'HASH') {
-                if ($data_type eq 'HASH') {
-                    # ensure we re-constitute the original array not a copy
-                    push @non_ur_object_refs, scalar(@values), $value;
-                }
-                elsif (
+        
+        if (my $ref = ref($value)) {
+            if ( (not $operator) and ($ref eq "HASH")) {
+                if (
                     exists $value->{operator}
                     and exists $value->{value}
                 ) {
-                    # support for property => { operator => "like", value => "%foo%" }
-                    # instead of "property like" => "%foo%"
-                    # ... this is deprecated b/c it is ambiguous
-                    $key .= " " . lc($value->{operator});
+                    # the key => { operator => $o, value => $v } syntax
+                    # cannot be used with a value type of HASH
+                    $operator = lc($value->{operator});
                     if (exists $value->{escape}) {
-                        $key .= "-" . $value->{escape}
+                        $operator .= "-" . $value->{escape}
                     }
+                    $key .= " " . $operator;                    
                     $value = $value->{value};
+                    $ref = ref($value);
                 }
                 else {
-                    #die "Odd hash passed as value for $key!"
-                    push @non_ur_object_refs, scalar(@values), $value;
+                    # the HASH is a value for the specified param 
+                    push @hard_refs, scalar(@values), $value;
                 }
             }
-            elsif ($ref eq "ARRAY") {
-                # replace the arrayref
-                $value = [ @$value ];
-                
-                # listrefs containing references (blessed or not) need to store
-                # their values verbatim, since the value_id cannot recreate them properly
+            
+            if ($ref eq "ARRAY") {
+                if (not $operator) {
+                    # key => [] is the same as "key in" => []
+                    $operator = 'in';
+                    $key .= ' in';
+                }
+                elsif ($operator eq 'not') {
+                    # "key not" => [] is the same as "key not in" 
+                    $operator .= ' in';
+                    $key .= ' in';
+                }
+
                 foreach my $val (@$value) {
                     if (ref($val)) {
-                        push @non_ur_object_refs, $key, $value;
+                        # when there are any refs in the arrayref
+                        # we must keep the arrayerf contents
+                        # to reconstruct effectively
+                        push @hard_refs, scalar(@values), $value;
                         last;
                     }
                 }
 
-                # transform objects into IDs if applicable
-                my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
-                my $one_or_many = $subject_class_props{$property_name};
-                unless (defined $one_or_many) {
-                    Carp::croak("No property metadata for $subject_class property '$property_name' for rule parameters ($key => $value)\n" . Data::Dumper::Dumper({ @_ }));
-                }
-                
-                if ($data_type eq 'ARRAY' or $is_many) {
-                    # ensure we re-constitute the original array not a copy
-                    push @non_ur_object_refs, scalar(@values), $value;
-                }
-                else {
-                    no warnings;
-
-                    if ($operator ne 'between' and $operator ne 'not between') {
-                        if (substr($key, -3, 3) ne ' in') {
-                            $key = join(' ', $key, 'in');
-                        }
-                    }
-                    
-                    # sort
-                    @$value = (
-                        sort { $a <=> $b or $a cmp $b } 
-                        @$value
-                    );         
-                    
-                    # identify duplicates
-                    if ($operator ne 'between' and $operator ne 'not between') {
-                        my $last = $value; # a safe value which can't be in the list
-                        for (@$value) {
-                            if ($_ eq $last) {
-                                $last = $value;
-                                last;
-                            }
-                            $last = $_;
-                        }
+            } # done handling ARRAY value 
         
-                        # only fix duplicates if they were found                    
-                        if ($last eq $value) {
-                            my $buffer;
-                            @$value =
-                                map {
-                                    $buffer = $last;
-                                    $last = $_;
-                                    ($_ eq $buffer ? () : $_)
-                                }
-                                @$value;
-                        }                        
-                    }
-                }
-            }
-            elsif (blessed($value)) {
-                my $property_type = $subject_class_meta->property_meta_for_name($key);
-                unless ($property_type) {
-                    for my $class_name ($subject_class_meta->ancestry_class_names) {
-                        my $class_object = $class_name->__meta__;
-                        $property_type = $subject_class_meta->property_meta_for_name($key);
-                        last if $property_type;
-                    }
-                    unless ($property_type) {
-                        Carp::croak("No property metadata for $subject_class property '$key'");
-                    }
-                }
+        } # done handling ref values
 
-                if ($property_type->is_delegated) {
-                    my $property_meta = $subject_class_meta->property_meta_for_name($key);
-                    unless ($property_meta) {
-                        Carp::croak("No property metadata for $subject_class property '$key'");
-                    }
-                    my @joins = $property_meta->get_property_name_pairs_for_join();
-                    for my $join (@joins) {
-                        my ($my_method, $their_method) = @$join;
-                        push @keys, $my_method;
-                        push @values, $value->$their_method;
-                    }
-                    # TODO: this may need to be moved into the above get_property_name_pairs_for_join(),
-                    # but the exact syntax for expressing that this is part of the join is unclear.
-                    if (my $id_class_by = $property_type->id_class_by) {
-                        push @keys, $id_class_by;
-                        push @values, ref($value);
-                    }
-
-                    #
-                    # WARNING WARNING looping early before we get to the bottom!
-                    next;
-                    #
-                    #
-                }
-                elsif ($value->isa($property_type->data_type)) {
-                    push @non_ur_object_refs, scalar(@values), $value;
-                }
-                elsif ($value->can($key)) {
-                    $value = $value->$key;
-                }
-                else {
-                    Carp::croak("Incorrect data type in rule " . ref($value) . " for $subject_class property '$key'!");    
-                }
-            }
-            else {
-                # other reference, code, etc.
-                push @non_ur_object_refs, scalar(@values), $value;
-            }
-        }
         push @keys, $key;
         push @values, $value;
     }
-
-    my $value_id = UR::BoolExpr::Util->values_to_value_id(@values);
-    my $constant_value_id = UR::BoolExpr::Util->values_to_value_id(@constant_values);
     
-    my $template_id = $subject_class . '/And/' . join(",",@keys) . "/" . $constant_value_id;
-    my $rule_id = join($UR::BoolExpr::Util::id_sep,$template_id,$value_id);
+    # the above uses no class metadata
+    
+    # this next section uses class metadata
+    # it should be moved into the normalization layer
 
-    my $rule = __PACKAGE__->get($rule_id);
+    my $subject_class_meta = $subject_class->__meta__;
+    unless ($subject_class_meta) {
+        Carp::croak("No class metadata for $subject_class?!");
+    }
 
+    my $subject_class_props =
+        $subject_class_meta->{'cache'}{'UR::BoolExpr::resolve'} ||=
+        { map {$_, 1}  ( $subject_class_meta->all_property_type_names) };
+    
+    my ($op,@extra);
+    
+    my $kn = 0;
+    my $vn = 0;
+    my $cn = 0;
+
+    my @xadd_keys;
+    my @xadd_values;
+    my @xremove_keys;
+    my @xremove_values;
+    my @extra_key_pos;
+    my @extra_value_pos;
+    my @swap_key_pos;
+    my @swap_key_value;
+    my $complex_values = 0;
+    
+    for my $value (@values) {
+        $key = $keys[$kn++];
+        if (substr($key,0,1) eq '-') {
+            $cn++;
+            next;
+        }
+        else {
+            $vn++;
+        }
+        
+        my $pos = index($key,' ');
+        if ($pos != -1) {
+            # "propname op" 
+            $property_name = substr($key,0,$pos);
+            $operator = substr($key,$pos+1);
+            if (substr($operator,0,1) eq ' ') {
+               $operator =~ s/^\s+//; 
+            }
+        }
+        else {
+            # "propname"
+            $property_name = $key;
+            $operator = '';
+        }
+        
+        # account for the case where this parameter does
+        # not match an actual property 
+        if (!exists $subject_class_props->{$property_name}) {
+            if (substr($property_name,0,1) eq '_') {
+                warn "ignoring $property_name in $subject_class bx construction!"
+            }
+            else {
+                push @extra_key_pos, $kn-1;
+                push @extra_value_pos, $vn-1;
+                next;                
+            }
+        }
+        
+        my $ref = ref($value);
+        if($ref) {
+            $complex_values = 1;
+            if ($ref eq "ARRAY" and $operator ne 'between' and $operator ne 'not between') {
+                my $data_type;
+                my $is_many;
+                if ($UR::initialized) {
+                    my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
+                    unless (defined $property_meta) {
+                        Carp::croak("No property metadata for $subject_class property '$property_name' for rule parameters ($key => $value)\n" . Data::Dumper::Dumper({ @_ }));
+                    }
+                    $data_type = $property_meta->data_type;
+                    $is_many = $property_meta->is_many;                    
+                }
+                else {
+                    $data_type = $subject_class_meta->{has}{$property_name}{data_type};
+                    $is_many = $subject_class_meta->{has}{$property_name}{is_many};        
+                }
+                $data_type ||= '';
+                
+                if ($data_type eq 'ARRAY') {
+                    # ensure we re-constitute the original array not a copy
+                    push @hard_refs, $vn-1, $value;
+                    push @swap_key_pos, $vn-1;
+                    push @swap_key_value, $property_name;
+                }
+                elsif (not $is_many) {
+                    no warnings;
+                    
+                    # sort and replace
+                    $value = [ 
+                        sort { $a <=> $b or $a cmp $b } 
+                        @$value
+                    ];         
+                    
+                    if ($operator ne 'between' and $operator ne 'not between') {
+                        my $last = $value;
+                        for (my $i = 0; $i < @$value;) {
+                            if ($last eq $value->[$i]) {
+                                splice(@$value, $i, 1);
+                            }
+                            else {
+                                $last = $value->[$i++];
+                             }
+                         }
+                     }
+                    # push @swap_key_pos, $vn-1;
+                    # push @swap_key_value, $property_name;
+                }
+                else {
+                    $DB::single = 1;
+                    # disable: break 47, enable: break 62
+                    #push @swap_key_pos, $vn-1;
+                    #push @swap_key_value, $property_name;
+                }
+            }
+            elsif (blessed($value)) {
+                my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
+                unless ($property_meta) {
+                    for my $class_name ($subject_class_meta->ancestry_class_names) {
+                        my $class_object = $class_name->__meta__;
+                        $property_meta = $subject_class_meta->property_meta_for_name($property_name);
+                        last if $property_meta;
+                    }
+                    unless ($property_meta) {
+                        Carp::croak("No property metadata for $subject_class property '$property_name'");
+                    }
+                }
+
+                if ($property_meta->is_delegated) {
+                    my $property_meta = $subject_class_meta->property_meta_for_name($property_name);
+                    unless ($property_meta) {
+                        Carp::croak("No property metadata for $subject_class property '$property_name'");
+                    }
+                    my @joins = $property_meta->get_property_name_pairs_for_join();
+                    for my $join (@joins) {
+                        # does this really work for >1 joins?
+                        my ($my_method, $their_method) = @$join;
+                        push @xadd_keys, $my_method;
+                        push @xadd_values, $value->$their_method;
+                    }
+                    # TODO: this may need to be moved into the above get_property_name_pairs_for_join(),
+                    # but the exact syntax for expressing that this is part of the join is unclear.
+                    if (my $id_class_by = $property_meta->id_class_by) {
+                        push @xadd_keys, $id_class_by;
+                        push @xadd_values, ref($value);
+                        #print ":: @xkeys\n::@xvalues\n\n";
+                    }
+                    push @xremove_keys, $kn-1;
+                    push @xremove_values, $vn-1;
+                }
+                elsif ($value->isa($property_meta->data_type)) {
+                    push @hard_refs, $vn-1, $value;
+                }
+                elsif ($value->can($property_name)) {
+                    # TODO: stop suporting foo_id => $foo, since you can do foo=>$foo, and foo_id=>$foo->id  
+                    $value = $value->$property_name;
+                }
+                else {
+                    Carp::croak("Incorrect data type in rule " . ref($value) . " for $subject_class property '$property_name' with op $operator!");    
+                }
+                # end of handling a value which is an arrayref
+            }
+            elsif ($ref ne 'HASH') {
+                # other reference, code, etc.
+                push @hard_refs, $vn-1, $value;
+            }
+        }
+    }
+    push @keys, @xadd_keys;
+    push @values, @xadd_values;
+
+    if (@swap_key_pos) {
+        @keys[@swap_key_pos] = @swap_key_value;
+    }
+
+    if (@extra_key_pos) {
+        push @xremove_keys, @extra_key_pos;
+        push @xremove_values, @extra_value_pos;
+        for (my $n = 0; $n < @extra_key_pos; $n++) {
+            push @extra, $keys[$extra_key_pos[$n]], $values[$extra_value_pos[$n]];
+        }
+    }
+    
+    if (@xremove_keys) {
+        my @new;
+        my $next_pos_to_remove = $xremove_keys[0];
+        for (my $n = 0; $n < @keys; $n++) {
+            if (defined $next_pos_to_remove and $n == $next_pos_to_remove) {
+                shift @xremove_keys;
+                $next_pos_to_remove = $xremove_keys[0];
+                next;
+            }
+            push @new, $keys[$n];            
+        }
+        @keys = @new;        
+    }
+
+    if (@xremove_values) {
+        if (@hard_refs) {
+            # shift the numbers down to account for positional removals
+            for (my $n = 0; $n < @hard_refs; $n+=2) {
+                my $ref_pos = $hard_refs[$n];
+                for my $rem_pos (@xremove_values) {
+                    if ($rem_pos < $ref_pos) {
+                        $hard_refs[$n] -= 1;
+                        #print "$n from $ref_pos to $hard_refs[$n]\n";
+                        $ref_pos = $hard_refs[$n];
+                    }
+                    elsif ($rem_pos == $ref_pos) {
+                        $hard_refs[$n] = '';
+                        $hard_refs[$n+1] = undef;
+                    }
+                }
+            }
+        }
+        
+        
+        my @new;
+        my $next_pos_to_remove = $xremove_values[0];
+        for (my $n = 0; $n < @values; $n++) {
+            if (defined $next_pos_to_remove and $n == $xremove_values[0]) {
+                shift @xremove_values;
+                $next_pos_to_remove = $xremove_values[0];
+                next;
+            }
+            push @new, $values[$n];            
+        }
+        @values = @new;        
+    }    
+
+    my $template;
+    if (@constant_values) {
+        $template = UR::BoolExpr::Template::And->_fast_construct_and(
+            $subject_class,
+            \@keys,
+            \@constant_values,
+        );
+    }
+    else {
+        $template = $subject_class_meta->{cache}{"UR::BoolExpr::resolve"}{"template for class and keys without constant values"}{"$subject_class @keys"} 
+            ||= UR::BoolExpr::Template::And->_fast_construct_and(
+                $subject_class,
+                \@keys,
+                \@constant_values,
+            );
+    }
+
+    my $value_id = ($complex_values ? UR::BoolExpr::Util->values_to_value_id(@values) : UR::BoolExpr::Util->values_to_value_id_simple(@values) );
+    
+    my $rule_id = join($UR::BoolExpr::Util::id_sep,$template->{id},$value_id);
+
+    my $rule = __PACKAGE__->get($rule_id); # flyweight constructor
+
+    $rule->{template} = $template;
     $rule->{values} = \@values;
+    
+    $vn = 0;
+    $cn = 0;
+    my @list;
+    for my $key (@keys) {
+        push @list, $key;
+        if (substr($key,0,1) eq '-') {
+            push @list, $constant_values[$cn++];
+        }
+        else {
+            push @list, $values[$vn++];
+        }
+    }
+    $rule->{_params_list} = \@list;
 
-    if (@non_ur_object_refs) {
-        $rule->{non_ur_object_refs} = { @non_ur_object_refs };
+    if (@hard_refs) {
+        $rule->{hard_refs} = { @hard_refs };
+        delete $rule->{hard_refs}{''};
     }
 
     $resolve_depth--;
     if (wantarray) {
         return ($rule, @extra);
-    } elsif (@extra && defined wantarray) {
+    } 
+    elsif (@extra && defined wantarray) {
         Carp::confess("Unknown parameters in rule for $subject_class: " . join(",", map { defined($_) ? "'$_'" : "(undef)" } @extra));
     }
     else {
         return $rule;
     }
+}
+
+sub _params_list {
+    my $list = $_[0]->{_params_list} ||= do {
+        my $self = $_[0];
+        my $template = $self->template;
+        my ($k,$v,$c) = ($self->{_keys}, $template->{values}, $template->{_constant_values});
+        my $vn = 0;
+        my $cn = 0;
+        my @list;
+        for my $key (@$k) {
+            push @list, $key;
+            if (substr($key,0,1) eq '-') {
+                push @list, $c->[$cn++];
+            }
+            else {
+                push @list, $v->[$vn++];
+            }
+        }
+        \@list;
+    };
+    return @$list;
 }
 
 sub normalize {
@@ -570,8 +730,8 @@ sub normalize {
     my $normalized = $rule_template->get_normalized_rule_for_values(@unnormalized_values);
     return unless defined $normalized;
 
-    if (my $special = $self->{non_ur_object_refs}) {
-        $normalized->{non_ur_object_refs} = $rule_template->_normalize_non_ur_values_hash($special);
+    if (my $special = $self->{hard_refs}) {
+        $normalized->{hard_refs} = $rule_template->_normalize_non_ur_values_hash($special);
     }
     return $normalized;
 }
@@ -619,7 +779,7 @@ sub resolve_for_string {
         }
 
         [$property, $op, $value]
-    } split(/,|\s+and\s+/i, $filter_string);
+    } split(/,/, $filter_string);
 
     my @hints = split(",",$usage_hints_string);
     my @order = split(",",$order_string);

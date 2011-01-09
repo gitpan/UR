@@ -37,9 +37,14 @@ UR::Object::Type->define(
 
 sub driver { "SQLite" }
 
-sub owner {
+sub default_owner {
+    unless (defined $DBD::SQLite::VERSION) {
+        require DBD::SQLite;
+    }
     $DBD::SQLite::VERSION < 1.26_04 ? undef : 'main' 
 }
+
+sub owner { default_owner() }
 
 sub login {
     undef
@@ -87,6 +92,9 @@ sub server {
     my $self = shift->_singleton_object();
     my $path = $self->__meta__->module_path;
     $path =~ s/\.pm$/.sqlite3/ or Carp::confess("Odd module path $path");
+    if ($self->default_owner) {
+        $path .= "n";
+    }
     my $dir = File::Basename::dirname($path);
     return $path; 
 }

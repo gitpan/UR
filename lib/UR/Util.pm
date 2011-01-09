@@ -3,16 +3,25 @@ package UR::Util;
 
 use warnings;
 use strict;
+use Cwd;
 use Data::Dumper;
 
 sub null_sub { }
 
 sub used_libs {
     my @extra;
-    for my $i (@INC) {
-        last if ($ENV{'PERL5LIB'} and $ENV{'PERL5LIB'} =~ /^$i\:/);
-        push @extra, $i;
+    my @compiled_inc = UR::Util::compiled_inc();
+    my @perl5lib = split(':', $ENV{PERL5LIB});
+    map { $_ =~ s/\/+$// } (@compiled_inc, @perl5lib);
+    map { $_ = Cwd::abs_path($_) } (@compiled_inc, @perl5lib);
+    for my $inc (@INC) {
+        $inc =~ s/\/+$//;
+        my $abs_inc = Cwd::abs_path($inc); # should already be expanded by UR.pm
+        next if (grep { $_ =~ /^$abs_inc$/ } @compiled_inc);
+        next if (grep { $_ =~ /^$abs_inc$/ } @perl5lib);
+        push @extra, $inc;
     }
+    push @extra, ($ENV{PERL_USED_ABOVE} ? split(":", $ENV{PERL_USED_ABOVE}) : ());
     return @extra;
 }
 
@@ -24,6 +33,35 @@ sub used_libs_perl5lib_prefix {
     return $prefix;
 }
 
+my @compiled_inc;
+BEGIN {
+    use Config;
+
+    my @var_list = (
+        'updatesarch', 'updateslib',
+        'archlib', 'privlib',
+        'sitearch', 'sitelib', 'sitelib_stem',
+        'vendorarch', 'vendorlib', 'vendorlib_stem',
+        'extrasarch', 'extraslib',
+    );
+
+    for my $var_name (@var_list) {
+        if ($var_name =~ /_stem$/ && $Config{$var_name}) {
+            my @stem_list = (split(' ', $Config{'inc_version_list'}), '');
+            push @compiled_inc, map { $Config{$var_name} . "/$_" } @stem_list
+        } else {
+            push @compiled_inc, $Config{$var_name} if $Config{$var_name};        
+        }
+    }
+
+    push @compiled_inc, '.' if (${^TAINT} == 0);
+
+    map { $_ =~ s/\/+/\//g } @compiled_inc;
+    map { $_ =~ s/\/+$// } @compiled_inc;
+}
+sub compiled_inc {
+    return @compiled_inc;
+}
 
 sub deep_copy { 
     require Data::Dumper;

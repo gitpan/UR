@@ -7,6 +7,7 @@ package UR;
 use strict;
 use warnings FATAL => 'all';
 
+
 # Set the version at compile time, since some other modules borrow it.
 use version;
 our $VERSION;
@@ -15,11 +16,11 @@ BEGIN {
     # this is an attempt to get around it...
 
     # for the cpan shell, and other parsers
-    $VERSION = 'v0.19';
+    $VERSION = 'v0.20';
 
     # for actual inspection
     ${VERSION} 
-        = qv('0.19'); 
+        = qv('0.20'); 
 };
 
 
@@ -31,10 +32,12 @@ $SIG{__DIE__} = \&Carp::confess;
 # Ensure that, if the application changes directory, we do not 
 # change where we load modules while running.
 use Cwd;
-for my $dir (@INC) {
+my @PERL5LIB = ($ENV{PERL5LIB} ? split(':', $ENV{PERL5LIB}) : ());
+for my $dir (@INC, @PERL5LIB) {
     next unless -d $dir;
     $dir = Cwd::abs_path($dir);
 }
+$ENV{PERL5LIB} = join(':', @PERL5LIB);
 
 # UR supports several environment variables, found under UR/ENV
 # Any UR_* variable which is set but does NOT corresponde to a module found will cause an exit
@@ -404,7 +407,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version v0.19.
+This document describes UR version v0.20.
 
 =head1 SYNOPSIS
 
@@ -482,6 +485,8 @@ in-memory transactions for both.
 
 =head2 Manuals
 
+L<ur> - command line interface 
+
 L<UR::Manual::Overview> - UR from Ten Thousand Feet
 
 L<UR::Manual::Tutorial> - Getting started with UR 
@@ -493,8 +498,6 @@ L<UR::Manual::Cookbook> - Recepies for getting stuff working
 L<UR::Manual::Metadata> - UR's metadata system
 
 L<UR::Object::Type::Initializer> - Defining classes 
-
-L<UR::Manual::UR> - UR's command line tool
 
 =head2 Basic Entities
 
