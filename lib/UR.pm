@@ -8,7 +8,8 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = '0.20';
+use version;
+our $VERSION = qv('0.20');
 
 # Ensure we get detailed errors while starting up.
 # This is disabled at the bottom of the module.
@@ -393,7 +394,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version v0.20.
+This document describes UR version 0.20.
 
 =head1 SYNOPSIS
 
