@@ -16,6 +16,8 @@ It is deprecated.
 
 use strict;
 use warnings;
+require UR;
+our $VERSION = $UR::VERSION;
 no warnings 'uninitialized';
 
 use base 'UR::DBI';

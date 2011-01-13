@@ -5,6 +5,8 @@ use warnings;
 use above 'UR';
 
 package UR::Namespace::Command::Test::Window;
+require UR;
+our $VERSION = $UR::VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
