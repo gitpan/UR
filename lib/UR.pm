@@ -8,19 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-use version;
-our $VERSION; 
-BEGIN {
-    # the first CPAN deploy using "version" is failing to ins
-    # this is an attempt to get around it...              
-
-    # for the cpan shell, and other parsers           
-    $VERSION = 'v0.21';                       
-
-    # for actual inspection
-    ${VERSION}
-        = qv('0.21');
-};
+our $VERSION = 'v0.22'; 
 
 # Ensure we get detailed errors while starting up.
 # This is disabled at the bottom of the module.
