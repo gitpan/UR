@@ -14,8 +14,6 @@ It is deprecated.
 
 =cut
 
-$VERSION = '1.03';
-
 use strict;
 use warnings;
 no warnings 'uninitialized';

@@ -10,9 +10,6 @@ meta-spec:
   version: 1.4
 name: UR
 provides:
-  Class::Autouse:
-    file: lib/Class/Autouse_1_99_02.pm
-    version: 1.99_02
   Command:
     file: lib/Command.pm
     version: 0
@@ -115,7 +112,6 @@ provides:
     file: lib/UR/DBI.pm
   UR::DBIx::ContextualFetch:
     file: lib/UR/DBIx/ContextualFetch.pm
-    version: 1.03
   UR::DBIx::ContextualFetch::db:
     file: lib/UR/DBIx/ContextualFetch.pm
   UR::DBIx::ContextualFetch::st:
