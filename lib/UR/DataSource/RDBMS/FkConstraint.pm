@@ -174,7 +174,7 @@ my $self = shift;
 
 =head1 NAME 
 
-UR::DataSource::RDBMS::FkConstraint - Metadata about a data source's foreign keys
+UR::DataSource::RDBMS::FkConstraint - metadata about a data source's foreign keys
 
 =head1 DESCRIPTION
 

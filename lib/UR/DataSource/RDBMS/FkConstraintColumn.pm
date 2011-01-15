@@ -33,7 +33,7 @@ UR::Object::Type->define(
 
 =head1 NAME 
 
-UR::DataSource::RDBMS::FkConstraintColumn - Metadata about a data source's foreign keys
+UR::DataSource::RDBMS::FkConstraintColumn - metadata about a data source's foreign keys
 
 =head1 DESCRIPTION
 

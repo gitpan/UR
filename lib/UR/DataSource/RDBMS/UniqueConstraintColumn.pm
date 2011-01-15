@@ -31,7 +31,7 @@ UR::Object::Type->define(
 
 =head1 NAME
 
-UR::DataSource::RDBMS::UniqueConstraintColumn - Metadata about a data source's unique constraints
+UR::DataSource::RDBMS::UniqueConstraintColumn - metadata about a data source's unique constraints
 
 =head1 DESCRIPTION
 

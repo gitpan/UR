@@ -4,7 +4,7 @@ use warnings FATAL => 'all';
 use strict;
 use Module::Build;
 
-Module::Build->new(
+my $build = Module::Build->new(
   module_name => 'UR',
   license => 'perl',
   requires => {
@@ -16,6 +16,7 @@ Module::Build->new(
     'Sys::Hostname'       => '1.11',
     'File::Basename'      => '2.73',
     'Lingua::EN::Inflect' => '1.88',
+    'Date::Pcalc'         => '',
     'Date::Format'        => '',
     'Data::Compare'       => '0.13',
     'Text::Diff'          => '0.35',
@@ -25,7 +26,9 @@ Module::Build->new(
     'XML::Generator'      => '',
     'XML::Simple'         => '',
     'version'             => '',
-    
+    'JSON'                => '',
+    'Test::Fork'          => '',
+
     # C
     'FreezeThaw'          => '0.43',
     'YAML'                => '',
@@ -51,8 +54,27 @@ Module::Build->new(
   cpan_client => 'cpanm',
   script_files => [ 'bin/ur' ],
   test_files => [qw|t/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t|],
-  tap_harness_args => { 'jobs' =>  8 },
-)->create_build_script;
+  tap_harness_args => { 
+      'jobs' =>  8,
+      'rules' => { 
+            par => [
+                #{ seq => '../ext/DB_File/t/*' },
+                #{ seq => '../ext/IO_Compress_Zlib/t/*' },
+                #{ seq => '../lib/CPANPLUS/*' },
+                #{ seq => '../lib/ExtUtils/t/*' },
+                #'*'
+                { seq => 't/URT/t/42*' },
+                '*'
+            ]
+      },
+  },
+);
+
+foreach my $metadb_type ( qw(sqlite3 sqlite3n sqlite3-dump sqlite3n-dump sqlite3-schema sqlite3n-schema) ) {
+    $build->add_build_element($metadb_type);
+}
+
+$build->create_build_script;
 
 # These were in Makefile.PL, but have no equivalent here yet:
 #  all_from 'lib/UR.pm'

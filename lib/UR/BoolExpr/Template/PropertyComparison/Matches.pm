@@ -32,7 +32,7 @@ sub evaluate_subject_and_values {
 
 =head1 NAME 
 
-UR::BoolExpr::Template::PropertyComparison::Matches - Perform a Perl regular expression match
+UR::BoolExpr::Template::PropertyComparison::Matches - perform a Perl regular expression match
 
 =head1 DESCRIPTION
 

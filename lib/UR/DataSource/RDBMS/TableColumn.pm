@@ -101,7 +101,7 @@ sub is_time_data {
 
 =head1 NAME
 
-UR::DataSource::RDBMS::TableColumn - Metadata about a data source's table's columns
+UR::DataSource::RDBMS::TableColumn - metadata about a data source's table's columns
 
 =head1 DESCRIPTION
 

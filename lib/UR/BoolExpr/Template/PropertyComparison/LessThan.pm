@@ -40,7 +40,7 @@ sub evaluate_subject_and_values {
 
 =head1 NAME
 
-UR::BoolExpr::Template::PropertyComparison::LessThan - Perform a less than test
+UR::BoolExpr::Template::PropertyComparison::LessThan - perform a less than test
 
 =head1 DESCRIPTION 
 

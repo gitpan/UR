@@ -52,7 +52,7 @@ sub evaluate_subject_and_values {
 
 =head1 NAME
 
-UR::BoolExpr::Template::PropertyComparison::NotIn - Perform a negated In comparison
+UR::BoolExpr::Template::PropertyComparison::NotIn - perform a negated In comparison
 
 =head1 DESCRIPTION
 

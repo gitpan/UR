@@ -75,7 +75,7 @@ sub comparison_value_and_escape_character_to_regex {
 
 =head1 NAME 
 
-UR::BoolExpr::Template::PropertyComparison::Like - Perform an SQL-ish like test
+UR::BoolExpr::Template::PropertyComparison::Like - perform an SQL-ish like test
 
 =head1 DESCRIPTION
 

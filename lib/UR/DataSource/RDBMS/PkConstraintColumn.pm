@@ -31,7 +31,7 @@ UR::Object::Type->define(
 
 =head1 NAME
 
-UR::DataSource::RDBMS::PkConstraintColumn - Metadata about a data source's primary keys
+UR::DataSource::RDBMS::PkConstraintColumn - metadata about a data source's primary keys
 
 =head1 DESCRIPTION
 

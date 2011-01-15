@@ -44,7 +44,7 @@ sub evaluate_subject_and_values {
 
 =head1 NAME
 
-UR::BoolExpr::Template::PropertyComparison::NotEqual - Perform a not-equal test
+UR::BoolExpr::Template::PropertyComparison::NotEqual - perform a not-equal test
 
 =head1 DESCRIPTION
 

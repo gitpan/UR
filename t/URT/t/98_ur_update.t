@@ -11,8 +11,12 @@ use URT;
 use DBI;
 use IO::Pipe;
 use Test::More;
-if ($INC{"UR.pm"} =~ /blib/) {
-    plan skip_all => 'The test harness insists on making our db unwritable.  Run me individually or fix me!';
+
+if ($^O eq 'darwin') {
+    plan skip_all => 'known to fail OS X'
+}
+elsif ($INC{"UR.pm"} =~ /blib/) {
+    plan skip_all => 'skip running during install',
 }
 else {
     plan tests => 90;
@@ -24,35 +28,15 @@ UR::DBI->no_commit(1);
 # This can only be run with the cwd at the top of the URT namespace
 
 require Cwd;
+my $namespace_dir = URT->get_base_directory_name;
 my $working_dir = Cwd::abs_path();
-if ($working_dir !~ m/\/URT/) {
-    my($urt_dir) = ($INC{'URT.pm'} =~ m/^(.*)\.pm$/);
-    if (-d $urt_dir) {
-        chdir($urt_dir);
+if ($working_dir ne $namespace_dir) {
+    if (-d $namespace_dir) {
+        chdir($namespace_dir);
     } else {
         die "Cannot determine URT's namespace directory, exiting";
     }
 }
-
-# Clear out any metaDB info that may be left over from some
-# prior test that mistakenly saved metaDB changes
-$DB::single=1;
-my $metadb = $working_dir .  "/DataSource/Meta.sqlite3";
-my $metadump = $working_dir . "/DataSource/Meta.sqlite3-dump";
-unlink($metadb);
-unlink($metadump);
-
-
-# Make a fresh sqlite database in tmp.
-
-my $ds_class = 'URT::DataSource::SomeSQLite';
-$ds_class->class;
-my $path = $INC{"UR.pm"};
-system "chmod -R o+w $path";
-
-my $sqlite_file = $ds_class->server;
-IO::File->new($sqlite_file, 'w')->close();
-
 
 
 cleanup_files();
@@ -108,6 +92,8 @@ sub DummyExecutor::execute {
 
 ok($command_obj, "Created a dummy command object for updating the classes");
 
+my $ds_class = 'URT::DataSource::SomeSQLite';  # The datasource we'll be making tables in
+$ds_class->class;
 my $dbh = $ds_class->get_default_handle();
 ok($dbh, 'Got database handle');
 
