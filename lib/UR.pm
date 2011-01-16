@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = '0.25';
+our $VERSION = '0.26';
 
 # Ensure we get detailed errors while starting up.
 # This is disabled at the bottom of the module.
@@ -342,10 +342,6 @@ UR::Object::Type->define(
     extends => ['UR::Namespace'],
 );
 
-#my $src = shift(@ARGV);
-#eval $src;
-#die $@ if $@;
-
 require UR::Context;
 UR::Object::Type->initialize_bootstrap_classes;
 
@@ -362,9 +358,9 @@ do {
     UR::Context->_initialize_for_current_process();
 };
 
-require UR::Moose;          # a no-op unless UR_MOOSE is set to true currently
 require UR::ModuleLoader;   # signs us up with Class::Autouse
 require UR::Value::Iterator;
+require UR::Object::View;
 
 sub main::ur_core {
     print STDERR "Dumping rules and templates to ./ur_core.stor...\n";
@@ -393,7 +389,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version v0.24
+This document describes UR version 0.26
 
 =head1 SYNOPSIS
 
