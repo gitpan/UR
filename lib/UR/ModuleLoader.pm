@@ -4,8 +4,7 @@ package UR::ModuleLoader;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.26"; # UR $VERSION;
-use Class::Autouse;
+our $VERSION = "0.27"; # UR $VERSION;
 
 Class::Autouse->autouse(\&dynamically_load_class);
 Class::Autouse->sugar(\&define_class);

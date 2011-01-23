@@ -1,11 +1,15 @@
-require above;
+package UR::All;
+
 use strict;
 use warnings;
-use Class::Autouse_1_99_02;
+
+our $VERSION = "0.27"; # UR $VERSION;
+
+require above;
+use Class::Autouse; # 1.99_02, 1.99_04 or >= 2.0
 use Command;
 use Command::DynamicSubCommands;
 use UR;
-our $VERSION = "0.26"; # UR $VERSION;
 use UR::BoolExpr;
 use UR::BoolExpr::Template;
 use UR::BoolExpr::Template::And;
@@ -163,13 +167,6 @@ use UR::Object::Type::Initializer;
 use UR::Object::Type::InternalAPI;
 use UR::Object::Type::ModuleWriter;
 use UR::Object::Type::View::Default::Text;
-use UR::Object::Type::View::Default::Umlet;
-use UR::Object::Umlet;
-use UR::Object::Umlet::Class;
-use UR::Object::Umlet::Diagram;
-use UR::Object::Umlet::Other;
-use UR::Object::Umlet::PictureElement;
-use UR::Object::Umlet::Relation;
 use UR::Object::Value;
 use UR::Object::View;
 use UR::Object::View::Aspect;
@@ -180,7 +177,6 @@ use UR::Object::View::Default::Text;
 use UR::Object::View::Lister::Text;
 use UR::Object::View::Toolkit;
 use UR::Object::View::Toolkit::Text;
-use UR::Object::View::Toolkit::Umlet;
 use UR::ObjectDeprecated;
 use UR::ObjectV001removed;
 use UR::ObjectV04removed;
@@ -216,3 +212,24 @@ use UR::Value::Set;
 use UR::Value::Text;
 use UR::Value::URL;
 use UR::Vocabulary;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+UR::All
+
+=head1 SYNOPSIS
+
+ use UR::All;
+
+=head1 DESCRIPTION
+
+This module exists to let software preload everything in the distribution
+
+It is slower than "use UR", but is good for things like FastCGI servers.
+
+=cut
+
