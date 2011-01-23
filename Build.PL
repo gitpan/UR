@@ -4,72 +4,26 @@ use warnings FATAL => 'all';
 use strict;
 use Module::Build;
 
-my $class = Module::Build->subclass(
-    class => 'UR::ModuleBuild',
-    
-    # the code below matches that in the real UR::ModuleBuild
+my $subclass = Module::Build->subclass(
+    class_name => 'UR::ModuleBuildSelf',
     code => q{
-
-        sub ACTION_clean {
-            # FIXME: is this safe?
-            use File::Path qw/rmtree/;
-            rmtree "./_build";
-            rmtree "./blib";
-            unlink "./Build";
-            unlink "./MYMETA.yml";
-        }
-
-        our $ns = 'UR';
-        our $cmd_class = 'UR::Namespace::Command';
-
-        sub ACTION_ur_docs {
-            # We want to use UR to autodocument our code.  This is done
-            # with module introspection and requires some namespace hackery
-            # to work.  ./Build doc comes after ./Build and copies Genome.pm
-            # into ./blib to fake a Genome namespace so this will work.
-            use File::Copy qw/copy/;
-            $ENV{ANSI_COLORS_DISABLED} = 1;
-            
-            eval {
-                my $oldpwd = $ENV{PWD};
-
-                unshift @INC, "$ENV{PWD}/blib/lib";
-
-                my ($genome_src_dir) = grep { -s "$_/$ns.pm" } @INC;
-                unless ($genome_src_dir) {
-                die "Failed to find $ns.pm in \@INC.\n";
-                }
-
-                chdir "$ENV{PWD}/blib/lib/$ns" || die "Can't find $ns/";
-                unless (-e "../$ns.pm") {
-                    copy "$genome_src_dir/$ns.pm", "../$ns.pm" || die "Can't find $ns.pm";
-                }
-
-                eval "use $ns";
-                $cmd_class->class();
-
-                UR::Namespace::Command::Update::Pod->execute(
-                    base_commands => [ $cmd_class ],
-                );
-                # We need to move back for perl install to find ./lib
-                chdir $oldpwd;
-            };
-
-            die "failed to extract pod: $!: $@" if ($@);
-        }
-
         sub ACTION_docs {
+            # ensure docs get man pages and html
             my $self = shift;
-            $self->depends_on('ur_docs');
             $self->depends_on('code');
             $self->depends_on('manpages', 'html');
         }
 
+        sub man1page_name {
+            # without this we have "man ur-init.pod" instead of "man ur-init"
+            my ($self, $file) = @_;
+            $file =~ s/.pod$//;
+            return $self->SUPER::man1page_name($file);
+        }
     }
 );
 
-
-my $build = $class->new(
+my $build = $subclass->new(
   module_name => 'UR',
   license => 'perl',
   requires => {
@@ -121,6 +75,7 @@ my $build = $class->new(
   cpan_client => 'cpanm',
   script_files => [ 'bin/ur' ],
   test_files => [qw|t/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t|],
+  bindoc_dirs => ['pod'],
   tap_harness_args => { 
       'jobs' =>  8,
       'rules' => { 
@@ -130,7 +85,7 @@ my $build = $class->new(
                 #{ seq => '../lib/CPANPLUS/*' },
                 #{ seq => '../lib/ExtUtils/t/*' },
                 #'*'
-                { seq => 't/URT/t/42*' },
+                { seq => '../t/URT/t/42*' },
                 '*'
             ]
       },
