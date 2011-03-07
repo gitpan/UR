@@ -6,7 +6,7 @@ package UR::Object::Type;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 #use warnings FATAL => 'all';
 
 use Carp ();
@@ -28,9 +28,8 @@ sub mk_rw_accessor {
             # The accessors may compare undef and an empty
             # string.  For speed, we turn warnings off rather
             # than add extra code to make the warning disappear.
-            no warnings;
-
-            if ($old ne $new)
+            my $different = eval { no warnings;  $old ne $new };
+            if ($different or $@ =~ m/has no overloaded magic/)
             {
                 $_[0]->{ $property_name } = $new;
                 $_[0]->__signal_change__( $accessor_name, $old, $new ) unless $is_transient; # FIXME is $is_transient right here?  Maybe is_volitile instead (if at all)?
@@ -79,9 +78,8 @@ sub mk_ro_accessor {
             my $old = $_[0]->{ $property_name};
             my $new = $_[1];
 
-            no warnings;
-
-            if ($old ne $new)
+            my $different = eval { no warnings;  $old ne $new };
+            if ($different or $@ =~ m/has no overloaded magic/)
             {
                 Carp::croak("Cannot change read-only property $accessor_name for class $class_name!"
                 . "  Failed to update " . $_[0]->__display_name__ . " property: $property_name from $old to $new");
@@ -197,23 +195,167 @@ sub mk_id_based_object_accessor {
     });
 }
 
+
+sub _resolve_bridge_logic_for_indirect_property {
+    my ($ur_object_type, $class_name, $accessor_name, $via, $to, $where) = @_;
+
+    $DB::single = 1 if $accessor_name eq 'car_parts_prices';
+
+    my $bridge_collector = sub { my $self = shift; return $self->$via(@$where) };
+    my $bridge_crosser = sub { return map { $_->$to} @_ };
+
+    return($bridge_collector, $bridge_crosser) if ($UR::Object::Type::bootstrapping);
+
+    # bail out and use the default subs if any of these fail
+    my ($my_class_meta, $my_property_meta, $via_property_meta, $to_property_meta);
+    
+    $my_class_meta = $class_name->__meta__;
+    $my_property_meta = $my_class_meta->property_meta_for_name($accessor_name) if ($my_class_meta);
+    $via_property_meta = $my_class_meta->property_meta_for_name($via) if ($my_class_meta);
+    $to_property_meta  = $my_property_meta->to_property_meta() if ($my_property_meta);
+
+    if (! $my_class_meta || ! $my_property_meta  || ! $via_property_meta || ! $to_property_meta) {
+        # Something didn't link right, use the default methods
+        return ($bridge_collector, $bridge_crosser);
+    }
+
+    if ($my_property_meta->is_delegated and $my_property_meta->is_many
+        and $via_property_meta->is_many and $via_property_meta->reverse_as
+        and $via_property_meta->data_type and $via_property_meta->data_type->isa('UR::Object')
+    ) {
+        my $bridge_class = $via_property_meta->data_type;
+
+        my @via_join_properties = $via_property_meta->get_property_name_pairs_for_join;
+        my (@my_join_properties,@their_join_properties);
+            for (my $i = 0; $i < @via_join_properties; $i++) {
+            ($my_join_properties[$i], $their_join_properties[$i]) = @{ $via_join_properties[$i] };
+        }
+
+        my(@where_properties, @where_values);
+        if ($where or $via_property_meta->where) {
+            my @collected_where;
+            @collected_where = @$where if ($where);
+            push @collected_where, @{ $via_property_meta->where } if ($via_property_meta->where);
+            while (@collected_where) {
+                my $where_property = shift @collected_where;
+                my $where_value = shift @collected_where;
+                # FIXME Skip stuff like -hints and -order_by until UR::BE::Template->resolve() can handle them
+                next if (substr($where_property, 0, 1) eq '-');
+                if (ref($where_value) eq 'HASH' and $where_value->{'operator'}) {
+                    $where_property .= ' ' .$where_value->{'operator'};
+                    $where_value = $where_value->{'value'};
+                }
+                push @where_properties, $where_property;
+                push @where_values, $where_value;
+            }
+        }
+     
+        #my $bridge_template = UR::BoolExpr::Template->resolve($bridge_class,
+        #                                                      @their_join_properties,
+        #                                                      @where_properties,
+        #                                                      -hints => [$via_property_meta->to]);
+        my $bridge_template = UR::BoolExpr::Template->resolve($bridge_class, @their_join_properties, @where_properties);
+
+        $bridge_collector = sub {
+            my $self = shift;
+            my @my_values = map { $self->$_} @my_join_properties;
+            my $bx = $bridge_template->get_rule_for_values(@my_values, @where_values);
+            return $bridge_class->get($bx);
+         };
+
+         if($to_property_meta->is_delegated and $to_property_meta->via) {
+             # It's a "normal" doubly delegated property
+             my $second_via_property_meta = $to_property_meta->via_property_meta; 
+             my $final_class_name = $second_via_property_meta->data_type;
+         
+             if ($final_class_name and $final_class_name ne 'UR::Value' and $final_class_name->isa('UR::Object')) {
+                 my @via2_join_properties = $second_via_property_meta->get_property_name_pairs_for_join;
+                 if (@via2_join_properties > 1) {
+                     Carp::carp("via2 join not implemented :(");
+                     return;
+                 }
+                 my($my_property_name,$their_property_name) = @{ $via2_join_properties[0] };
+                 my $crosser_template = UR::BoolExpr::Template->resolve($final_class_name, "$their_property_name in");
+
+                 my $result_property_name = $to_property_meta->to;
+
+                 $bridge_crosser = sub {
+                     my @linking_values = map { $_->$my_property_name } @_;
+                     my $bx = $crosser_template->get_rule_for_values(\@linking_values);
+                     my @result_objects = $final_class_name->get($bx);
+                     return map { $_->$result_property_name } @result_objects;
+                 };
+             }
+
+         } elsif ($to_property_meta->id_by and $to_property_meta->id_class_by) {
+            # Bridging through an 'id_class_by' property
+            # bucket the bridge items by the result class and do a get for
+            # each of those classes with a listref of IDs
+            my $result_class_resolver = $to_property_meta->id_class_by;
+            my $bridging_identifiers = $to_property_meta->id_by;
+
+            $bridge_crosser = sub {
+                my %result_class_names_and_ids;
+
+                foreach my $bridge ( @_ ) {
+                    my $result_class = $bridge->$result_class_resolver;
+                    $result_class_names_and_ids{$result_class} ||= [];
+
+                    my $id_resolver = $result_class->__meta__->get_composite_id_resolver;
+                    my @id = map { $bridge->$_ } @$bridging_identifiers;
+                    my $id = $id_resolver->(@id);
+
+                    push @{ $result_class_names_and_ids{ $result_class } }, $id;
+                }
+
+                my @results;
+                foreach my $result_class ( keys %result_class_names_and_ids ) {
+                    if($result_class eq 'UR::Value') { #can't group queries together for UR::Values
+                        push @results, map { $result_class->get($_) } @{$result_class_names_and_ids{$result_class}};
+                    } else {
+                        push @results, $result_class->get($result_class_names_and_ids{$result_class});
+                    }
+                }
+                return @results;
+            };
+        }
+
+    }
+    return ($bridge_collector, $bridge_crosser);
+}
+         
+
+
 sub mk_indirect_ro_accessor {
-    my ($self, $class_name, $accessor_name, $via, $to, $where) = @_;
+    my ($ur_object_type, $class_name, $accessor_name, $via, $to, $where) = @_;
     my @where = ($where ? @$where : ());
     my $full_name = join( '::', $class_name, $accessor_name );
     my $filterable_accessor_name = 'get_' . $accessor_name;  # FIXME we need a better name for 
     my $filterable_full_name = join( '::', $class_name, $filterable_accessor_name );
 
+    my($bridge_collector, $bridge_crosser);
+
     my $accessor = Sub::Name::subname $full_name => sub {
         my $self = shift;
         Carp::confess("assignment value passed to read-only indirect accessor $accessor_name for class $class_name!") if @_;
-        my @bridges = $self->$via(@where);
+
+        unless ($bridge_collector) {
+            ($bridge_collector, $bridge_crosser)
+                = $ur_object_type->_resolve_bridge_logic_for_indirect_property($class_name, $accessor_name, $via, $to, \@where);
+        }
+
+        my @bridges = $bridge_collector->($self);
+
         return unless @bridges;
         return $self->context_return(@bridges) if ($to eq '-filter');
 
-        my @results = map { $_->$to } @bridges;
+        my @results = $bridge_crosser->(@bridges);
         $self->context_return(@results); 
     };
+
+    unless ($accessor_name) {
+        Carp::confess("No accessor name specified for indirect ro accessor $class_name $accessor!");
+    }
 
     Sub::Install::reinstall_sub({
         into => $class_name,
@@ -239,7 +381,6 @@ sub mk_indirect_ro_accessor {
 
     my $filterable_accessor = Sub::Name::subname $filterable_full_name => sub {
         my $self = shift;
-        #my @results = $accessor->($self);
         my @results = $self->$accessor_name();
         if (@_) {
             my $rule;
@@ -263,7 +404,7 @@ sub mk_indirect_ro_accessor {
 
 
 sub mk_indirect_rw_accessor {
-    my ($self, $class_name, $accessor_name, $via, $to, $where, $singular_name) = @_;
+    my ($ur_object_type, $class_name, $accessor_name, $via, $to, $where, $singular_name) = @_;
     my @where = ($where ? @$where : ());
     my $full_name = join( '::', $class_name, $accessor_name );
     
@@ -308,9 +449,17 @@ sub mk_indirect_rw_accessor {
         return $update_strategy;
     };
  
+    my ($bridge_collector, $bridge_crosser);
     my $accessor = Sub::Name::subname $full_name => sub {
         my $self = shift;
-        my @bridges = $self->$via(@where);
+
+        unless ($bridge_collector) {
+            ($bridge_collector, $bridge_crosser)
+                = $ur_object_type->_resolve_bridge_logic_for_indirect_property($class_name, $accessor_name, $via, $to, \@where);
+        }
+
+        my @bridges = $bridge_collector->($self);
+
 	# TODO: we should throw an exception if >1 bridges are found, b/c this cannot be is_many and also rw.
         if (@_) {            
             $resolve_update_strategy->() unless (defined $update_strategy);
@@ -358,17 +507,15 @@ sub mk_indirect_rw_accessor {
         if (not defined $is_many) {
             $resolve_update_strategy->();
         }
+
         if ($is_many) {
             return unless @bridges;
-            my @results = map { $_->$to } @bridges;
-            $self->context_return(@results); 
-        }
-        else {
+            my @results = $bridge_crosser->(@bridges);
+            $self->context_return(@results);
+        } else {
             return undef unless @bridges;
             my @results = map { $_->$to } @bridges;
             $self->context_return(@results);
-            #my $value = $self->context_return(@results); 
-            #return $value;
         }
     };
 
@@ -571,7 +718,8 @@ sub mk_dimension_delegate_accessors {
                 # (farther below).
                 my $old = $delegate->$other_accessor_name;
                 my $new = shift;                    
-                if (do { no warnings; $old ne $new }) {
+                my $different = eval { no warnings; $old ne $new };
+                if ($different or $@ =~ m/has no overloaded magic/) {
                     $self->{$accessor_name} = undef;
                     for my $property (@$non_id_properties) {
                         if ($property eq $other_accessor_name) {
@@ -594,8 +742,8 @@ sub mk_dimension_delegate_accessors {
                 # set
                 my $old = $self->{ $other_accessor_name };
                 my $new = shift;
-                if ($old ne $new)
-                {
+                my $different = eval { no warnings; $old ne $new };
+                if ($different or $@ =~ m/has no overloaded magic/) {
                     $self->{ $other_accessor_name } = $new;
                     $self->__signal_change__( $other_accessor_name, $old, $new ) unless $is_transient;
                 }
@@ -632,8 +780,8 @@ sub mk_dimension_identifying_accessor {
         if (@_ > 1) {
             my $old = $_[0]->{ $accessor_name };
             my $new = $_[1];
-            if ($old ne $new)
-            {
+            my $different = eval { no warnings; $old ne $new };
+            if ($different or $@ =~ m/has no overloaded magic/) {
                 $_[0]->{ $accessor_name } = $new;
                 $_[0]->__signal_change__( $accessor_name, $old, $new ) unless $is_transient;
             }
@@ -700,8 +848,8 @@ sub mk_ro_class_accessor {
 
             no warnings;
 
-            if ($old ne $new)
-            {
+            my $different = eval { no warnings; $old ne $new };
+            if ($different or $@ =~ m/has no overloaded magic/) {
                 Carp::croak("Cannot change read-only class-wide property $accessor_name for class $class_name from $old to $new!");
             }
             return $new;
@@ -749,15 +897,17 @@ sub mk_object_set_accessors {
         my $loading_r_class_error = '';
         if (defined $r_class_name) {
             eval {
-                unless (__PACKAGE__->use_module_with_namespace_constraints($r_class_name)) {
-                #if ($@) {
+                $r_class_meta = UR::Object::Type->is_loaded($r_class_name);
+                unless ($r_class_meta or __PACKAGE__->use_module_with_namespace_constraints($r_class_name)) {
                     # Don't die yet.  The named class may not have a file associated with it
                     $loading_r_class_error = "Couldn't load class $r_class_name: $@";
                     $@ = '';
                 }
 
-                $r_class_name->class;
-                $r_class_meta = UR::Object::Type->get(class_name => $r_class_name);
+                unless ($r_class_meta) {
+                    $r_class_name->class;
+                    $r_class_meta = UR::Object::Type->get(class_name => $r_class_name);
+                }
             };
             if ($@) {
                 $loading_r_class_error .= "Couldn't get class object for $r_class_name: $@";
@@ -818,7 +968,7 @@ sub mk_object_set_accessors {
                 push @get_params, $id_class_by, $class_name;
                 push @property_names, 'class';
             }
-            my $tmp_rule = $r_class_name->define_boolexpr(@get_params);
+            my $tmp_rule = $r_class_name->define_boolexpr(@get_params,@where);
             if (my $order_by = $property_meta->order_by) {
                 push @get_params, $order_by;
             }
@@ -833,18 +983,27 @@ sub mk_object_set_accessors {
         }
     };
 
+    my @where_values;
+    for (my $i = 1; $i < @where; $i+=2) {
+        if (ref($where[$i]) eq 'HASH' and exists($where[$i]->{'operator'})) {
+            push @where_values, $where[$i]->{'value'};  # the operator is already stored in the template
+        } else {
+            push @where_values, $where[$i];
+        }
+    }
+
     my $rule_accessor = Sub::Name::subname $class_name ."::__$singular_name" . '_rule' => sub {
         my $self = shift;
         $rule_resolver->($self) unless ($rule_template);
         unless ($rule_template) {
             die "no indirect rule available for locally-stored 'has-many' relationship";
         }
-        if (@_ or @where) {
-            my $tmp_rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names); 
-            return $r_class_name->define_boolexpr($tmp_rule->params_list,@where, @_);
+        if (@_) {
+            my $tmp_rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names), @where_values); 
+            return $r_class_name->define_boolexpr($tmp_rule->params_list, @_);
         }
         else {
-            return $rule_template->get_rule_for_values(map { $self->$_ } @property_names); 
+            return $rule_template->get_rule_for_values((map { $self->$_ } @property_names),@where_values); 
         }
     };
     Sub::Install::reinstall_sub({
@@ -858,9 +1017,9 @@ sub mk_object_set_accessors {
         my $self = shift;
         $rule_resolver->($self) unless ($rule_template);
         if ($rule_template) { 
-            my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names); 
-            if (@_ or @where) {
-                return $r_class_name->get($rule->params_list,@where,@_);
+            my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names), @where_values);
+            if (@_) {
+                return $r_class_name->get($rule->params_list,@_);
             }
             else {
                 return $r_class_name->get($rule);
@@ -910,9 +1069,9 @@ sub mk_object_set_accessors {
         my $self = shift;
         $rule_resolver->($self) unless ($rule_template);
         if ($rule_template) {
-            my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names); 
-            if (@_ or @where) {
-                return $r_class_name->create_iterator($rule->params_list,@where,@_);
+            my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names), @where_values);
+            if (@_) {
+                return $r_class_name->create_iterator($rule->params_list,@_);
             } else {
                 return UR::Object::Iterator->create_for_filter_rule($rule);
             }
@@ -931,9 +1090,9 @@ sub mk_object_set_accessors {
         my $self = shift;
         $rule_resolver->($self) unless ($rule_template);
         if ($rule_template) {
-            my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names); 
-            if (@_ or @where) {
-                return $r_class_name->define_set($rule->params_list,@where,@_);
+            my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names),@where_values);
+            if (@_) {
+                return $r_class_name->define_set($rule->params_list,@_);
             } else {
                 return $rule; 
             }
@@ -986,11 +1145,11 @@ sub mk_object_set_accessors {
             my $self = shift;
             $rule_resolver->($self) unless ($rule_template);
             if ($rule_template) {
-                my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names);
+                my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names), @where_values);
                 $params_prefix_resolver->() unless $params_prefix_resolved;
                 unshift @_, @params_prefix if @_ == 1;
-                if (@where or @_) {
-                    return my $obj = $r_class_name->get($rule->params_list,@where,@_);
+                if (@_) {
+                    return my $obj = $r_class_name->get($rule->params_list,@_);
                 }
                 else {
                     return my $obj = $r_class_name->get($rule);
@@ -1025,8 +1184,8 @@ sub mk_object_set_accessors {
         if ($rule_template) {
             $params_prefix_resolver->() unless $params_prefix_resolved;
             unshift @_, @params_prefix if @_ == 1;
-            my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names);        
-            $r_class_name->create($rule->params_list,@where,@_);
+            my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names), @where_values);
+            $r_class_name->create($rule->params_list,@_);
         }
         else {
             if ($r_class_meta) {
@@ -1063,7 +1222,7 @@ sub mk_object_set_accessors {
         $rule_resolver->($self) unless ($rule_template);
         if ($rule_template) {
             # an id-linked "has-many"
-            my $rule = $rule_template->get_rule_for_values(map { $self->$_ } @property_names);
+            my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names), @where_values);
             $params_prefix_resolver->() unless $params_prefix_resolved;
             my @matches;
             if (@_ == 1 and ref($_[0])) {
@@ -1208,7 +1367,11 @@ sub initialize_direct_accessors {
             }
             @$isa = @old_isa;
         };
-        
+
+        unless ($accessor_name) {
+            Carp::confess("No accessor name for property $class_name $property_name?");
+        }        
+
         my $accessor_type;
         my @calculation_fields = (qw/calculate calc_perl calc_sql calculate_from/);
         if (my $id_by = $property_data->{id_by}) {

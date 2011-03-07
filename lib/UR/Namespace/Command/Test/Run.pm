@@ -12,7 +12,7 @@ use Path::Class; # qw(file dir);
 use DBI;
 use Cwd;
 use UR;
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 use File::Find;
 
 use TAP::Harness;
@@ -95,6 +95,9 @@ sub execute {
     $self->dump_error_messages(0);
     eval {
         if ($self->SUPER::_init(@_)) {
+            my $datasource_meta_class = $self->namespace_name . '::DataSource::Meta';
+            my $datasource_meta = $datasource_meta_class->get();
+            $datasource_meta->create_dbh();
             $self->status_message("Running tests within namespace ".$self->namespace_name);
         }
     };

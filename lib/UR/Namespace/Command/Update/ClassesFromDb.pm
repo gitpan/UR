@@ -4,7 +4,7 @@ package UR::Namespace::Command::Update::ClassesFromDb;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 use Text::Diff;
 
 UR::Object::Type->define(
@@ -445,7 +445,7 @@ sub _update_database_metadata_objects_for_schema_changes {
 
     my %all_table_names = (%current_table_names, %previous_table_names);
 
-    my $new_object_revision = UR::Time->now();
+    my $new_object_revision = $UR::Context::current->now();
 
     # handle tables which are new/updated by updating the class
     my (@create,@delete,@update);
@@ -1185,7 +1185,12 @@ sub  _update_class_metadata_objects_to_match_database_metadata_changes {
         my @uc_names = $table->unique_constraint_names;
         for my $uc_name (@uc_names)
         {
-            $class->remove_unique_constraint($uc_name);
+            eval { $class->remove_unique_constraint($uc_name) };
+            if ($@ =~ m/There is no constraint named/) {
+                next;  # it's OK if there's no UR metadata for this constraint yet
+            } else {
+                die $@;
+            }
 
             my @uc_cols = map { ref($_) ? @$_ : $_ } $table->unique_constraint_column_names($uc_name);
             my @uc_property_names;

@@ -6,7 +6,7 @@ use Scalar::Util;
 use File::Basename;
 
 require UR;
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS',
@@ -227,6 +227,18 @@ sub generate_schema_for_class_meta {
         $column->remarks($property->doc);
     }
 
+    for my $property ( $class_meta->direct_id_property_metas ) {
+
+        unless (UR::DataSource::RDBMS::PkConstraintColumn->get(table_name => $table->table_name, owner => $table->owner, column_name => $property->column_name, data_source => $table->data_source)) {
+            UR::DataSource::RDBMS::PkConstraintColumn->$method(
+                column_name => $property->column_name,
+                data_source => $table->data_source,
+                owner       => $table->owner,
+                rank        => $property->is_id,
+                table_name  => $table->table_name );
+        }
+    }
+
     for my $property ($class_meta->properties) {
         my $id_by = $property->id_by;
         next unless $id_by;
@@ -295,7 +307,7 @@ sub generate_schema_for_class_meta {
 
     unless ($temp) {
         my @ddl = $self->_resolve_ddl_for_table($table);
-        $t = UR::Time->now;
+        $t = $UR::Context::current->now;
         if (@ddl) {
             my $dbh = $table->data_source->get_default_handle;
             for my $ddl (@ddl) {
@@ -779,7 +791,7 @@ sub refresh_database_metadata_for_table_name {
     my @all_constraints;
 
     # this must be on or before the actual data dictionary queries
-    my $revision_time = UR::Time->now();
+    my $revision_time = $UR::Context::current->now();
 
     # We'll count a table object as changed even if any of the columns,
     # FKs, etc # were changed
@@ -3634,7 +3646,10 @@ sub _generate_template_data_for_loading {
 
         my $final_accessor_property_meta = $last_class_object_excluding_inherited_joins->property_meta_for_name($final_accessor);
         unless ($final_accessor_property_meta) {
-            die "Failed to find property $final_accessor for class " . $last_class_object_excluding_inherited_joins->class_name . "!";
+            Carp::croak("No property metadata for property named '$final_accessor' in class "
+                        . $last_class_object_excluding_inherited_joins->class_name
+                        . " while resolving joins for property '" . $delegated_property->property_name . "' in class "
+                        . $delegated_property->class_name);
         }
 
         # we don't know for all of the joined properties how they connect back,

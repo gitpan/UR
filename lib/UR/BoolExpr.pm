@@ -8,7 +8,7 @@ use Carp;
 
 our @CARP_NOT = ('UR::Context');
 
-our $VERSION = "0.28"; # UR $VERSION;;
+our $VERSION = "0.29"; # UR $VERSION;;
 
 # readable stringification
 use overload ('""' => '__display_name__');
@@ -286,7 +286,7 @@ sub resolve_for_template_id_and_values {
 my $resolve_depth;
 sub resolve {
     $resolve_depth++;
-    Carp::confess("Deep recursion!") if $resolve_depth > 10;
+    Carp::confess("Deep recursion in UR::BoolExpr::resolve()!") if $resolve_depth > 10;
 
     # handle the case in which we've already processed the params into a boolexpr
     if ( @_ == 3 and ref($_[2]) and ref($_[2])->isa("UR::BoolExpr") ) {
@@ -517,7 +517,6 @@ sub resolve {
                     # push @swap_key_value, $property_name;
                 }
                 else {
-                    $DB::single = 1;
                     # disable: break 47, enable: break 62
                     #push @swap_key_pos, $vn-1;
                     #push @swap_key_value, $property_name;
@@ -951,7 +950,7 @@ UR::BoolExpr - a "where clause" for objects
         ssn => '123-45-6789',
         name => 'Pat Jones',
         status => 'active', 
-        start_date => UR::Time->now,
+        start_date => UR::Context->current->now,
         payroll_category => 'hourly',
     );    
         

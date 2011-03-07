@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = '0.28'; # UR $VERSION
+our $VERSION = "0.29"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -30,6 +30,13 @@ for my $dir (@INC, @PERL5LIB) {
     $dir = Cwd::abs_path($dir) || $dir;
 }
 $ENV{PERL5LIB} = join(':', @PERL5LIB);
+
+# Also need to fix modules that were already loaded, so that when
+# a namespace is loaded the path will not change out from
+# underneath it.
+for my $module (keys %INC) {
+    $INC{$module} = Cwd::abs_path($INC{$module});
+}
 
 # UR supports several environment variables, found under UR/ENV
 # Any UR_* variable which is set but does NOT corresponde to a module found will cause an exit
@@ -76,6 +83,9 @@ BEGIN {
     }
 };
 
+# Regular deps
+use Date::Format;
+
 #
 # Because UR modules execute code when compiling to define their classes,
 # and require each other for that code to execute, there are bootstrapping 
@@ -91,7 +101,6 @@ BEGIN {
 
 require UR::Exit;
 require UR::Util;
-require UR::Time;
 
 require UR::Report;         # this is used by UR::DBI
 require UR::DBI;            # this needs a new name, and need only be used by UR::DataSource::RDBMS
@@ -240,13 +249,15 @@ UR::Object::Type->define(
         # different ways of handling subclassing at object load time
         subclassify_by                      => { is => 'Text', len => 256, is_optional => 1,
                                                 doc => 'when set, the method specified will return the name of a specific subclass into which the object should go' },
-
+        
         subclass_description_preprocessor   => { is => 'MethodName', len => 255, is_optional => 1,
                                                 doc => 'a method which should pre-process the class description of sub-classes before construction' },
         
         sub_classification_method_name      => { is => 'Text', len => 256, is_optional => 1, 
                                                 doc => 'like subclassify_by, but examines whole objects not a single property' },
 
+        use_parallel_versions               => { is => 'Boolean', is_optional => 1, default_value => 0,
+                                                doc => 'inheriting from the is class will redirect to a ::V? module implemeting a specific version' },
         
         # obsolete/internal
         type_name                               => { is => 'Text', len => 256,  },
@@ -449,7 +460,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.28
+This document describes UR version 0.29
 
 =head1 SYNOPSIS
 

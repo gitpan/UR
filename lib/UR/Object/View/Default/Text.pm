@@ -3,7 +3,7 @@ package UR::Object::View::Default::Text;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 
 class UR::Object::View::Default::Text {
     is => 'UR::Object::View',
@@ -85,7 +85,6 @@ sub _generate_content {
 
     # the header line is the class followed by the id
     my $text = $self->subject_class_name;
-$DB::single=1 if $text eq 'Genome::Model::Build::Input';
     $text =~ s/::/ /g;
     my $subject = $self->subject();
     if ($subject) {

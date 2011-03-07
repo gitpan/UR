@@ -5,7 +5,7 @@ package UR::Object;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 
 use Data::Dumper;
 use Scalar::Util qw(blessed);
@@ -163,6 +163,7 @@ sub is_loaded {
         return $obj if $obj;
         # we could safely return nothing right now, except 
         # that a subclass of this type may have the object
+        return unless $_[0]->subclasses_loaded;  # nope, there were no subclasses
     }
 
     my $class = shift;

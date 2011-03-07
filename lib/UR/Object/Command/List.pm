@@ -8,7 +8,7 @@ require Term::ANSIColor;
 use UR;
 use UR::Object::Command::List::Style;
 
-our $VERSION = "0.28"; # UR $VERSION;
+our $VERSION = "0.29"; # UR $VERSION;
 
 class UR::Object::Command::List {
     is => 'Command',
@@ -61,6 +61,7 @@ class UR::Object::Command::List {
     doc => 'lists objects matching specified params'
 };
 
+sub sub_command_sort_position { .2 };
 
 sub create {
     my $class = shift;
@@ -108,7 +109,7 @@ sub execute {
         or return;
 
     my $bool_expr = $self->_resolve_boolexpr();
-    return if not $bool_expr;
+    return unless (defined $bool_expr);
   
     # preloading the data ensures that the iterator doesn't trigger requery
     my @results = $self->subject_class_name->get($bool_expr);

@@ -89,7 +89,7 @@ These methods create and change message handlers.
 require 5.006_000;
 use warnings;
 use strict;
-our $VERSION = "0.28"; # UR $VERSION;;
+our $VERSION = "0.29"; # UR $VERSION;;
 
 # set up module
 use Carp;
@@ -428,7 +428,10 @@ sub context_return {
     my $class = shift;
     return unless defined wantarray;
     return @_ if wantarray;
-    Carp::confess("Method on $class called in scalar context, but " . scalar(@_) . " items need to be returned") if @_ > 1;
+    if (@_ > 1) {
+        my @caller = caller(1);
+        Carp::croak("Method $caller[3] on $class called in scalar context, but " . scalar(@_) . " items need to be returned");
+    }
     return $_[0];
 }
 

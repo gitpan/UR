@@ -32,12 +32,12 @@ my $build = $subclass->new(
 
     # pure Perl
     'Class::Autouse'      => '2.0',
+    'Class::AutoloadCAN'  => '0.03',
     'Clone::PP'           => '1.02',
     'Carp'                => '',
     'Sys::Hostname'       => '1.11',
     'File::Basename'      => '2.73',
     'Lingua::EN::Inflect' => '1.88',
-    'Date::Pcalc'         => '',
     'Date::Format'        => '',
     'Data::Compare'       => '0.13',
     'Text::Diff'          => '0.35',
@@ -61,6 +61,7 @@ my $build = $subclass->new(
     # possibly move to a web-specific 
     'Net::HTTPServer'     => '',
     'CGI::Application'    => '',
+    'URI::Escape'         => '',
     
     #'Getopt::Complete' => [
     # we may migrate some of the Command logic here and really depend on it
