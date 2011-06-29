@@ -6,7 +6,9 @@ require UR;
 
 # Used during bootstrapping.
 our @ISA = qw(UR::Object);
-our $VERSION = "0.30"; # UR $VERSION;;
+our $VERSION = "0.32"; # UR $VERSION;;
+
+our @CARP_NOT = qw( UR::Object UR::Context  UR::ModuleLoader Class::Autouse UR::BoolExpr );
 
 # Most of the API for this module are legacy internals required by UR.
 use UR::Object::Type::InternalAPI;
@@ -20,42 +22,110 @@ use UR::Object::Type::AccessorWriter;
 # The methods to extract/(re)create definition text in the module source file.
 use UR::Object::Type::ModuleWriter;
 
+# Present the internal definer as an external method
 sub define { shift->__define__(@_) }
 
-# These mimic the regular has-many object accessor, but handle inheritance
-# Once we have "isa" and a converse we can do this with regular operators.
+# For efficiency, certain hash keys inside the class cache property metadata
+# These go in this array, and are cleared when property metadata is mutated
+our @cache_keys;
+
+# This is the function behind $class_meta->properties(...)
+# It mimics the has-many object accessor, but handles inheritance
+# Once we have "isa" and "is-parent-of" operator we can do this with regular operators.
+push @cache_keys, '_properties';
 sub _properties {
+    my $self = shift;
+    my $all = $self->{_properties} ||= do {
+        # start with everything, as it's a small list
+        my $map = $self->_property_name_class_map;
+        my @all;
+        for my $property_name (sort keys %$map) {
+            my $class_names = $map->{$property_name};
+            my $class_name = $class_names->[0];
+            my $id = $class_name . "\t" . $property_name;
+            my $property_meta = UR::Object::Property->get($id);
+            unless ($property_meta) {
+                Carp::confess("Failed to find property meta for $class_name $property_name?");
+            }
+            push @all, $property_meta; 
+        }
+        \@all;
+    };
+    if (@_) {
+        my $bx = UR::Object::Property->define_boolexpr(@_);
+        my @matches = grep { $bx->evaluate($_) } @$all; 
+        return if not defined wantarray;
+        return @matches if wantarray;
+        die "Matched multiple meta-properties, but called in scalar context!" . Data::Dumper::Dumper(\@matches) if @matches > 1;
+        return $matches[0];
+    }
+    else {
+        @$all;
+    }
+}
+
+sub property {
+    if (@_ == 2) {
+        # optimize for the common case
+        my ($self, $property_name) = @_;
+        my $class_names = $self->_property_name_class_map->{$property_name};
+        my $id = $class_names->[0] . "\t" . $property_name;
+        return UR::Object::Property->get($id); 
+    }
+    else {
+        # this forces scalar context, raising an exception if
+        # the params used result in more than one match
+        my $one = shift->properties(@_);
+        return $one;
+    }
+}
+
+push @cache_keys, '_property_names';
+sub property_names {
+    my $self = $_[0];
+    my $names = $self->{_property_names} ||= do {
+        my @names = sort keys %{ shift->_property_name_class_map };
+        \@names;
+    };
+    return @$names;
+}
+
+push @cache_keys, '_property_name_class_map';
+sub _property_name_class_map {
+    my $self = shift;
+    my $map = $self->{_property_name_class_map} ||= do {
+        my %map = ();  
+        for my $class_name ($self->class_name, $self->ancestry_class_names) {
+            my $class_meta = UR::Object::Type->get($class_name);
+            if (my $has = $class_meta->{has}) {
+                for my $key (sort keys %$has) {
+                    my $classes = $map{$key} ||= [];
+                    push @$classes, $class_name;
+                }
+            }
+        }
+        \%map;
+    };
+    return $map;
+}
+
+# The prior implementation of _properties() (behind ->properties())
+# filtered out certain property meta.  This is the old version.
+# The new version above will return one object per property name in
+# the meta ancestry.
+sub _legacy_properties {
     my $self = shift;
     if (@_) {
         my $bx = UR::Object::Property->define_boolexpr(@_);
         my @matches = grep { $bx->evaluate($_) } $self->property_metas;
         return if not defined wantarray;
         return @matches if wantarray;
-        die "Matched multiple meta-properties, but called in scalar context!" if @matches > 1;
+        die "Matched multiple meta-properties, but called in scalar context!" . Data::Dumper::Dumper(\@matches) if @matches > 1;
         return $matches[0];
     }
     else {
         $self->property_metas;
     }
-}
-
-sub property {
-    # TODO: force scalar context a better way..
-    my $p;
-    if (@_ == 2) {
-        # optimize for the common case
-        $p = $_[0]->direct_property_meta($_[1]);
-        unless ($p) {
-            for ($_[0]->ancestry_class_names) {
-                $p = $_->__meta__->direct_property_meta($_[1]);
-                last if $p;
-            }
-        }
-    }
-    else {
-        $p = shift->properties(@_);
-    }
-    return $p;
 }
 
 1;
@@ -239,12 +309,31 @@ the properties of any parent classes which are inherited by this class.
 
 See L<UR::Object::Property> for details.
 
+=item id_properties
+
+  @all_id = $class_obj->id_properties();
+
+  @some = $class_obj->properties(
+      'is                    => ['Text','Number']
+      'doc like'             => '%important%',
+      'property_name like'   => 'someprefix_%',
+  );
+
+Like properties(), but only returns ID property metadata.
+
 =item property
 
   $property_meta = $class_obj->property('someproperty');
 
 The singular version of the above.  A single argument, as usual, is treated
 as the remainder of the ID, and will select a property by name.
+
+=item property_names 
+
+  @names = $class_obj->property_names;
+
+Returns a list of all properties belonging to the class, directly
+or through inheritance.
 
 =item namespace
 

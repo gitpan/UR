@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Pg',
@@ -22,7 +22,7 @@ sub driver { "Pg" }
 #    return $self->_database_file_path;
 #}
 
-sub owner { uc(shift->_singleton_object->login) }
+sub owner { shift->_singleton_object->login }
 
 #sub login {
 #    undef
@@ -37,7 +37,7 @@ sub can_savepoint { 1;}
 sub set_savepoint {
 my($self,$sp_name) = @_;
 
-    my $dbh = $self->get_default_dbh;
+    my $dbh = $self->get_default_handle;
     $dbh->pg_savepoint($sp_name);
 }
 
@@ -45,7 +45,7 @@ my($self,$sp_name) = @_;
 sub rollback_to_savepoint {
 my($self,$sp_name) = @_;
 
-    my $dbh = $self->get_default_dbh;
+    my $dbh = $self->get_default_handle;
     $dbh->pg_rollback_to($sp_name);
 }
 
@@ -69,8 +69,8 @@ sub _get_next_value_from_sequence {
 my($self,$sequence_name) = @_;
 
     # we may need to change how this db handle is gotten
-    my $dbh = $self->get_default_dbh;
-    my($new_id) = $dbh->selectrow_array("SELECT nextval($sequence_name)");
+    my $dbh = $self->get_default_handle;
+    my($new_id) = $dbh->selectrow_array("SELECT nextval('$sequence_name')");
 
     if ($dbh->err) {
         die "Failed to prepare SQL to generate a column id from sequence: $sequence_name.\n" . $dbh->errstr . "\n";
@@ -109,7 +109,7 @@ my($self,$table_name) = @_;
           and i.indisvalid = 't'
     );
     
-    my $dbh = $self->get_default_dbh();
+    my $dbh = $self->get_default_handle();
     return undef unless $dbh;
 
     my $sth = $dbh->prepare($sql);
@@ -127,6 +127,25 @@ my($self,$table_name) = @_;
     return $ret;
 }
 
+my %ur_data_type_for_vendor_data_type = (
+     # DB type      UR Type
+     'SMALLINT'  => ['Integer', undef],
+     'BIGINT'    => ['Integer', undef],
+     'SERIAL'    => ['Integer', undef],
+
+     'BYTEA'     => ['Blob', undef],
+
+     'DOUBLE PRECISION' => ['Number', undef],
+);
+sub ur_data_type_for_data_source_data_type {
+    my($class,$type) = @_;
+
+    my $urtype = $ur_data_type_for_vendor_data_type{uc($type)};
+    unless (defined $urtype) {
+        $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
+    }
+    return $urtype;
+}
 
 
 1;

@@ -3,7 +3,7 @@ package UR::BoolExpr::Template::PropertyComparison;
 
 use warnings;
 use strict;
-our $VERSION = "0.30"; # UR $VERSION;;
+our $VERSION = "0.32"; # UR $VERSION;;
 
 # Define the class metadata.
 
@@ -33,8 +33,23 @@ sub property_name {
     (split(' ',$_[0]->logic_detail))[0]
 }
 
+
 sub comparison_operator {
     (split(' ',$_[0]->logic_detail))[1]
+}
+
+sub sub_group {
+    my $self = shift;
+    my $spec = $self->property_name;
+    if ($spec =~ /-/) {
+        #$DB::single = 1;
+    }
+    if ($spec =~ /^(.*)+\-(\w+)(\?|)(\..+|)/) {
+        return $2 . $3; 
+    }
+    else {
+        return '';
+    }
 }
 
 sub get_underlying_rules_for_values {
@@ -47,15 +62,9 @@ sub num_values {
 }
 
 sub evaluate_subject_and_values {
-    $DB::single = 1;
-    my $self = shift;
-    my $subject = shift;
-    Carp::confess(
-        "Failed to implement evaluate_subject_and_values() for '"
-        . $self->comparison_operator
-        . "' !\n"
-        . "Add the method to ". $self->class . ".\n"        
-    );
+    my ($self,$subject,$comparison_value) = @_;
+    my @property_values = $subject->__get_attr__($self->property_name);
+    return $self->_compare($comparison_value, @property_values);
 }
 
 our %subclass_suffix_for_builtin_symbolic_operator = (
@@ -123,7 +132,7 @@ sub _get_for_subject_class_name_and_logic_detail {
     my $subclass_name = $class->resolve_subclass_for_comparison_operator($comparison_operator);    
     my $id = $subclass_name->__meta__->resolve_composite_id_from_ordered_values($subject_class_name, 'PropertyComparison', $logic_detail);
     
-    return $subclass_name->get_or_create($id);
+    return $subclass_name->get($id);
 }
 
 sub comparison_value_and_escape_character_to_regex {    

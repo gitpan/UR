@@ -5,7 +5,7 @@ use strict;
 use IO::File;
 use File::Find;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -52,7 +52,7 @@ EOS
 
 sub execute {
 
-    $DB::single = 1;
+    #$DB::single = 1;
     my $self = shift;
 
     # First, handle all the different ways input files/directories are

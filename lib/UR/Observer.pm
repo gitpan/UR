@@ -5,7 +5,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -15,7 +15,7 @@ UR::Object::Type->define(
         subject         => { is => 'UR::Object', 
                                 calculate_from => ['subject_class_name','subject_id'],
                                 calculate => '$subject_class_name->get($subject_id)' },
-        aspect          => { is => 'String' },
+        aspect          => { is => 'String', is_optional => 1 },
     ],
     is_transactional => 1,
 );
@@ -84,7 +84,7 @@ sub subscription {
 
 sub delete {
     my $self = shift;
-    $DB::single = 1;
+    #$DB::single = 1;
     $self->subject_class_name->cancel_change_subscription(
         $self->subject_id,
         $self->aspect,
@@ -93,15 +93,6 @@ sub delete {
     );
     $self->SUPER::delete();
 }
-
-=pod
-
-=head1
-
-
-
-
-=cut
 
 1;
 

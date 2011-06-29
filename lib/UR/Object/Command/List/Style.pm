@@ -1,6 +1,6 @@
 package UR::Object::Command::List::Style;
 
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 sub new{
     my ($class, %args) = @_;
@@ -39,11 +39,11 @@ sub _object_properties_to_string {
                 }
             }
             else {
-                @v = map { defined $_ ? $_ : '<NULL>' } $o->$_;
+                @v = map { defined $_ ? $_ : '<NULL>' } $o->__get_attr__($_);
             }
             if (@v > 1) {
                 no warnings;
-                join(',',@v)
+                join(' ',@v)
             }
             else {
                 $v[0]

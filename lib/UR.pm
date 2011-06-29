@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = "0.30"; # UR $VERSION
+our $VERSION = "0.32"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -60,16 +60,22 @@ for my $e (keys %ENV) {
 # These two dump info about used modules and libraries at program exit.
 END {
     if ($ENV{UR_USED_LIBS}) {
-        print STDERR "Used libraries:\n";
+        print STDERR "Used library include paths (\@INC):\n";
         for my $lib (@INC) {
             print STDERR "$lib\n";
         }
+        print STDERR "\n";
     }
     if ($ENV{UR_USED_MODS}) {
-        print STDERR "Used modules:\n";
+        print STDERR "Used modules and paths (\%INC):\n";
         for my $mod (sort keys %INC) {
-            print STDERR "$mod\n";
+            if ($ENV{UR_USED_MODS} > 1) {
+                print STDERR "$mod => $INC{$mod}\n";
+            } else {
+                print STDERR "$mod\n";
+            }
         }
+        print STDERR "\n";
     }
 }
 
@@ -115,7 +121,6 @@ require UR::Object;
 require UR::Object::Type;
 
 require UR::Object::Ghost;
-require UR::Object::Type;
 require UR::Object::Property;
 
 
@@ -128,7 +133,6 @@ require UR::BoolExpr::Template::And;                   # has meta
 require UR::BoolExpr::Template::Or;                    # has meta  
 
 require UR::Object::Index;
-
 
 #
 # Define core metadata.
@@ -200,6 +204,9 @@ UR::Object::Type->define(
                                                 
                                                 doc => 'property meta-objects for the class'
                                             },
+        id_properties                    => { is_many => 1,
+                                              calculate => q( grep { defined $_->is_id } shift->_properties(@_) ),
+                                              doc => 'meta-objects for the ID properties of the class' },
 
         doc                              => { is => 'Text', len => 1024, is_optional => 1, 
                                                 doc => 'a one-line description of the class/type' },
@@ -243,8 +250,8 @@ UR::Object::Type->define(
         query_hint                       => { is => 'Text', len => 1024 , is_optional => 1,
                                                 doc => 'used to optimize access to underlying storage (database specific)' },
                                             
-        id_sequence_generator_name       => { is => 'Text', len => 256, is_optional => 1,  
-                                                doc => 'override the default choice for sequence generator name' },
+        id_generator                     => { is => 'Text', len => 256, is_optional => 1,
+                                                doc => 'override the default choice for generating new object IDs' },
 
         # different ways of handling subclassing at object load time
         subclassify_by                      => { is => 'Text', len => 256, is_optional => 1,
@@ -358,7 +365,7 @@ UR::Object::Type->define(
         is_constant                     => { is => 'Boolean' , default_value => 0},  # never changes
         is_mutable                      => { is => 'Boolean' , default_value => 1},  # can be changed explicitly via accessor (cannot be constant)
         is_volatile                     => { is => 'Boolean' , default_value => 0},  # changes w/o a signal: (cannot be constant or transactional)
-        is_class_wide                   => { is => 'Boolean' , default_value => 0},
+        is_classwide                    => { is => 'Boolean' , default_value => 0},
         is_delegated                    => { is => 'Boolean' , default_value => 0},
         is_calculated                   => { is => 'Boolean' , default_value => 0},
         is_transactional                => { is => 'Boolean' , default_value => 1},  # STM works on these, and the object can possibly save outside the app
@@ -432,6 +439,7 @@ do {
 require UR::ModuleLoader;   # signs us up with Class::Autouse
 require UR::Value::Iterator;
 require UR::Object::View;
+require UR::Object::Join;
 
 sub main::ur_core {
     print STDERR "Dumping rules and templates to ./ur_core.stor...\n";
@@ -460,7 +468,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.30
+This document describes UR version 0.32
 
 =head1 SYNOPSIS
 
@@ -732,7 +740,7 @@ XML::Simple
 
 =head1 AUTHORS
 
-UR was built by the software development team at The Genome Center
+UR was built by the software development team at The Genome Institute
 at Washington University School of Medicine (Richard K. Wilson, PI).  
 
 Incarnations of it run laboratory automation and analysis systems 

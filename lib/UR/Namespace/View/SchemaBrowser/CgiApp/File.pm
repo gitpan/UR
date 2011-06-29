@@ -3,7 +3,7 @@ package UR::Namespace::View::SchemaBrowser::CgiApp::File;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use base 'UR::Namespace::View::SchemaBrowser::CgiApp::Base';
 
@@ -11,7 +11,7 @@ use IO::File;
 
 sub setup {
 my($self) = @_;
-$DB::single=1;
+#$DB::single = 1;
     $self->start_mode('show_file');
     $self->mode_param('rm');
     $self->run_modes(

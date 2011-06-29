@@ -3,7 +3,7 @@ package UR::Namespace::Command::Define::Datasource::Rdbms;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use IO::File;
 
@@ -32,8 +32,6 @@ sub help_description {
 
 sub execute {
     my $self = shift;
-
-    $self->_init or return;
 
     my $namespace = $self->namespace_name;
     unless ($namespace) {

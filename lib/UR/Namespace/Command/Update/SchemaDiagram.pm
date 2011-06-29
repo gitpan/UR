@@ -6,7 +6,7 @@ package UR::Namespace::Command::Update::SchemaDiagram;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -52,11 +52,9 @@ use constant MAX_X_AUTO_POSITION => 1000;
 sub execute {
     my $self = shift;
 
-    $self->_init or return;
-
     my $params = shift;
     
-$DB::single=1;
+#$DB::single = 1;
     my $namespace = $self->namespace_name;
     eval "use $namespace";
     if ($@) {
@@ -102,7 +100,7 @@ $DB::single=1;
     #    push @involved_tables, UR::DataSource::RDBMS::Table->get(namespace => $namespace, table_name => $table_name);
     #}
 
-$DB::single=1;
+#$DB::single = 1;
     push @involved_tables ,$self->_get_related_items( names => \@initial_name_list,
                                                       depth => $params->{'depth'},
                                                       namespace => $namespace,

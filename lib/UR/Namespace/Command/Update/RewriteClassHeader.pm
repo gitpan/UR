@@ -5,7 +5,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -44,7 +44,7 @@ It's somewhat of a "perltidy" for the module header.
 
 sub for_each_class_object
 {
-    $DB::single = 1;
+    #$DB::single = 1;
     my $self = shift;
     my $class = shift;
     my $old = $class->module_header_source;

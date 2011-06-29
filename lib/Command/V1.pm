@@ -10,7 +10,7 @@ use Getopt::Long;
 use Term::ANSIColor;
 require Text::Wrap;
 
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 our $entry_point_class;
 our $entry_point_bin;
@@ -154,8 +154,16 @@ My::Command->execute_with_shell_params_and_exit;
 
     my @argv = @ARGV;
     @ARGV = ();
-    my $exit_code = $class->_execute_with_shell_params_and_return_exit_code(@argv);
-    UR::Context->commit;
+    my $exit_code;
+    eval {
+        $exit_code = $class->_execute_with_shell_params_and_return_exit_code(@argv);
+        UR::Context->commit or die "Failed to commit!: " . UR::Context->error_message();
+    };
+    if ($@) {
+        $class->error_message($@);
+        UR::Context->rollback or die "Failed to rollback changes after failed commit!!!\n";
+        $exit_code = 255 unless ($exit_code);
+    }
     exit $exit_code;
 }
 
@@ -178,15 +186,15 @@ sub _execute_with_shell_params_and_return_exit_code
 sub _execute_delegate_class_with_params {
     my ($class, $delegate_class, $params) = @_;
 
-    $delegate_class->dump_status_messages(1);
-    $delegate_class->dump_warning_messages(1);
-    $delegate_class->dump_error_messages(1);
-    $delegate_class->dump_debug_messages(0);
-
     unless ($delegate_class) {
         $class->usage_message($class->help_usage_complete_text);
         return;
     }
+
+    $delegate_class->dump_status_messages(1);
+    $delegate_class->dump_warning_messages(1);
+    $delegate_class->dump_error_messages(1);
+    $delegate_class->dump_debug_messages(0);
 
     if ( $delegate_class->is_sub_command_delegator && !defined($params) ) {
         my $command_name = $delegate_class->command_name;
@@ -196,7 +204,7 @@ sub _execute_delegate_class_with_params {
     }
     if ( $params->{help} ) {
         $delegate_class->usage_message($delegate_class->help_usage_complete_text);
-        return;
+        return 1;
     }
 
     my $command_object = $delegate_class->create(%$params);
@@ -528,10 +536,7 @@ sub resolve_class_and_params_for_argv
         local $SIG{__WARN__} = sub { push @errors, @_ };
         
         unless (GetOptions($params_hash,@spec)) {
-            for my $error (@errors) {
-                $self->error_message($error);
-            }
-            return($self, undef);
+            Carp::croak( join("\n", @errors) );
         }
     };
 
@@ -670,6 +675,76 @@ sub help_usage_complete_text {
     }
 
     return $text;
+}
+
+sub doc_sections {
+    my $self = shift;
+    my @sections;
+
+    my $command_name = $self->command_name;
+    my $version = do { no strict; ${ $self->class . '::VERSION' } };
+    my $help_brief = $self->help_brief;
+    my $datetime = $self->__context__->now;
+    my $sub_commands = $self->help_sub_commands(brief => 1) if $self->is_sub_command_delegator;
+    my ($date,$time) = split(' ',$datetime);
+
+    push(@sections, UR::Doc::Section->create(
+        title => "NAME",
+        content => "$command_name" . ($help_brief ? " - $help_brief" : ""),
+        format => "pod",
+    ));
+
+    push(@sections, UR::Doc::Section->create(
+        title => "VERSION",
+        content =>  "This document " # separated to trick the version updater 
+            . "describes $command_name "
+            . ($version ? "version $version " : "")
+            . "($date at $time)",
+        format => "pod",
+    ));
+
+    if ($sub_commands) {
+        push(@sections, UR::Doc::Section->create(
+            title => "SUB-COMMANDS",
+            content => $sub_commands,
+            format => 'pod',
+        ));
+    } else {
+        my $synopsis = $self->command_name . ' ' . $self->_shell_args_usage_string . "\n\n" . $self->help_synopsis;
+        if ($synopsis) {
+            push(@sections, UR::Doc::Section->create(
+                title => "SYNOPSIS",
+                content => $synopsis,
+                format => 'pod'
+            ));
+        }
+
+        my $required_args = $self->help_options(is_optional => 0, format => "pod");
+        if ($required_args) {
+            push(@sections, UR::Doc::Section->create(
+                title => "REQUIRED ARGUMENTS",
+                content => "=over\n\n$required_args\n\n=back\n\n",
+                format => 'pod'
+            ));
+        }
+
+        my $optional_args = $self->help_options(is_optional => 1, format => "pod");
+        if ($optional_args) {
+            push(@sections, UR::Doc::Section->create(
+                title => "OPTIONAL ARGUMENTS",
+                content => "=over\n\n$optional_args\n\n=back\n\n",
+                format => 'pod'
+            ));
+        }
+
+        push(@sections, UR::Doc::Section->create(
+            title => "DESCRIPTION",
+            content => join('', map { "  $_\n" } split ("\n",$self->help_detail)),
+            format => 'pod',
+        ));
+    }
+
+    return @sections;
 }
 
 sub help_usage_command_pod
@@ -1009,7 +1084,7 @@ sub help_sub_commands
         }
         $text .= "\n";
     }
-    $DB::single = 1;        
+    #$DB::single = 1;        
     return $text;
 }
 
@@ -1286,7 +1361,7 @@ sub sub_command_classes
     return unless @paths;
     my @classes =
         grep {
-            ($_->is_sub_command_delegator or !$_->is_abstract) 
+            ($_->is_sub_command_delegator or !$_->__meta__->is_abstract) 
         }
         grep { $_ and $_->isa('Command') }
         map { $class->class_for_sub_command($_) }
@@ -1491,6 +1566,16 @@ sub system_inhibit_std_out_err {
     open STDERR, ">&", $olderr or die "Can't dup \$olderr: $!";
 
     return $ec;
+}
+
+sub parent_command_class {
+    my $class = shift;
+    $class = ref($class) if ref($class);
+    my @components = split("::", $class);
+    return if @components == 1;
+    my $parent = join("::", @components[0..$#components-1]);
+    return $parent if $parent->can("command_name");
+    return;
 }
 
 

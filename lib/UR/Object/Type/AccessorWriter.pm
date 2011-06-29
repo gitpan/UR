@@ -6,14 +6,12 @@ package UR::Object::Type;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 #use warnings FATAL => 'all';
 
 use Carp ();
 use Sub::Name ();
 use Sub::Install ();
-
-our @CARP_NOT = qw( UR::Object UR::Context );
 
 sub mk_rw_accessor {
     my ($self, $class_name, $accessor_name, $column_name, $property_name, $is_transient) = @_;
@@ -32,7 +30,7 @@ sub mk_rw_accessor {
             if ($different or $@ =~ m/has no overloaded magic/)
             {
                 $_[0]->{ $property_name } = $new;
-                $_[0]->__signal_change__( $accessor_name, $old, $new ) unless $is_transient; # FIXME is $is_transient right here?  Maybe is_volitile instead (if at all)?
+                $_[0]->__signal_change__( $property_name, $old, $new ) unless $is_transient; # FIXME is $is_transient right here?  Maybe is_volatile instead (if at all)?
             }
             return $new;
         }
@@ -45,26 +43,6 @@ sub mk_rw_accessor {
         code => $accessor,
     });
 
-    #$column_name = uc($column_name);
-
-    if ($column_name)
-    {
-        $column_name = uc($column_name);
-        Sub::Install::reinstall_sub({
-            into => $class_name,
-            as   => $column_name,
-            code => $accessor,
-        });
-
-        # These are for backward-compatability with old modules.  Remove asap.
-        no strict 'refs';
-
-        ${$class_name . '::column_for_property'}
-            {$property_name} = $column_name;
-
-        ${$class_name . '::property_for_column'}
-            {$property_name} = $accessor_name;
-    }
 }
 
 
@@ -95,24 +73,6 @@ sub mk_ro_accessor {
         code => $accessor,
     });
 
-    if ($column_name)
-    {
-        $column_name = uc($column_name);
-        Sub::Install::reinstall_sub({
-            into => $class_name,
-            as   => $column_name,
-            code => $accessor,
-        });
-
-        # These are for backward-compatability with old modules.  Remove asap.
-        no strict 'refs';
-
-        ${$class_name . '::column_for_property'}
-            {$property_name} = $column_name;
-
-        ${$class_name . '::property_for_column'}
-            {$property_name} = $accessor_name;
-    }
 }
 
 sub mk_id_based_object_accessor {
@@ -141,7 +101,10 @@ sub mk_id_based_object_accessor {
                     $id_decomposer = undef;
                     $id_resolver = undef;
                     $self->$id_class_by($concrete_r_class_name);
-                }
+                } elsif (! Scalar::Util::blessed($object_value) and ! $object_value->can('id')) {
+                    Carp::croak("Can't call method \"id\" without a package or object reference.  Expected an object as parameter to $accessor_name, not '$object_value'");
+                 }
+
                 $id_decomposer ||= $concrete_r_class_name->__meta__->get_composite_id_decomposer;
                 @id = $id_decomposer->($object_value->id);
                 if (@$id_by == 1) {
@@ -173,7 +136,16 @@ sub mk_id_based_object_accessor {
                 return unless $concrete_r_class_name;
             }
             $id_resolver ||= $concrete_r_class_name->__meta__->get_composite_id_resolver;
-            @id = map { $self->$_ } @$id_by;
+            
+            # eliminate the old map{} because of side effects with $_
+            # when the id_by property happens to be calculated
+            #@id = map { $self->$_ } @$id_by;
+            @id=();
+            for my $property_name (@$id_by) {      # no implicit topic
+                my $value = $self->$property_name; # scalar context
+                push @id, $value;
+            }
+
             $id = $id_resolver->(@id);
             return if not defined $id;
             if ($concrete_r_class_name eq 'UR::Object') {
@@ -198,8 +170,6 @@ sub mk_id_based_object_accessor {
 
 sub _resolve_bridge_logic_for_indirect_property {
     my ($ur_object_type, $class_name, $accessor_name, $via, $to, $where) = @_;
-
-    $DB::single = 1 if $accessor_name eq 'car_parts_prices';
 
     my $bridge_collector = sub { my $self = shift; return $self->$via(@$where) };
     my $bridge_crosser = sub { return map { $_->$to} @_ };
@@ -666,25 +636,6 @@ sub mk_calculation_accessor {
         code => $accessor,
     });
 
-    if ($column_name)
-    {
-        $column_name = uc($column_name);
-        Sub::Install::reinstall_sub({
-            into => $class_name,
-            as   => $column_name,
-            code => $accessor,
-        });
-
-        # These are for backward-compatability with old modules.  Remove asap.
-        no strict 'refs';
-
-        ${$class_name . '::column_for_property'}
-            {$accessor_name} = $column_name;
-
-        ${$class_name . '::property_for_column'}
-            {$accessor_name} = $accessor_name;
-    }
-
     return $accessor;
 }
 
@@ -824,17 +775,6 @@ sub mk_rw_class_accessor
         code => $accessor,
     });
 
-    if ($column_name)
-    {
-        *{$class_name ."::" . $column_name}  = $accessor;
-
-        # These are for backward-compatability with old modules.  Remove asap.
-        ${$class_name . '::column_for_property'}
-            {$accessor_name} = $column_name;
-
-        ${$class_name . '::property_for_column'}
-            {$column_name} = $accessor_name;
-    }
 }
 
 sub mk_ro_class_accessor {
@@ -861,18 +801,6 @@ sub mk_ro_class_accessor {
         as   => $accessor_name,
         code => $accessor,
     });
-
-    if ($column_name)
-    {
-        *{$class_name ."::" . $column_name}  = $accessor;
-
-        # These are for backward-compatability with old modules.  Remove asap.
-        ${$class_name . '::column_for_property'}
-            {$accessor_name} = $column_name;
-
-        ${$class_name . '::property_for_column'}
-            {$column_name} = $accessor_name;
-    }
 }
 
     
@@ -914,8 +842,8 @@ sub mk_object_set_accessors {
             }
         }
         if ($r_class_meta and not $reverse_as) {
-            # we have a real class on the other end, and it did not specify how to link back to us
-            # try to infer how, otherwise fall back to the same logic we use with "primitives"
+            # We have a real class on the other end, and it did not specify know to link back to us.
+            # Try to infer how, otherwise fall back to the same logic we use with "primitives".
             my @possible_relationships = grep { $_->data_type eq $class_name }
                                          grep { defined $_->data_type }
                                          $r_class_meta->all_property_metas();
@@ -1006,12 +934,12 @@ sub mk_object_set_accessors {
             return $rule_template->get_rule_for_values((map { $self->$_ } @property_names),@where_values); 
         }
     };
+
     Sub::Install::reinstall_sub({
         into => $class_name,
         as   => "__$singular_name" . '_rule',
         code => $rule_accessor,
     });
-
 
     my $list_accessor = Sub::Name::subname $class_name ."::$plural_name" => sub {
         my $self = shift;
@@ -1059,6 +987,7 @@ sub mk_object_set_accessors {
     my $arrayref_accessor = Sub::Name::subname $class_name ."::$singular_name" . '_arrayref' => sub {
         return [ $list_accessor->(@_) ];
     };
+
     Sub::Install::reinstall_sub({
         into => $class_name,
         as   => $singular_name . '_arrayref',
@@ -1091,11 +1020,7 @@ sub mk_object_set_accessors {
         $rule_resolver->($self) unless ($rule_template);
         if ($rule_template) {
             my $rule = $rule_template->get_rule_for_values((map { $self->$_ } @property_names),@where_values);
-            if (@_) {
-                return $r_class_name->define_set($rule->params_list,@_);
-            } else {
-                return $rule; 
-            }
+            return $r_class_name->define_set($rule->params_list,@_);
         }
         else {
             # this is a bit inside-out, but works for primitives
@@ -1441,7 +1366,7 @@ sub initialize_direct_accessors {
             }
             $self->mk_object_set_accessors($class_name, $singular_name, $plural_name, $reverse_as, $r_class_name, $where);
         }        
-        elsif ($property_data->{'is_class_wide'}) {
+        elsif ($property_data->{'is_classwide'}) {
             my $value = $property_data->{'default_value'};
             if ($property_data->{'is_constant'}) {
                 $self->mk_ro_class_accessor($class_name,$accessor_name,'',$value);
@@ -1600,7 +1525,7 @@ Creates a read-write accessor called $accessor_name which stores its value
 in a scalar captured by the accessor's closure.  Since the closure is
 inserted into the class's namespace, all instances of the class share the
 same closure (and therefore the same scalar), and the property effectively
-acts as a class-wide property.  
+acts as a class-wide property.
 
 =item mk_ro_class_accessor
 

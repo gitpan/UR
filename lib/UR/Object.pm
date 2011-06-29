@@ -8,7 +8,7 @@ require UR;
 use Scalar::Util;
 
 our @ISA = ('UR::ModuleBase');
-our $VERSION = "0.30"; # UR $VERSION;;
+our $VERSION = "0.32"; # UR $VERSION;;
 
 # Base object API 
 
@@ -27,6 +27,7 @@ sub get {
 sub delete {
     $UR::Context::current->delete_entity(@_);
 }
+
 
 # Meta API
 
@@ -57,6 +58,35 @@ sub __meta__  {
 # to include the object as function args to calculated properties
 sub __self__ {
     return $_[0];
+}
+
+
+# Used to traverse n levels of indirect properties, even if the total
+# indirection is not defined on the primary ofhect this is called on.
+# For example: $obj->__get_attr__('a.b.c');
+# gets $obj's 'a' value, calls 'b' on that, and calls 'c' on the last thing
+sub __get_attr__ {
+    my ($self, $property_name) = @_;
+    my @property_values;
+    if (index($property_name,'.') == -1) {
+        @property_values = $self->$property_name; 
+    }
+    else {
+        my @links = split(/\./,$property_name);
+        @property_values = ($self);
+        for my $full_link (@links) {
+            my $pos = index($full_link,'-');
+            my $link = ($pos == -1 ? $full_link : substr($full_link,0,$pos) );
+            @property_values = map { defined($_) ? $_->$link : undef } @property_values;
+        }
+    }
+    return if not defined wantarray;
+    return @property_values if wantarray;
+    if (@property_values > 1) {
+        my $class_name = $self->__meta__->class_name; 
+        Carp::confess("Multiple values returned for $class_name $property_name in scalar context!");
+    }         
+    return $property_values[0];
 }
 
 sub __label_name__ {
@@ -130,14 +160,12 @@ sub __errors__ {
 
         my $value = $values[0];
 
-        unless ($property_metadata->is_optional) {
-            if (!defined $value) {
-                push @tags, UR::Object::Tag->create(
-                    type => 'invalid',
-                    properties => [$property_name],
-                    desc => "No value specified for required property",
-                );                
-            }
+        if (! $property_metadata->is_optional and !defined($value)) {
+            push @tags, UR::Object::Tag->create(
+                            type => 'invalid',
+                            properties => [$property_name],
+                            desc => "No value specified for required property",
+                         );
         }
         
         # The tests below don't apply do undefined values.
@@ -146,7 +174,7 @@ sub __errors__ {
 
         # Check data type
         # TODO: delegate to the data type module for this
-        my $generic_data_type = $property_metadata->generic_data_type || "";
+        my $generic_data_type = $property_metadata->data_type || "";
         my $data_length       = $property_metadata->data_length;
 
         if ($generic_data_type eq 'Float') {
@@ -179,6 +207,10 @@ sub __errors__ {
         }
         elsif ($generic_data_type eq 'Integer') {
             $value =~ s/\s//g;
+            if ($value =~ /\D/) {
+                #$DB::single = 1;
+                print "$self $property_name @values\n";
+            }
             $value = $value + 0;
             if ($value !~ /^(\+|\-)?[0-9]*$/)
             {
@@ -294,11 +326,20 @@ sub define_set {
 sub add_observer {
     my $self = shift;
     my %params = @_;
+
+    my $aspect = delete $params{aspect};
+    my $callback = delete $params{callback};
+    if (%params) {
+        Carp::croak("Unrecognized parameters for observer creation: "
+                     . Data::Dumper::Dumper(\%params)
+                     . "Expected 'aspect' and 'callback'");
+    }
+
     my $observer = UR::Observer->create(
         subject_class_name => $self->class,
         subject_id => (ref($self) ? $self->id : undef),
-        aspect => delete $params{aspect},
-        callback => delete $params{callback}
+        aspect => $aspect,
+        callback => $callback,
     );  
     unless ($observer) {
         $self->error_message(
@@ -306,11 +347,6 @@ sub add_observer {
             . UR::Observer->error_message
         );
         return;
-    }
-    if (%params) {
-        $observer->delete;
-        die "Bad params for observer creation!: "
-            . Data::Dumper::Dumper(\%params)
     }
     return $observer;
 }
@@ -344,7 +380,6 @@ sub create_iterator {
 sub create_view {
     my $self = shift;
     my $class = $self->class;
-
     # this will auto-subclass into ${class}::View::${perspective}::${toolkit},
     # using $class or some parent class of $class
     my $view = UR::Object::View->create(
@@ -441,6 +476,10 @@ sub __changes__ {
     
     # performance optimization
     return unless $self->{_change_count};
+
+    unless (wantarray) {
+        return $self->{_change_count};  # scalar context only cares if there are any changes or not
+    }
     
     my $meta = $self->__meta__;
     if (ref($meta) eq 'UR::DeletedRef') {
@@ -480,6 +519,19 @@ sub __changes__ {
     } @changed;
 }
 
+
+sub _changed_property_names {
+    my $self = shift;
+
+    my @changes = $self->__changes__;
+    my %changed_properties;
+    foreach my $change ( @changes ) {
+        next unless ($change->type eq 'changed');
+        $changed_properties{$_} = 1 foreach $change->properties;
+    }
+    return keys %changed_properties;
+}
+
 sub __signal_change__ {
     # all mutable property accessors ("setters") call this method to tell the 
     # current context about a state change.
@@ -501,6 +553,7 @@ sub __define__ {
         };
         return unless $self;
         $self->{db_committed} = { %$self };
+        $self->{'__defined'} = 1;
         $self->__signal_change__("load");
         return $self;
     }

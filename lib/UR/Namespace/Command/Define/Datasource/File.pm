@@ -3,7 +3,7 @@ package UR::Namespace::Command::Define::Datasource::File;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use IO::File;
 
@@ -30,8 +30,6 @@ sub help_description {
 
 sub execute {
     my $self = shift;
-
-    $self->_init or return;
 
     $self->warning_message("This command is not yet implemented.  See the documentation for UR::DataSource::File for more information about creating file-based data sources");
     return;

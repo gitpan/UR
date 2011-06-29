@@ -7,12 +7,11 @@ package UR::Object::Type;
 use strict;
 use warnings;
 require UR;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use Carp ();
 use Sub::Name ();
 use Sub::Install ();
-
-our @CARP_NOT = qw( UR::ModuleLoader Class::Autouse );
 
 # keys are class property names (like er_role, is_final, etc) and values are
 # the default value to use if it's not specified in the class definition
@@ -40,14 +39,11 @@ our @CARP_NOT = qw( UR::ModuleLoader Class::Autouse );
     is_transient     => 0,
     is_constant      => 0,
     is_volatile      => 0,
-    is_class_wide    => 0,
+    is_classwide    => 0,
     is_delegated     => 0,
     is_calculated    => 0,
     is_mutable       => undef,
     is_transactional => 1,
-    is_abstract      => 0,
-    is_concrete      => 1,
-    is_final         => 0,
     is_many          => 0,
     is_numeric       => 0,
     is_specified_in_module_header => 0,
@@ -61,7 +57,7 @@ our @CARP_NOT = qw( UR::ModuleLoader Class::Autouse );
         is_transient
         is_constant
         is_volatile
-        is_class_wide
+        is_classwide
         is_transactional
         is_abstract
         is_concrete
@@ -139,7 +135,7 @@ sub __define__ {
     
     $self = $UR::Context::all_objects_loaded->{$meta_class_name}{$class_name};
     if ($self) {
-        $DB::single = 1;
+        #$DB::single = 1;
         #Carp::cluck("Re-defining class $class_name?  Found $meta_class_name with id '$class_name'");
         return $self;
     }
@@ -166,7 +162,7 @@ sub __define__ {
             );            
         }
         unless ($self->_complete_class_meta_object_definitions()) {
-            $DB::single = 1;
+            #$DB::single = 1;
             $self->_complete_class_meta_object_definitions();
             Carp::confess(
                 "Failed to complete definition of class $class_name!"
@@ -241,6 +237,7 @@ sub _preprocess_subclass_description {
                 . $self->class_name . " package!";
         }
         $current_desc = $self->class_name->$preprocessor($current_desc);
+        $current_desc = $self->_normalize_class_description_impl(%$current_desc);
     }
 
     # only call it on the direct parent classes, let recursion walk the tree
@@ -339,7 +336,46 @@ sub initialize_bootstrap_classes
 
 sub _normalize_class_description {
     my $class = shift;
+    my $desc = $class->_normalize_class_description_impl(@_);
+    unless ($bootstrapping) {
+        for my $parent_class_name (@{ $desc->{is} }) {
+            my $parent_class = $parent_class_name->__meta__;
+            $desc = $parent_class->_preprocess_subclass_description($desc);
+        }
+    }
+
+    # we previously handled property meta extensions when normalizing the property
+    # now we merely save unrecognized things
+    # this is now done afterward so that parent classes can preprocess their subclasses descriptions before extending
+    # normalize the data behind the property descriptions
+    my @property_names = keys %{$desc->{has}};
+    for my $property_name (@property_names) {
+        my $pdesc = $desc->{has}->{$property_name};
+        my $unknown_ma = delete $pdesc->{unrecognized_meta_attributes};
+        next unless $unknown_ma;
+        for my $name (keys %$unknown_ma) {
+            if (exists $desc->{attributes_have}->{$name}) {
+                $pdesc->{$name} = delete $unknown_ma->{$name};
+            }
+        }
+        if (%$unknown_ma) {
+            my $class_name = $desc->{class_name};
+            my @unknown_ma = sort keys %$unknown_ma;
+            Carp::confess("unknown meta-attributes present for $class_name $property_name: @unknown_ma\n");
+        }
+    }
+
+    return $desc;
+}
+
+sub _normalize_class_description_impl {
+    my $class = shift;
     my %old_class = @_;
+
+    if (exists $old_class{extra}) {
+        $DB::single=1;
+        %old_class = (%{delete $old_class{extra}}, %old_class);
+    }
 
     my $class_name = delete $old_class{class_name};    
 
@@ -376,11 +412,12 @@ sub _normalize_class_description {
         [ sub_classification_method_name        => qw//],
         [ first_sub_classification_method_name  => qw//],
         [ composite_id_separator                => qw//],
-        [ generate              => qw//],
-        [ generated             => qw//],
+        [ generate               => qw//],
+        [ generated              => qw//],
         [ subclass_description_preprocessor => qw//],        
-        [ id_sequence_generator_name => qw//],
+        [ id_generator           => qw/id_sequence_generator_name/],
         [ subclassify_by_version => qw//],        
+        [ meta_class_name        => qw//],
     ) {        
         my ($primary_field_name, @alternate_field_names) = @$mapping;                
         my @all_fields = ($primary_field_name, @alternate_field_names);
@@ -450,7 +487,7 @@ sub _normalize_class_description {
         }
     }
 
-    $new_class{table_name} = uc($new_class{table_name}) if ($new_class{table_name} and $new_class{table_name} !~ /\s/);
+    $new_class{table_name} = $new_class{table_name} if ($new_class{table_name} and $new_class{table_name} !~ /\s/);
 
     unless ($new_class{'doc'}) {
         $new_class{'doc'} = undef;
@@ -545,7 +582,6 @@ sub _normalize_class_description {
     # NOTE: we normalize the details at the end of normalizing the class description.
     my @keys = grep { /has|attributes_have/ } keys %old_class;
     unshift @keys, qw(id_implied); # we want to hit this first to preserve position_ and is_specified_ keys
-    my @properties_in_class_definition_order;
     foreach my $key ( @keys ) {
         # parse the key to see if we're looking at instance or meta attributes,
         # and take the extra words as additional attribute meta-data. 
@@ -627,18 +663,24 @@ sub _normalize_class_description {
                 # extend the existing definition
                 foreach my $key ( keys %$params ) {
                     next if ($key eq 'is_specified_in_module_header' || $key eq 'position_in_module_header');
+                    # once a property gets set to is_optional => 0, it stays there, even if it's later set to 1
+                    next if ($key eq 'is_optional'
+                             and
+                             exists($properties->{$name}->{'is_optional'})
+                             and
+                             $properties->{$name}->{'is_optional'} == 0);
                     $properties->{$name}->{$key} = $params->{$key};
                 }
+                $params = $properties->{$name};
             } else {
                 $properties->{$name} = $params;
             }
-            push @properties_in_class_definition_order, $name;
 
             # a single calculate_from can be a simple string, convert to a listref
             if (my $calculate_from = $params->{'calculate_from'}) {
                 $params->{'calculate_from'} = [ $calculate_from ] unless (ref($calculate_from) eq 'ARRAY');
             }
-            
+
             if (my $id_by = $params->{id_by}) {
                 $id_by = [ $id_by ] unless ref($id_by) eq 'ARRAY';
                 my @id_by_names;
@@ -655,9 +697,10 @@ sub _normalize_class_description {
                         if (exists $params->{$p}) {
                             $params2->{$p} = $params->{$p};
                         }
-                    }                    
+                    }
                     $params2->{implied_by} = $name;
-                    $params2->{is_specified_in_module_header} = 0;                    
+                    $params2->{is_specified_in_module_header} = 0;
+ 
                     push @id_by_names, $id_name;
                     push @tmp, $id_name, $params2;
                 }
@@ -674,17 +717,23 @@ sub _normalize_class_description {
                 
         } # next property in group
 
+        # id-by properties' metadata can influence the id-ed-by property metadata
         for my $pdata (values %$properties) {
             next unless $pdata->{id_by};
             for my $id_property (@{ $pdata->{id_by} }) {
                 my $id_pdata = $properties->{$id_property};
                 for my $p (@UR::Object::Type::meta_id_ref_shared_properties) {
-                    if (exists $id_pdata->{$p}) {
-                        $pdata->{$p} = $id_pdata->{$p};
+                    if (exists $id_pdata->{$p} xor exists $pdata->{$p}) {
+                        # if one or the other specifies a value, copy it to the one that's missing
+                        $id_pdata->{$p} = $pdata->{$p} = $id_pdata->{$p} || $pdata->{$p};
+                    } elsif (!exists $id_pdata->{$p} and !exists $pdata->{$p} and exists $UR::Object::Property::defaults{$p}) {
+                        # if neither has a value, use the default for both
+                        $id_pdata->{$p} = $pdata->{$p} = $UR::Object::Property::defaults{$p};
                     }
                 }                    
             }
         }
+
     } # next group of properties
    
     # NOT ENABLED YET
@@ -709,8 +758,6 @@ sub _normalize_class_description {
         }
     }
 
-    $new_class{'__properties_in_class_definition_order'} = \@properties_in_class_definition_order;
-    
     unless ($new_class{type_name}) {
         $new_class{type_name} = $new_class{class_name};
     }
@@ -720,7 +767,7 @@ sub _normalize_class_description {
         $s =~ s/^.*::DataSource:://;
         $new_class{schema_name} = $s;
     }
-     
+
     if (%old_class) {
         # this should have all been deleted above
         # we actually process it later, since these may be related to parent classes extending
@@ -736,14 +783,14 @@ sub _normalize_class_description {
             no warnings;
             unless ($parent_class_name->can("__meta__")) {
                 __PACKAGE__->use_module_with_namespace_constraints($parent_class_name);
-                die "Class $class_name cannot initialize because of errors using parent class $parent_class_name: $@" if $@; 
+                Carp::croak("Class $class_name cannot initialize because of errors using parent class $parent_class_name: $@") if $@;
             }
             unless ($parent_class_name->can("__meta__")) {
-                die "Class $class_name cannot initialize because of errors using parent class $parent_class_name.  Failed to find static method '__meta__' on $parent_class_name!"; 
+                Carp::croak("Class $class_name cannot initialize because of errors using parent class $parent_class_name.  Failed to find static method '__meta__' on $parent_class_name.  Does class $parent_class_name exist, and is it loaded?");
             }
             my $parent_class = $parent_class_name->__meta__;
             unless ($parent_class) {
-                warn "no class metadata object for $parent_class_name!";
+                Carp::carp("No class metadata object for $parent_class_name");
                 next;
             }
 
@@ -761,7 +808,7 @@ sub _normalize_class_description {
                     }
                     $parent_class_name = $parent_class_name . '::V' . $version;
                     eval "use $parent_class_name";
-                    Carp::confess("Error using versiond module $parent_class_name!:\n$@") if $@;
+                    Carp::confess("Error using versioned module $parent_class_name!:\n$@") if $@;
                     redo;
                 }
             }
@@ -774,28 +821,19 @@ sub _normalize_class_description {
     for my $property_name (@property_names) {
         my %old_property = %{ $instance_properties->{$property_name} };        
         my %new_property = $class->_normalize_property_description1($property_name, \%old_property, \%new_class);
+        %new_property = $class->_normalize_property_description2(\%new_property, \%new_class);
         $instance_properties->{$property_name} = \%new_property;
     }
-
     # allow parent classes to adjust the description in systematic ways 
     my $desc = \%new_class;
     my @additional_property_meta_attributes;
     unless ($bootstrapping) {
         for my $parent_class_name (@{ $new_class{is} }) {
             my $parent_class = $parent_class_name->__meta__;
-            $desc = $parent_class->_preprocess_subclass_description($desc);
             if (my $parent_meta_properties = $parent_class->{attributes_have}) {
                 push @additional_property_meta_attributes, %$parent_meta_properties;
             }
         }
-    }
-
-    # normalize the data behind the property descriptions    
-    @property_names = keys %$instance_properties;
-    for my $property_name (@property_names) {
-        my %old_property = %{ $instance_properties->{$property_name} };        
-        my %new_property = $class->_normalize_property_description2(\%old_property, \%new_class);
-        $instance_properties->{$property_name} = \%new_property;
     }
 
     # Find 'via' properties where the to is '-filter' and rewrite them to 
@@ -808,7 +846,7 @@ sub _normalize_class_description {
             my $via = $property_data->{'via'};
             my $via_property_data = $instance_properties->{$via};
             unless ($via_property_data) {
-                Carp::croak "Property $class_name '$property_name' filters '$via', but there is no property '$via'.";
+                Carp::croak "Cannot initialize class $class_name: Property '$property_name' filters '$via', but there is no property '$via'.";
             }
             
             $property_data->{'data_type'} = $via_property_data->{'data_type'};
@@ -818,6 +856,24 @@ sub _normalize_class_description {
             }
         }
     }
+
+    # Catch a mistake in the class definition where a property is 'via'
+    # something, and its 'to' # is the same as the via's reverse_as.  This
+    # ends up being a circular definition and generates junk SQL
+    foreach my $property_name ( @property_names ) {
+        my $property_data = $instance_properties->{$property_name};
+        my $via = $property_data->{'via'};
+        my $to  = $property_data->{'to'};
+        if (defined($via) and defined($to)) {
+            my $via_property_data = $instance_properties->{$via};
+            next unless ($via_property_data and $via_property_data->{'reverse_as'});
+            if ($via_property_data->{'reverse_as'} eq $to) {
+                Carp::croak("Cannot initialize class $class_name: Property '$property_name' defines "
+                            . "an incompatible relationship.  Its 'to' is the same as reverse_as for property '$via'");
+            }
+        }
+    }
+
     
     unless ($bootstrapping) {        
         # cascade extra meta attributes from the parent downward
@@ -843,7 +899,7 @@ sub _normalize_class_description {
                             property_name => $subclassify_by,
                             default_value => $class_name,
                             is_constant => 1,
-                            is_class_wide => 1,
+                            is_classwide => 1,
                             is_specified_in_module_header => 0,
                             column_name => '',
                             implied_by => $parent_class_meta->class_name . '::subclassify_by',
@@ -858,45 +914,9 @@ sub _normalize_class_description {
         }
     }
 
-    # we previously handled property meta extensions when normalizing the property
-    # now we merely save unrecognized things
-    # this is now done afterward so that parent classes can preprocess their subclasses descriptions before extending
-    # normalize the data behind the property descriptions    
-    for my $property_name (@property_names) {
-        my $pdesc = $instance_properties->{$property_name};
-        my $unknown_ma = delete $pdesc->{unrecognized_meta_attributes};
-        next unless $unknown_ma;
-        for my $name (keys %$unknown_ma) {
-            if (exists $meta_properties->{$name}) {
-                $pdesc->{$name} = delete $unknown_ma->{$name};
-            }
-        }
-        if (%$unknown_ma) {
-            my @unknown_ma = sort keys %$unknown_ma;
-            Carp::confess("unknown meta-attributes present for $class_name $property_name: @unknown_ma\n");
-        }
-    }
-
     my $meta_class_name = __PACKAGE__->_resolve_meta_class_name_for_class_name($class_name);
     $desc->{meta_class_name} ||= $meta_class_name;
     return $desc;
-}
-
-sub _recursive_attributes_have {
-    my $self = shift;
-    unless ($self->{_recursive_attributes_have}) {
-        my %recursive_collection_of_added_meta_attributes = ( $self->{attributes_have} ? %{ $self->{attributes_have} } : () );
-        unless ($bootstrapping) {
-            for my $parent_class_name (@{ $self->{is} }) {
-                my $parent_class = $parent_class_name->__meta__;
-                if (my $parent_ma = $parent_class->{_recursive_attributes_have}) {
-                    %recursive_collection_of_added_meta_attributes = (%recursive_collection_of_added_meta_attributes, %$parent_ma);
-                }
-            }
-        }
-        $self->{_recursive_attributes_have} = \%recursive_collection_of_added_meta_attributes;
-    }
-    return $self->{_recursive_attributes_have};
 }
 
 sub _normalize_property_description1 {
@@ -908,6 +928,10 @@ sub _normalize_property_description1 {
     my %old_property = %$property_data;
     my %new_class = %$class_data;
     
+    if (exists $old_property{unrecognized_meta_attributes}) {
+        %old_property = (%{delete $old_property{unrecognized_meta_attributes}}, %old_property);
+    }
+
     delete $old_property{source};
 
     if ($old_property{implied_by} and $old_property{implied_by} eq $property_name) {
@@ -916,14 +940,17 @@ sub _normalize_property_description1 {
     }        
 
     # Only 1 of is_abstract, is_concrete or is_final may be set
-    { no warnings 'uninitialized';
-      if (  $old_property{is_abstract} 
-          + $old_property{is_concrete}
-          + $old_property{is_final}
-          > 1
-      ) {
-          Carp::confess("abstract/concrete/final are mutually exclusive.  Error in class definition for $class_name property $property_name!");
-      }
+    {
+        no warnings 'uninitialized';
+        my $modifier_sum = $old_property{is_abstract} 
+            + $old_property{is_concrete}
+            + $old_property{is_final};
+
+        if ($modifier_sum > 1) {
+            Carp::confess("abstract/concrete/final are mutually exclusive.  Error in class definition for $class_name property $property_name!");
+        } elsif ($modifier_sum == 0) {
+            $old_property{is_concrete} = 1;
+        }
     }
     
     my %new_property = (
@@ -949,7 +976,7 @@ sub _normalize_property_description1 {
         [ is_transient                    => qw//],
         [ is_volatile                     => qw//],
         [ is_constant                     => qw//], 
-        [ is_class_wide                   => qw//], 
+        [ is_classwide                    => qw/is_class_wide/],
         [ is_delegated                    => qw//],
         [ is_calculated                   => qw//],
         [ is_mutable                      => qw//],
@@ -987,13 +1014,17 @@ sub _normalize_property_description1 {
         my @values = grep { defined($_) } delete @old_property{@all_fields};
         if (@values > 1) {
             Carp::confess(
-                "Multiple values in class definition for $class_name for field "
+                "Multiple values in class definition for $class_name property $property_name.  Field "
                 . join("/", @all_fields)
+                . " has values "
+                . Data::Dumper::Dumper(\@values)
             );
         }
         elsif (@values == 1) {
             $new_property{$primary_field_name} = $values[0];
         }
+
+        # Fill in default values for metadata that is missing
         if (
             (not exists $new_property{$primary_field_name}) 
             and 
@@ -1017,6 +1048,10 @@ sub _normalize_property_description1 {
         if (my ($length) = ($new_property{data_type} =~ /\((\d+)\)$/)) {
             $new_property{data_length} = $length;
             $new_property{data_type} =~ s/\(\d+\)$//;
+        }
+        if ($new_property{data_type} =~ m/[^\w:]/) {
+            Carp::croak("Can't initialize class $class_name: Property '" . $new_property{property_name}
+                        . "' has metadata for is/data_type that does not look like a class name ($new_property{data_type})");
         }
     }
 
@@ -1079,15 +1114,17 @@ sub _normalize_property_description2 {
     # UR::DataSource::File-backed classes don't have table_names, but for querying/saving to
     # work property, their properties still have to have column_name filled in
     if (($new_class{table_name} or ($the_data_source and ($the_data_source->initializer_should_create_column_name_for_class_properties())))
-        and not exists($new_property{column_name})
+        and not exists($new_property{column_name})    # They didn't supply a column_name
         and not $new_property{is_transient}
         and not $new_property{is_delegated}
         and not $new_property{is_calculated}
         and not $new_property{is_legacy_eav}
     ) {
         $new_property{column_name} = $new_property{property_name};            
+        if ($the_data_source and $the_data_source->table_and_column_names_are_upper_case) {
+            $new_property{column_name} = uc($new_property{column_name});
+        }
     }
-    $new_property{column_name} = uc($new_property{column_name}) if ($new_property{column_name});
     
     unless ($new_property{attribute_name}) {
         $new_property{attribute_name} = $property_name;
@@ -1272,7 +1309,7 @@ sub _complete_class_meta_object_definitions {
     for my $parent_class_name (@$inheritance) {
         my $parent_class = $parent_class_name->__meta__;
         unless ($parent_class) {
-            $DB::single = 1;
+            #$DB::single = 1;
             $parent_class = $parent_class_name->__meta__;
             $self->error_message("Failed to find parent class $parent_class_name\n");
             return;
@@ -1280,7 +1317,7 @@ sub _complete_class_meta_object_definitions {
         
         unless(ref($parent_class) and $parent_class->can('type_name')) {            
             print Data::Dumper::Dumper($parent_class);
-            $DB::single = 1;
+            #$DB::single = 1;
             redo;
         }
         
@@ -1294,6 +1331,13 @@ sub _complete_class_meta_object_definitions {
             if (my $data_source_id = $parent_class->data_source_id) {
                 $self->{'data_source_id'} = $self->{'db_committed'}->{'data_source_id'} = $data_source_id;
             }
+        }
+
+        # For classes with no data source, the default for id_generator is -urinternal
+        # For classes with a data source, autogenerate_new_object_id_for_class_name_and_rule gets called
+        # on that data source which can use id_generator as it sees fit
+        if (! defined($self->{'id_generator'}) and ! $self->{'data_source_id'}) {
+            $self->{'id_generator'} = '-urinternal';
         }
 
         # If a parent is declared as a singleton, we are too.
@@ -1321,7 +1365,7 @@ sub _complete_class_meta_object_definitions {
             my $id_property_name = $id_properties->[$n];
             my $id_property_detail = $properties->{$id_property_name};
             unless ($id_property_detail) {
-                $DB::single = 1;
+                #$DB::single = 1;
                 1;
             }
             unless ($id_property_detail->{data_type}) {
@@ -1342,7 +1386,7 @@ sub _complete_class_meta_object_definitions {
                     }
                     ($r_class_name, $r_class_name->__meta__->ancestry_class_names);
                 unless ($r_property) {
-                    $DB::single = 1;
+                    #$DB::single = 1;
                     my $property_name = $pinfo->{'property_name'};
                     if (@$id_properties != @r_id_properties) {
                         Carp::croak("Can't resolve relationship for class $class property '$property_name': "
@@ -1477,6 +1521,7 @@ sub _complete_class_meta_object_definitions {
             }
         }
         if (%still_not_found) {
+            $DB::single = 1;
             Carp::confess("BAD CLASS DEFINITION for $class_name.  Unrecognized properties: " . Data::Dumper::Dumper(%still_not_found));
         }
     }
@@ -1488,7 +1533,7 @@ sub _complete_class_meta_object_definitions {
     my @i = $class_name->inheritance;
     if (grep { $_ eq '' } @i) {
         print "$class_name! @{ $self->{is} }";
-        $DB::single = 1;
+        #$DB::single = 1;
         $class_name->inheritance;
     }
     Carp::confess("Odd inheritance @i for $class_name") unless $class_name->isa('UR::Object');
@@ -1558,7 +1603,7 @@ sub generate {
         my $parent_class_meta = UR::Object::Type->get(class_name => $parent_class_name);
         
         unless ($parent_class_meta) {
-            $DB::single = 1;
+            #$DB::single = 1;
             $parent_class_meta = UR::Object::Type->get(class_name => $parent_class_name);
             Carp::confess("Cannot generate $class_name: Failed to find class meta-data for base class $parent_class_name.");
         }
@@ -1606,11 +1651,15 @@ sub generate {
         }
     }
     
+    my $data_source_obj = $self->data_source;
+    my $columns_are_upper_case;
+    if ($data_source_obj) {
+        $columns_are_upper_case = $data_source_obj->table_and_column_names_are_upper_case;
+    }
     for my $property_object (sort { $a->property_name cmp $b->property_name } @property_objects) {
-        #if ($property_object->column_name or not $has_table) {
         if ($property_object->column_name) {
             push @$props, $property_object->property_name;
-            push @$cols, $property_object->column_name;
+            push @$cols, $columns_are_upper_case ? uc($property_object->column_name) : $property_object->column_name;
         }    
     }
 

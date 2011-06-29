@@ -20,6 +20,11 @@ use UR;
 
 our @CARP_NOT = qw(UR::BoolExpr);
 
+# readable stringification
+use overload ('""' => 'id');
+use overload ('==' => sub { $_[0] . ''  eq $_[1] . '' } );
+use overload ('eq' => sub { $_[0] . ''  eq $_[1] . '' } );
+
 UR::Object::Type->define(
     class_name  => __PACKAGE__, 
     is_transactional => 0,
@@ -53,13 +58,15 @@ UR::Object::Type->define(
     has_optional => [
         hints                           => { is => 'ARRAY' },
         recursion_desc                  => { is => 'ARRAY' },
-        is_paged                        => { is => "Boolean" },  # FIXME - this isn't set by anything below, shouldn't it be 'page'?
+        page                            => { is => "ARRAY" },  # FIXME - this isn't set by anything below, shouldn't it be 'page'?
         order_by                        => { is => 'ARRAY' },
         group_by                        => { is => 'ARRAY' },
+        aggregate                       => { is => 'ARRAY' },
+        limit                           => { is => 'Integer' },
     ]
 );
 
-our $VERSION = "0.30"; # UR $VERSION;;
+our $VERSION = "0.32"; # UR $VERSION;;
 
 # Borrow from the util package.
 # This will go away with refactoring.
@@ -72,7 +79,7 @@ our $empty_string   = $UR::BoolExpr::Util::empty_string;
 our $empty_list     = $UR::BoolExpr::Util::empty_list;
 
 # Names of the optional flags you can add to a rule
-our @meta_param_names = qw(recursion_desc hints is_paged order_by group_by);
+our @meta_param_names = qw(recursion_desc hints page order_by group_by aggregate limit);
 
 # Wrappers for regular properties
 
@@ -107,9 +114,9 @@ sub _resolve_indexing_params {
     for my $name (@all_names) {
         my $m = $class_meta->property($name);
         unless ($m) {
-            $DB::single = 1;
+            #$DB::single = 1;
             $class_meta->property($name);
-            $DB::single = 1;
+            #$DB::single = 1;
             $class_meta->property($name);
         }
     }
@@ -419,345 +426,6 @@ sub resolve {
     return $class->get_by_subject_class_name_logic_type_and_logic_detail($subject_class_name, "And", join(',',@params_list));
 }
 
-sub _fast_construct_and {
-    my ($class,
-        $subject_class_name,    # produces subject class meta
-        $keys,                  # produces logic detail
-        $constant_values,       # produces constant value id
-        
-        $logic_detail,          # optional, passed by get
-        $constant_value_id,     # optional, passed by get
-        $subject_class_meta,    # optional, passed by bx
-    ) = @_;
-
-    my $logic_type = 'And';    
-    
-    $logic_detail       ||= join(",",@$keys);
-    $constant_value_id  ||= UR::BoolExpr::Util->values_to_value_id(@$constant_values);
-    
-    my $id = join('/',$subject_class_name,$logic_type,$logic_detail,$constant_value_id);  
-    my $self = $UR::Object::rule_templates->{$id};
-    return $self if $self;  
-
-    $subject_class_meta ||= $subject_class_name->__meta__;    
-
-    # See what properties are id-related for the class
-    my $cache = $subject_class_meta->{cache}{'UR::BoolExpr::Template::get'} ||= do {
-        my $id_related = {};
-        my $id_translations = [];
-        my $id_pos = {};
-        for my $iclass ($subject_class_name, $subject_class_meta->ancestry_class_names) {
-            last if $iclass eq "UR::Object";
-            next unless $iclass->isa("UR::Object");
-            my $iclass_meta = $iclass->__meta__;
-            my @id_props = $iclass_meta->id_property_names;
-            next unless @id_props;
-            next if @id_props == 1 and $id_props[0] eq "id";
-            push @$id_translations, \@id_props;
-            @$id_related{@id_props} = @id_props;
-            @$id_pos{@id_props} = (0..$#id_props);
-        }
-        [$id_related,$id_translations,$id_pos];
-    };
-    my ($id_related,$id_translations,$id_pos) = @$cache;
-
-    my @keys = @$keys;
-    my @constant_values = @$constant_values;
-
-    # Make a hash to quick-validate the params for duplication
-    no warnings; 
-    my %check_for_duplicate_rules;
-    for (my $n=0; $n < @keys; $n++) {
-        my ($property,$op) = ($keys[$n] =~ /^(\w+)\b(.*)$/);
-        $check_for_duplicate_rules{$property}++;
-    }
-
-    # each item in this list mutates the initial set of key-value pairs
-    my $extenders = [];
-    
-    # add new @$extenders for class-specific characteristics
-    # add new @keys at the same time
-    # flag keys as removed also at the same time
-
-    # note the positions for each key in the "original" rule
-    # by original, we mean the original plus the extensions from above
-    #
-    my $id_position = undef;
-    my $var_pos = 0;
-    my $const_pos = 0;
-    my $property_meta_hash = {};        
-    my $property_names = [];
-    for my $key (@keys) {
-        if (substr($key,0,1) eq '-') {
-            $property_meta_hash->{$key} = {
-                name => $key,
-                value_position => $const_pos
-            };
-            $const_pos++;
-        }
-        else {
-            my ($name, $op) = ($key =~ /^(.+?)\b\s*(.*)$/);
-            if ($name eq 'id') {
-                $id_position = $var_pos;
-            }                
-            $property_meta_hash->{$name} = {
-                name => $name,
-                operator => $op,
-                value_position => $var_pos
-            };        
-            $var_pos++;
-            push @$property_names, $name;
-        }    
-    }
-
-    # Note whether there are properties not involved in the ID
-    # Add value extenders for any cases of id-related properties,
-    # or aliases.
-    my $id_only = 1;
-    my $partial_id = 0;        
-    my $key_op_hash = {};
-    if (@$id_translations and @{$id_translations->[0]} == 1) {
-        # single-property ID
-        ## use Data::Dumper;
-        ## print "single property id\n". Dumper($id_translations);
-        my ($key_pos,$key,$property,$op,$x);
-        my $original_key_count = @keys;
-
-        # Presume we are only getting id properties until another is found.
-        # If a multi-property is partially specified, we'll zero this out too.
-        
-        for ($key_pos = 0; $key_pos < $original_key_count; $key_pos++) {
-            $key = $keys[$key_pos];
-
-            ($property,$op) = ($key =~ /^(\w+)\b(.*)$/);  # /^(\w+)\b\S*(.*)$/
-            $op ||= "";
-            $op =~ s/\s+//;
-            $key_op_hash->{$property} ||= {};
-            $key_op_hash->{$property}{$op}++;
-            
-            ## print "> $key_pos- $key: $property/$op\n";
-            if ($property eq "id" or $id_related->{$property}) {
-                # Put an id key into the key list.
-                for my $alias (["id"], @$id_translations) {
-                    next if $alias->[0] eq $property;
-                    next if $check_for_duplicate_rules{$alias->[0]};
-                    $op ||= "";
-                    push @keys, $alias->[0] . ($op ? " $op" : ""); 
-                    push @$extenders, [ [$key_pos], undef, $keys[-1] ];
-                    $key_op_hash->{$alias->[0]} ||= {};
-                    $key_op_hash->{$alias->[0]}{$op}++;
-                    ## print ">> extend for @$alias with op $op.\n";
-                }
-                unless ($op =~ m/^(=|eq|in|\[\]|)$/) {
-                    $id_only = 0;
-                }
-            }    
-            else {
-                $id_only = 0;
-                ## print "non id single property $property on $subject_class\n";
-            }
-        }            
-    }
-    else {
-        # multi-property ID
-        ## print "multi property id\n". Dumper($id_translations);
-        my ($key_pos,$key,$property,$op);
-        my $original_key_count = @keys;
-        my %id_parts;
-        for ($key_pos = 0; $key_pos < $original_key_count; $key_pos++) {
-            $key = $keys[$key_pos];                
-            ($property,$op) = ($key =~ /^(\w+)\b(.*)$/);  # /^(\w+)\b\S*(.*)$/
-            $op ||= "";
-            $op =~ s/\s+//;                
-            $key_op_hash->{$property} ||= {};
-            $key_op_hash->{$property}{$op}++;
-            
-            ## print "> $key_pos- $key: $property/$op\n";
-            if ($property eq "id") {
-                $key_op_hash->{id} ||= {};
-                $key_op_hash->{id}{$op}++;                    
-                # Put an id-breakdown key into the key list.
-                for my $alias (@$id_translations) {
-                    my @new_keys = map {  $_ . ($op ? " $op" : "") } @$alias; 
-                    if (grep { $check_for_duplicate_rules{$_} } @new_keys) {
-                        #print "up @new_keys with @$alias\n";
-                    }
-                    else {
-                        push @keys, @new_keys; 
-                        push @$extenders, [ [$key_pos], "resolve_ordered_values_from_composite_id", @new_keys ];
-                        for (@$alias) {
-                            $key_op_hash->{$_} ||= {};
-                            $key_op_hash->{$_}{$op}++;
-                        }
-                        # print ">> extend for @$alias with op $op.\n";
-                    }
-                }
-            }    
-            elsif ($id_related->{$property}) {
-                if ($op eq "" or $op eq "eq" or $op eq "=") {
-                    $id_parts{$id_pos->{$property}} = $key_pos;                        
-                }
-                else {
-                    # We're doing some sort of gray-area comparison on an ID                        
-                    # field, and though we could possibly resolve an ID
-                    # from things like an 'in' op, it's more than we've done
-                    # before.
-                    $id_only = 0;
-                }
-            }
-            else {
-                ## print "non id multi property $property on class $subject_class\n";
-                $id_only = 0;
-            }
-        }            
-        
-        if (my $parts = (scalar(keys(%id_parts)))) {
-            # some parts are id-related                
-            if ($parts ==  @{$id_translations->[0]}) { 
-                # all parts are of the id are there 
-                if (@$id_translations) {
-                    if (grep { $_ eq 'id' } @keys) {
-                        #print "found id already\n";
-                    }
-                    else {
-                        #print "no id\n";
-                        # we have translations of that ID into underlying properties
-                        #print "ADDING ID for " . join(",",keys %id_parts) . "\n";
-                        my @id_pos = sort { $a <=> $b } keys %id_parts;
-                        push @$extenders, [ [@id_parts{@id_pos}], "resolve_composite_id_from_ordered_values", 'id' ]; #TODO was this correct?
-                        $key_op_hash->{id} ||= {};
-                        $key_op_hash->{id}{$op}++;                        
-                        push @keys, "id"; 
-                    }   
-                }
-            }
-            else {
-                # not all parts of the id are there
-                ## print "partial id property $property on class $subject_class\n";
-                $id_only = 0;
-                $partial_id = 1;
-            }
-        }
-    }
-    
-    # Determine the positions of each key in the parameter list.                        
-    my %key_positions;
-    my $pos = 0;
-    for my $key (@keys) {
-        next if substr($key,0,1) eq '-';
-        $key_positions{$key} ||= [];
-        push @{ $key_positions{$key} }, $pos++;    
-    }
-
-    # Sort the keys, and make an arrayref which will 
-    # re-order the values to match.
-    my $last_key = '';
-    my @keys_sorted = map { $_ eq $last_key ? () : ($last_key = $_) } sort @keys;
-
-
-    my $matches_all = scalar(@keys_sorted) == 0 ? 1 : 0;
-    my $normalized_positions_arrayref = [];
-    my $constant_value_normalized_positions = [];
-    my $recursion_desc = undef;
-    my $hints = undef;
-    my $order_by = undef;
-    my $group_by = undef;
-    my $page = undef;
-    for my $key (@keys_sorted) {
-        my $pos_list = $key_positions{$key};
-        my $pos = pop @$pos_list;
-        if (substr($key,0,1) eq '-') {
-            push @$constant_value_normalized_positions, $pos;
-            if ($key eq '-recurse') {
-                $recursion_desc = shift @constant_values;
-            }
-            elsif ($key eq '-hint' or $key eq '-hints') {
-                $hints = shift @constant_values; 
-            }
-            elsif ($key eq '-order' or $key eq '-order_by') {
-                $order_by = shift @constant_values;
-            }
-            elsif ($key eq '-group_by') {
-                $group_by = shift @constant_values;
-            }
-            elsif ($key eq '-page') {
-                $page = shift @constant_values;
-            }
-            else {
-                Carp::croak("Unknown special param '$key'.  Expected one of: @meta_param_names");
-            }
-        }
-        else {
-            push @$normalized_positions_arrayref, $pos;
-        }
-    }
-
-    if (defined($hints) and ref($hints) ne 'ARRAY') {
-        Carp::croak('-hints of a rule must be an arrayref of property names');
-    }
-
-    $id_only = 0 if ($matches_all);
-
-    # these are used to rapidly turn a bx used for querying into one
-    # suitable for object construction
-    my @ambiguous_keys;
-    my @ambiguous_property_names;
-    for (my $n=0; $n < @keys; $n++) {
-        my ($property,$op) = ($keys[$n] =~ /^(\w+)\b(.*)$/);
-        if ($op and $op ne 'eq' and $op ne '==') {
-            push @ambiguous_keys, $keys[$n];
-            push @ambiguous_property_names, $property;
-        }
-    }
-
-    # Determine the rule template's ID.
-    # The normalizer will store this.  Below, we'll
-    # find or create the template for this ID.
-    my $normalized_id = UR::BoolExpr::Template->__meta__->resolve_composite_id_from_ordered_values($subject_class_name, "And", join(",",@keys_sorted), $constant_value_id);
-    
-    $self = bless {
-        id                              => $id,
-        subject_class_name              => $subject_class_name,
-        logic_type                      => $logic_type,
-        logic_detail                    => $logic_detail,
-        constant_value_id               => $constant_value_id,
-        normalized_id                   => $normalized_id,
-        
-        # subclass specific
-        id_position                     => $id_position,        
-        is_id_only                      => $id_only,
-        is_partial_id                   => $partial_id,
-        is_unique                       => undef, # assigned on first use
-        matches_all                     => $matches_all,
-        
-        key_op_hash                     => $key_op_hash,
-        _property_names_arrayref        => $property_names,
-        _property_meta_hash             => $property_meta_hash,
-        
-        recursion_desc                  => $recursion_desc,
-        hints                           => $hints,
-        order_by                        => $order_by,
-        page                            => $page,
-        group_by                        => $group_by,
-        
-        is_normalized                   => ($id eq $normalized_id ? 1 : 0),
-        normalized_positions_arrayref   => $normalized_positions_arrayref,
-        normalization_extender_arrayref => $extenders,
-        
-        num_values                      => scalar(@$keys),
-        
-        _keys                           => \@keys,    
-        _constant_values                => $constant_values->[0],
-
-        _ambiguous_keys                 => (@ambiguous_keys ? \@ambiguous_keys : undef),
-        _ambiguous_property_names       => (@ambiguous_property_names ? \@ambiguous_property_names : undef),
-
-    }, 'UR::BoolExpr::Template::And';
-
-    $UR::Object::rule_templates->{$id} = $self;  
-    return $self;
-}
-
 sub get {
     my $class = shift;
     my $id = shift;    
@@ -787,7 +455,7 @@ sub get {
         # TODO: move into subclass
         my @keys = split(/,/,$logic_detail || '');    
         my @constant_values = UR::BoolExpr::Util->value_id_to_values($constant_value_id) if defined $constant_value_id;;
-        return $sub_class_name->_fast_construct_and(
+        return $sub_class_name->_fast_construct(
             $subject_class_name,
             \@keys,
             \@constant_values,
@@ -929,12 +597,12 @@ sub legacy_params_hash {
 
     if ($self->is_unique and not $legacy_params_hash->{_unique}) {
         Carp::carp "is_unique IS set but legacy params hash is NO for $self->{id}";
-        $DB::single = 1;
+        #$DB::single = 1;
         $self->is_unique; 
     }
     if (!$self->is_unique and $legacy_params_hash->{_unique}) {        
         Carp::carp "is_unique NOT set but legacy params hash IS for $self->{id}";
-        $DB::single = 1;
+        #$DB::single = 1;
         $self->is_unique; 
     }       
 
@@ -970,55 +638,6 @@ sub sorter {
     }
 
     return $sorter;
-}
-
-sub params_list_for_values {
-    # This is the reverse of the bulk of resolve.
-    # It returns the params in list form, directly coercable into a hash if necessary.
-    # $r = UR::BoolExpr->resolve($c1,@p1);
-    # ($c2, @p2) = ($r->subject_class_name, $r->params_list);
-    
-    my $rule_template = shift;
-    my @values_sorted = @_;
-    
-    my @keys_sorted = $rule_template->_underlying_keys;
-    my @constant_values_sorted = $rule_template->_constant_values;
-    
-    my @params;
-    my ($v,$c) = (0,0);
-    for (my $k=0; $k<@keys_sorted; $k++) {
-        my $key = $keys_sorted[$k];                        
-        #if (substr($key,0,1) eq "_") {
-        #    next;
-        #}
-        #elsif (substr($key,0,1) eq '-') {
-        if (substr($key,0,1) eq '-') {
-            my $value = $constant_values_sorted[$c];
-            push @params, $key, $value;        
-            $c++;
-        }
-        else {
-            my ($property, $op) = ($key =~ /^(\-*\w+)\s*(.*)$/);        
-            unless ($property) {
-                die;
-            }
-            my $value = $values_sorted[$v];
-            if ($op) {
-                if ($op ne "in") {
-                    if ($op =~ /^(.+)-(.+)$/) {
-                        $value = { operator => $1, value => $value, escape => $2 };
-                    }
-                    else {
-                        $value = { operator => $op, value => $value };
-                    }
-                }
-            }
-            push @params, $property, $value;
-            $v++;
-        }
-    }
-
-    return @params; 
 }
 
 

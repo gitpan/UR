@@ -3,7 +3,7 @@ package UR::Object::Property::View::DescriptionLineItem::Text;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -23,12 +23,19 @@ sub _update_view_from_subject {
     unless ($column_name) {
         if ($property_meta->via) {
             $column_name = $property_meta->via . '->' . $property_meta->to;
-        } elsif ($property_meta->is_class_wide) {
-            $column_name = '(class wide)';
+        } elsif ($property_meta->is_classwide) {
+            $column_name = '(classwide)';
             
         } elsif ($property_meta->is_delegated) {
             # delegated, but not via.  Must be an object accessor
             $column_name = ''
+        } elsif ($property_meta->is_calculated) {
+            my $calc_from = $property_meta->calculate_from;
+            if ($calc_from and @$calc_from) {
+                $column_name = '(calculated from ' . join(',',@$calc_from). ')';
+            } else {
+                $column_name = '(calculated)';
+            }
         } else {
             $column_name = '(no column)';
         }

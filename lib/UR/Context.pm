@@ -5,14 +5,20 @@ use warnings;
 use Sub::Name;
 
 require UR;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use UR::Context::ObjectFabricator;
+use UR::Context::LoadingIterator;
 
 UR::Object::Type->define(
     class_name => 'UR::Context',    
     is_abstract => 1,
     has => [
-        parent  => { is => 'UR::Context', id_by => 'parent_id', is_optional => 1 }
+        parent  => { is => 'UR::Context', id_by => 'parent_id', is_optional => 1 },
+        query_underlying_context => { is => 'Boolean',
+                                      is_optional => 1,
+                                      default_value => undef,
+                                      doc => 'Flag indicating whether the context must (1), must not (0) or may (undef) query underlying contexts when handling a query'  },
     ],
     doc => <<EOS
 The environment in which all data examination and change occurs in UR.  The current context represents the current 
@@ -37,9 +43,6 @@ our $cache_last_prune_serial ||= 0;           # serial number the last time we p
 our $cache_size_highwater;                    # high water mark for cache size.  Start pruning when $all_objects_cache_size goes over
 our $cache_size_lowwater;                     # low water mark for cache size
 our $GET_COUNTER = 1;                         # This is where the serial number for the __get_serial key comes from
-
-our $is_multiple_loading_iterators = 0; # A boolean flag used in the loading iterator to control whether we need to inject loaded objects into other loading iterators' cached lists
-our $loading_iterators = [];          # A list of active loading iterators
 
 # For bootstrapping.
 $UR::Context::current = __PACKAGE__;
@@ -68,7 +71,7 @@ sub _initialize_for_current_process {
         $UR::Context::base = $UR::Context::root;
     }
 
-    $UR::Context::process = UR::Context::Process->_create_for_current_process(parent_id => $UR::Context::base);
+    $UR::Context::process = UR::Context::Process->_create_for_current_process(parent_id => $UR::Context::base->id);
 
     if (exists $ENV{'UR_CONTEXT_CACHE_SIZE_LOWWATER'} || exists $ENV{'UR_CONTEXT_CACHE_SIZE_HIGHWATER'}) {
         $UR::Context::destroy_should_clean_up_all_objects_loaded = 1;
@@ -92,6 +95,10 @@ sub _initialize_for_current_process {
 *get_current = \&current;
 sub current {
     return $UR::Context::current;
+}
+
+sub process {
+    return $UR::Context::process;
 }
 
 sub now {
@@ -176,10 +183,6 @@ sub resolve_data_sources_for_class_meta_and_rule {
     # any kind of underlying datasource, this code can move from here 
     # and into the base class for Meta datasources
     if ($class_name->isa('UR::DataSource::RDBMS::Entity')) {
-        if (!defined $boolexpr) {
-            $DB::single=1;
-        }
-
         my $params = $boolexpr->legacy_params_hash;
         my $namespace;
         if ($params->{'namespace'}) {
@@ -290,6 +293,8 @@ sub infer_property_value_from_rule {
 }
 
 our $sig_depth = 0;
+# These are things that use __signal_change__ to emit a message to callbacks, but aren't actually changes
+my %changes_not_counted = map { $_ => 1 } qw(load define unload query connect);
 my %subscription_classes;
 sub add_change_to_transaction_log {
     my ($self,$subject, $property, @data) = @_;
@@ -298,7 +303,7 @@ sub add_change_to_transaction_log {
     if (ref($subject)) {
         $class = ref($subject);
         $id = $subject->id;
-        unless ($property eq 'load' or $property eq 'define' or $property eq 'unload') {
+        unless ($changes_not_counted{$property} ) {
             $subject->{_change_count}++;
             #print "changing $subject $property @data\n";    
         }
@@ -392,7 +397,9 @@ sub query {
     my $self = shift;
 
     # Fast optimization for the default case.
-    unless (Scalar::Util::blessed($_[1])) {   # This happens when query() is called with a class name and boolexpr
+    if ( ( !ref($self) or ! $self->query_underlying_context) 
+         and ! Scalar::Util::blessed($_[1]) # This happens when query() is called with a class name and boolexpr
+    ) {
         no warnings;
         if (exists $UR::Context::all_objects_loaded->{$_[0]}) {
             my $is_monitor_query = $self->monitor_query;
@@ -470,18 +477,7 @@ sub query {
         return @objects if wantarray;
         
         if ( @objects > 1 and defined(wantarray)) {
-            my %params = $rule->params_list();
-            $DB::single=1;
-            print "Got multiple matches for class $class\nparams were: ".join(', ', map { "$_ => " . $params{$_} } keys %params) . "\nmatched objects were:\n";
-            foreach my $o (@objects) {
-               print "Object $o\n";
-               foreach my $k ( keys %$o) {
-                   print "$k => ".$o->{$k}."\n";
-               }
-            }
-            Carp::confess("Multiple matches for $class query!". Data::Dumper::Dumper([$rule->params_list]));
-            Carp::confess("Multiple matches for $class, ids: ",map {$_->id} @objects, "\nParams: ",
-                           join(', ', map { "$_ => " . $params{$_} } keys %params)) if ( @objects > 1 and defined(wantarray));
+            Carp::croak("Multiple matches for $class query called in scalar context. $rule matches " . scalar(@objects). " objects");
         }
         
         return $objects[0];
@@ -758,7 +754,6 @@ sub create_entity {
         if (defined($sub_class_name) and ($sub_class_name ne $class)) {
             # delegate to the sub-class to create the object
             unless ($sub_class_name->can($construction_method)) {
-                $DB::single = 1;
                 Carp::croak("Can't locate object method '$construction_method' via package '$sub_class_name' "
                             . "while resolving proper subclass for $class during $construction_method");
 
@@ -791,9 +786,6 @@ sub create_entity {
             return;
         }
         $rule = UR::BoolExpr->resolve_normalized($class, %$params, id => $id);
-        unless ($rule->value_for_id) {
-            $DB::single = 1;
-        }
         $params = { $rule->params_list }; ;
     }
 
@@ -862,9 +854,14 @@ sub create_entity {
             }
         }
 
-        my @joins = $indirect_property_meta->_get_joins();
+        my @joins = $indirect_property_meta->_resolve_join_chain();
         my %local_properties_to_set;
         foreach my $join ( @joins ) {
+            if ($join->{foreign_class}->isa("UR::Value")) {
+                # this final "join" is to the set of values available to the raw primitive type
+                # ...not what we really mean by delegation
+                next;
+            }
             for (my $i = 0; $i < @{$join->{'source_property_names'}}; $i++) {
                 my $source_property_name = $join->{'source_property_names'}->[$i];
                 next unless (exists $direct_properties->{$source_property_name});
@@ -1087,7 +1084,6 @@ sub delete_entity {
             # create ghost object
             my $ghost = $self->_construct_object($entity->ghost_class, id => $entity->id, %ghost_params);
             unless ($ghost) {
-                $DB::single = 1;
                 Carp::confess("Failed to constructe a deletion record for an unsync'd delete.");
             }
             $ghost->__signal_change__("create");
@@ -1302,7 +1298,6 @@ sub prune_object_cache {
 
     return if ($is_pruning);  # Don't recurse into here
 
-    #$DB::single=1;
     return unless ($all_objects_cache_size > $cache_size_highwater);
 
     $is_pruning = 1;
@@ -1406,9 +1401,18 @@ sub prune_object_cache {
         printf("MEM PRUNE complete, $deleted_count objects marked after $pass passes in %.4f sec\n\n\n",$t2-$t1);
     }
     if ($all_objects_cache_size > $cache_size_lowwater) {
-        #$DB::single=1;
         warn "After several passes of pruning the object cache, there are still $all_objects_cache_size objects";
     }
+}
+
+
+# True if the object was loaded from an underlying context and/or datasource, or if the
+# object has been committed to the underlying context
+sub object_exists_in_underlying_context {
+    my($self, $obj) = @_;
+
+    return if ($obj->{'__defined'});
+    return (exists($obj->{'db_committed'}) || exists($obj->{'db_saved_uncommitted'}));
 }
 
    
@@ -1419,14 +1423,69 @@ sub get_objects_for_class_and_rule {
     #my @params = $rule->params_list;
     #print "GET: $class @params\n";
 
-    if ($cache_size_highwater
-        and
-        $all_objects_cache_size > $cache_size_highwater)
-    {
+    my $rule_template = $rule->template;
+    
+    my $group_by = $rule_template->group_by;
 
+    if (ref($self) and !defined($load)) {
+        $load = $self->query_underlying_context;  # could still be undef...
+    }
+
+    if ($group_by and $rule_template->order_by) {
+        my %group_by = map { $_ => 1 } @{ $rule->template->group_by };
+        foreach my $order_by_property ( @{ $rule->template->order_by } ) {
+            unless ($group_by{$order_by_property}) {
+                Carp::croak("Property '$order_by_property' in the -order_by list must appear in the -group_by list for BoolExpr $rule");
+            }
+        }
+    }
+
+    if (
+        $cache_size_highwater
+        and
+        $all_objects_cache_size > $cache_size_highwater
+    ) {
         $self->prune_object_cache();
     }
+
+    if ($rule_template->isa("UR::BoolExpr::Template::Or")) {
+        $rule = $rule->normalize;
+        my @u = $rule->underlying_rules;
+        my @results;
+        for my $u (@u) {
+            if (wantarray) {
+                push @results, $self->get_objects_for_class_and_rule($class,$u,$load,$return_closure);
+            }
+            else {
+                my $result = $self->get_objects_for_class_and_rule($class,$u,$load,$return_closure);
+                push @results, $result;
+            }
+        }
+        if ($return_closure) {
+            Carp::confess("TOOD: implement iterator closures for OR rules");
+        }
+
+        # remove duplicates
+        my $last = 0;
+        my $plast = 0;
+        my $next = 0;
+        @results = grep { $plast = $last; $last = $_; $plast == $_ ? () : ($_) } sort @results;
     
+        return unless defined wantarray;
+        return @results if wantarray;
+        if (@results > 1) {
+            Carp::confess 
+                sprintf(
+                    "Multiple results unexpected for query.\n\tClass %s\n\trule params: %s\n\tGot %d results:\n%s\n",
+                    $rule->subject_class_name,
+                    join(',', $rule->params_list),
+                    scalar(@results),
+                    Data::Dumper::Dumper(\@results)
+                );
+        }
+        return $results[0];
+    }
+
     # an identifier for all objects gotten in this request will be set/updated on each of them for pruning later
     my $this_get_serial = $GET_COUNTER++;
     
@@ -1438,7 +1497,11 @@ sub get_objects_for_class_and_rule {
     # should have a filter added to the rule to keep only rows of the subclass we're interested in.
     # This will improve the SQL performance when it's later constructed.
     my $subclassify_by = $meta->subclassify_by;
-    if ($subclassify_by and ! $meta->is_abstract and ! $rule->specifies_value_for($subclassify_by)) {
+    if ($subclassify_by 
+        and ! $meta->is_abstract 
+        and ! $rule->template->group_by 
+        and ! $rule->specifies_value_for($subclassify_by)
+    ) {
         $rule = $rule->add_filter($subclassify_by => $class);
     }
 
@@ -1460,8 +1523,14 @@ sub get_objects_for_class_and_rule {
     my $cached;
     
     # this is a no-op if the rule is already normalized
+    # we do not currently flatten b/c the bx constant_values do not flatten/reframe
+    #my $flat_rule = ( (1 or $rule->subject_class_name eq 'UR::Object::Property') ? $rule : $rule->flatten);
+    #my $normalized_rule = $flat_rule->normalize;
     my $normalized_rule = $rule->normalize;
-    
+
+    my $is_monitor_query = $self->monitor_query;
+    $self->_log_query_for_rule($class,$normalized_rule,Carp::shortmess("QUERY: Query start for rule $normalized_rule")) if ($is_monitor_query);
+
     # see if we need to load if load was not defined
     unless (defined $load) {
         # check to see if the cache is complete
@@ -1469,9 +1538,6 @@ sub get_objects_for_class_and_rule {
         my ($cache_is_complete, $cached) = $self->_cache_is_complete_for_class_and_normalized_rule($class, $normalized_rule);
         $load = ($cache_is_complete ? 0 : 1);
     }
-
-    my $is_monitor_query = $self->monitor_query;
-    $self->_log_query_for_rule($class,$normalized_rule,Carp::shortmess("QUERY: Query start for rule $normalized_rule")) if ($is_monitor_query);
 
     # optimization for the common case
     if (!$load and !$return_closure) {
@@ -1496,7 +1562,7 @@ sub get_objects_for_class_and_rule {
 
         return @c if wantarray;           # array context
         return unless defined wantarray;  # null context
-        Carp::confess("multiple objects found for a call in scalar context!  Using " . __PACKAGE__) if @c > 1;
+        Carp::confess("multiple objects found for a call in scalar context!" . Data::Dumper::Dumper(\@c)) if @c > 1;
         return $c[0];                     # scalar context
     }
 
@@ -1531,166 +1597,10 @@ sub get_objects_for_class_and_rule {
         # this returns objects from the underlying context after importing them into the current context,
         # but only if they did not exist in the current context already
         $self->_log_query_for_rule($class, $normalized_rule, "QUERY: importing from underlying context with rule $normalized_rule") if ($is_monitor_query);
-        my $underlying_context_iterator = $self->_create_import_iterator_for_underlying_context($normalized_rule, $ds, $this_get_serial);
 
-        # Some thoughts about the loading iterator's behavior around changing objects....
-        #
-        # The system attempts to return objects matching the rule at the time the iterator is
-        # created, even if they change between the time it's created and when next() returns 
-        # them.  There is a problem if the object in question is actually deleted (ie. isa
-        # UR::DeletedRef).  Since DeletedRef's die any time you try to use them, the object
-        # sorters can't sort them.  Instead, we'll just punt and throw an exception ourselves
-        # if we come across one.
-        # 
-        # This seems like the least suprising thing to do, but there are other solutions:
-        # 1) just plain don't return the deleted object
-        # 2) use signal_change to register a callback which will remove objects being deleted
-        #    from all the in-process iterator @$cached lists (accomplishes the same as #1).
-        #    For completeness, this may imply that other signal_change callbacks would remove
-        #    objects that no longer match rules for in-process iterators, and that means that 
-        #    next() returns things true at the time next() is called, not when the iterator
-        #    is created.
-        # 3) Put in some additional infrastructure so we can pull out the ID of a deleted
-        #    object.  That lets us call $next_object->id at the end of the closure, and return these
-        #    deleted objects back to the user.  Problem being that the user then can't really
-        #    do anything with them.  But it would be consistent about returning _all_ objects
-        #    that matched the rule at iterator creation time
-        # 4) Like #3, but just always return the deleted object before any underlying_context
-        #    object, and then don't try to get its ID at the end if the iterator if it's deleted
- 
-        # These are captured by the closure...
-        my($last_loaded_id, $next_obj_current_context, $next_obj_underlying_context,$underlying_context_objects_count,$cached_objects_count);
-        my $me_loading_iterator_as_string;  # See note below the closure definition
-
-        $underlying_context_objects_count = 0;
-        $cached_objects_count = 0;
-        # this will interleave the above with any data already present in the current context
-        $loading_iterator = sub {
-            PICK_NEXT_OBJECT_FOR_LOADING:
-            if ($underlying_context_iterator && ! $next_obj_underlying_context) {
-                ($next_obj_underlying_context) = $underlying_context_iterator->(1);
- 
-                if ($is_monitor_query and $next_obj_underlying_context) {
-                    $self->_log_query_for_rule($class, $normalized_rule, "QUERY: loading 1 object from underlying context") if ($return_closure);
-                    $underlying_context_objects_count++;
-                }
-                # See if this newly loaded object needs to be inserted into any of the other
-                # loading iterators' cached list.  We only need to check this is there is more
-                # than one iterator running....
-                if ($next_obj_underlying_context and $UR::Context::is_multiple_loading_iterators) {
-                    $self->_inject_object_into_other_loading_iterators($next_obj_underlying_context, $me_loading_iterator_as_string);
-                }
-            }
-
-            unless ($next_obj_current_context) {
-                ($next_obj_current_context) = shift @$cached;
-                $cached_objects_count++ if ($is_monitor_query and $next_obj_current_context);
-            }
-
-            if ($next_obj_current_context and $next_obj_current_context->isa('UR::DeletedRef')) {
-                 my $obj_to_complain_about = $next_obj_current_context;
-                 # undef it in case the user traps the exception, next time we'll pull another off the list
-                 $next_obj_current_context = undef;
-                 Carp::croak("Attempt to fetch an object which matched $rule when the iterator was created, but was deleted in the meantime:\n"
-                             . Data::Dumper::Dumper($obj_to_complain_about) );
-             }
-
-
-            # We're turning off warnings to avoid complaining in the elsif()
-            no warnings 'uninitialized';
-            if (!$next_obj_underlying_context) {
-                if ($is_monitor_query) {
-                    $self->_log_query_for_rule($class, $normalized_rule, "QUERY: loaded $underlying_context_objects_count object(s) total from underlying context.");
-                }
-                $underlying_context_iterator = undef;
-
-            } elsif ($last_loaded_id eq $next_obj_underlying_context->id) {
-                # during a get() with -hints or is_many+is_optional (ie. something with an
-                # outer join), it's possible that the join can produce the same main object
-                # as it's chewing through the (possibly) multiple objects joined to it.
-                # Since the objects will be returned sorted by their IDs, we only have to
-                # remember the last one we saw
-                # FIXME - is this still true now that the underlying context iterator will
-                # never return objects that already exist in the cache?
-                $next_obj_underlying_context = undef;
-                goto PICK_NEXT_OBJECT_FOR_LOADING;
-            }
-            use warnings 'uninitialized';
-            
-            # decide which pending object to return next
-            # both the cached list and the list from the database are sorted separately,
-            # we're merging these into one return stream here
-            my $comparison_result;
-            if ($next_obj_underlying_context && $next_obj_current_context) {
-                $comparison_result = $object_sorter->($next_obj_underlying_context, $next_obj_current_context);
-            }
-            
-            my $next_object;
-            if (
-                $next_obj_underlying_context 
-                and $next_obj_current_context 
-                and $comparison_result == 0 # $next_obj_underlying_context->id eq $next_obj_current_context->id
-            ) {
-                # the database and the cache have the same object "next"
-                $self->_log_query_for_rule($class, $normalized_rule, "QUERY: loaded object was already cached") if ($is_monitor_query);
-                $next_object = $next_obj_current_context;
-                $next_obj_current_context = undef;
-                $next_obj_underlying_context = undef;
-            }
-            elsif (                
-                $next_obj_underlying_context
-                and (
-                    (!$next_obj_current_context)
-                    or
-                    ($comparison_result < 0) # ($next_obj_underlying_context->id le $next_obj_current_context->id) 
-                )
-            ) {
-                # db object is next to be returned
-                $next_object = $next_obj_underlying_context;
-                $next_obj_underlying_context = undef;
-            }
-            elsif (                
-                $next_obj_current_context 
-                and (
-                    (!$next_obj_underlying_context)
-                    or 
-                    ($comparison_result > 0) # ($next_obj_underlying_context->id ge $next_obj_current_context->id) 
-                )
-            ) {
-                # cached object is next to be returned
-                $next_object = $next_obj_current_context;
-                $next_obj_current_context = undef;
-            }
-
-            return unless defined $next_object;
-
-            $last_loaded_id = $next_object->id;
-
-            return $next_object;
-        };
-
-        bless $loading_iterator, 'UR::Context::loading_iterator_tracker';
-        Sub::Name::subname('UR::Context::__loading_iterator(closure)__',$loading_iterator);
-
-        # Inside the closure, it needs to know its own address, but without holding a real reference
-        # to itself - otherwise the closure would never go out of scope, the destructor would never
-        # get called, and the list of outstanding loaders would never get pruned.  This way, the closure
-        # holds a reference to the string version of its address, which is the only thing it really
-        # needed anyway
-        $me_loading_iterator_as_string = $loading_iterator . '';
-
-        # Add ourselves to the list of outstanding loading iterators.  The underlying
-        # context iterator will need to know these
-        push @$UR::Context::loading_iterators, [ $loading_iterator . '',  # force to a string so the list doesn't hold a real ref
-                                                 $rule,
-                                                 $object_sorter,
-                                                 $cached,
-                                                 \$underlying_context_objects_count,
-                                                 \$cached_objects_count
-                                               ];
-        $UR::Context::is_multiple_loading_iterators = 1 if (@$UR::Context::loading_iterators > 1);
+        $loading_iterator = UR::Context::LoadingIterator->_create($cached, $self,$normalized_rule, $ds,$this_get_serial);
     }
-    
+
     if ($return_closure) {
         if ($load) {
             # return the iterator made above
@@ -1727,72 +1637,6 @@ sub get_objects_for_class_and_rule {
     }
 }
 
-sub UR::Context::loading_iterator_tracker::DESTROY {
-    # Items in the listref are: $loading_iterator_string, $rule, $object_sorter, $cached, \$underlying_context_objects_count, \$cached_objects_count
-
-    my $count = scalar(@$UR::Context::loading_iterators);
-    for (my $i = 0; $i < $count; $i++) {
-        if ($_[0] eq $UR::Context::loading_iterators->[$i]->[0]) {
-            # That's me!
-            if ($UR::Context::current->monitor_query) {
-                my $me_iter = $UR::Context::loading_iterators->[$i];
-                my $rule = $me_iter->[1];
-                my $count = ${$me_iter->[4]} + ${$me_iter->[5]};
-                $UR::Context::current->_log_query_for_rule($rule->subject_class_name, $rule, "QUERY: Query complete after returning $count object(s) for rule $rule.");
-                $UR::Context::current->_log_done_elapsed_time_for_rule($rule);
-            }
-
-            splice(@$UR::Context::loading_iterators, $i, 1);
-            $UR::Context::is_multiple_loading_iterators = 0 if ($count == 2);  # If count was 2 at the top, and we removed one, it's now 1 and it's not multiple
-            return;
-        }
-    }
-    Carp::carp('A loading iterator went out of scope, but could not be found in the loading_iterators list!?');
-}
-
-# Used by the object fabricator to inject a newly loaded object into another
-# loading iterator's @$cached list.  This is to handle the case where the user creates
-# an iterator which will load objects from the DB.  Before all the data from that
-# iterator is read, another get() or iterator is created that covers (some of) the same
-# objects which get pulled into the object cache, and the second request is run to
-# completion.  Since the underlying context iterator has been changed to never return
-# objects currently cached, the first iterator would have incorrectly skipped ome objects that
-# were not loaded when the first iterator was created, but later got loaded by the second.
-sub _inject_object_into_other_loading_iterators {
-    my($self, $new_object, $iterator_to_skip) = @_;
-
-    my $iterator_count = @$UR::Context::loading_iterators;
-    ITERATOR:
-    for (my $i = 0; $i < $iterator_count; $i++) {
-        my($loading_iterator, $rule, $object_sorter, $cached)
-                                = @{$UR::Context::loading_iterators->[$i]};
-        next if ($loading_iterator eq $iterator_to_skip);  # That's me!  Don't insert into our own @$cached this way
-        if ($rule->evaluate($new_object)) {
-
-            my $cached_list_len = @$cached;
-            for(my $i = 0; $i < $cached_list_len; $i++) {
-                my $cached_object = $cached->[$i];
-                next if $cached_object->isa('UR::DeletedRef');
-
-                my $comparison = $object_sorter->($new_object, $cached_object);
-        
-                if ($comparison < 0) {
-                    # The new object sorts sooner than this one.  Insert it into the list
-                    splice(@$cached, $i, 0, $new_object);
-                    next ITERATOR;
-                } elsif ($comparison == 0) {
-                    # This object is already in the list
-                    next ITERATOR;
-                }
-            }
-
-            # It must go at the end...
-            push @$cached, $new_object;
-        }
-    } # end for()           
-}
-    
-
 
 # A wrapper around the method of the same name in UR::DataSource::* to iterate over the
 # possible data sources involved in a query.  The easy case (a query against a single data source)
@@ -1801,19 +1645,19 @@ sub _inject_object_into_other_loading_iterators {
 # 1) The secondary data source name
 # 2) a listref of delegated properties joining the primary class to the secondary class
 # 3) a rule template applicable against the secondary data source
-sub _get_template_data_for_loading {
+sub _resolve_query_plan_for_ds_and_bxt {
     my($self,$primary_data_source,$rule_template) = @_;
 
-    my $primary_template = $primary_data_source->_get_template_data_for_loading($rule_template);
+    my $primary_query_plan = $primary_data_source->_resolve_query_plan($rule_template);
 
-    unless ($primary_template->{'joins_across_data_sources'}) {
+    unless ($primary_query_plan->{'joins_across_data_sources'}) {
         # Common, easy case
-        return $primary_template;
+        return $primary_query_plan;
     }
 
     my @addl_loading_info;
-    foreach my $secondary_data_source_id ( keys %{$primary_template->{'joins_across_data_sources'}} ) {
-        my $this_ds_delegations = $primary_template->{'joins_across_data_sources'}->{$secondary_data_source_id};
+    foreach my $secondary_data_source_id ( keys %{$primary_query_plan->{'joins_across_data_sources'}} ) {
+        my $this_ds_delegations = $primary_query_plan->{'joins_across_data_sources'}->{$secondary_data_source_id};
 
         my %seen_properties;
         foreach my $delegated_property ( @$this_ds_delegations ) {
@@ -1856,7 +1700,7 @@ sub _get_template_data_for_loading {
         }
     }
 
-    return ($primary_template, @addl_loading_info);
+    return ($primary_query_plan, @addl_loading_info);
 }
 
 
@@ -1867,7 +1711,7 @@ sub _create_secondary_rule_from_primary {
     my($self,$primary_rule, $delegated_properties, $secondary_rule_template) = @_;
 
     my @secondary_values;
-    my %seen_properties;  # FIXME - we've already been over this list in _get_template_data_for_loading()...
+    my %seen_properties;  # FIXME - we've already been over this list in _resolve_query_plan_for_ds_and_bxt()...
     # FIXME - is there ever a case where @$delegated_properties will be more than one item?
     foreach my $property ( @$delegated_properties ) {
         my $value = $primary_rule->value_for($property->property_name);
@@ -1937,7 +1781,7 @@ sub _fixup_secondary_loading_template_column_positions {
 # closures.  The first is a list of object fabricators, where the loading templates
 # have been given fixups to the column positions (see _fixup_secondary_loading_template_column_positions())
 # The second is a list of closures for each data source (the @addl_loading_info stuff
-# from _get_template_data_for_loading) that's able to compare the row loaded from the
+# from _resolve_query_plan_for_ds_and_bxt) that's able to compare the row loaded from the
 # primary data source and see if it joins to a row from this secondary datasource's database
 sub _create_secondary_loading_closures {
     my($self, $primary_template, $rule, @addl_loading_info) = @_;
@@ -1972,7 +1816,7 @@ sub _create_secondary_loading_closures {
                                               $secondary_rule_template,
                                        );
         $secondary_data_source = $secondary_data_source->resolve_data_sources_for_rule($secondary_rule);
-        my $secondary_template = $self->_get_template_data_for_loading($secondary_data_source,$secondary_rule_template);
+        my $secondary_template = $self->_resolve_query_plan_for_ds_and_bxt($secondary_data_source,$secondary_rule_template);
 
         # sets of triples where the first in the triple is the column index in the
         # $secondary_db_row (in the join_comparator closure below), the second is the
@@ -1983,7 +1827,7 @@ sub _create_secondary_loading_closures {
         foreach my $property ( @$this_ds_delegations ) {
             # first, map column names in the joined class to column names in the primary class
             my %foreign_property_name_map;
-            my @this_property_joins = $property->_get_joins();
+            my @this_property_joins = $property->_resolve_join_chain();
             foreach my $join ( @this_property_joins ) {
                 my @source_names = @{$join->{'source_property_names'}};
                 my @foreign_names = @{$join->{'foreign_property_names'}};
@@ -2169,11 +2013,14 @@ sub _create_import_iterator_for_underlying_context {
         = $dsx->create_iterator_closure_for_rule($rule);
 
     my ($rule_template, @values) = $rule->template_and_values();
-    my ($template_data,@addl_loading_info) = $self->_get_template_data_for_loading($dsx,$rule_template);
+    my ($template_data,@addl_loading_info) = $self->_resolve_query_plan_for_ds_and_bxt($dsx,$rule_template);
     my $class_name = $template_data->{class_name};
 
-    my $group_by = $rule_template->group_by;
-    my $order_by = $rule_template->order_by;
+    my $group_by    = $rule_template->group_by;
+    my $order_by    = $rule_template->order_by;
+    my $aggregate   = $rule_template->aggregate;
+    my $limit       = $rule_template->limit;
+    my $page        = $rule_template->page;
 
     if (my $sub_typing_property) {
         # When the rule has a property specified which indicates a specific sub-type, catch this and re-call
@@ -2186,7 +2033,6 @@ sub _create_import_iterator_for_underlying_context {
         warn "Implement me carefully";
         
         if ($rule_template_specifies_value_for_subtype) {
-            #$DB::single = 1;
             my $sub_classification_meta_class_name          = $template_data->{sub_classification_meta_class_name};
             my $value = $rule->value_for($sub_typing_property);
             my $type_obj = $sub_classification_meta_class_name->get($value);
@@ -2203,7 +2049,6 @@ sub _create_import_iterator_for_underlying_context {
             }
         }
         elsif (not $class_table_name) {
-            #$DB::single = 1;
             # we're in a sub-class, and don't have the type specified
             # check to make sure we have a table, and if not add to the filter
             #my $rule = $class_name->define_boolexpr(
@@ -2245,38 +2090,37 @@ sub _create_import_iterator_for_underlying_context {
     my $needs_further_boolexpr_evaluation_after_loading = $template_data->{'needs_further_boolexpr_evaluation_after_loading'};
     
     my %subordinate_iterator_for_class;
-    
+   
+    # TODO: move the creation of the fabricators into the query plan object initializer.
     # instead of making just one import iterator, we make one per loading template
     # we then have our primary iterator use these to fabricate objects for each db row
     my @object_fabricators;
     if ($group_by) {
-        # returning sets instead of instance objects...
+        # returning sets for each sub-group instead of instance objects...
+       
+        my $division_point = scalar(@$group_by)-1; 
+        my $subset_template = $rule_template->_template_for_grouped_subsets();
         my $set_class = $class_name . '::Set';
-        my $logic_type = $rule_template->logic_type;
-        my @base_property_names = $rule_template->_property_names;
-        
-        my @non_aggregate_properties = @$group_by;
-        my @aggregate_properties = ('count'); # TODO: make non-hard-coded
-        my $division_point = $#non_aggregate_properties;
-    
-        my $template = UR::BoolExpr::Template->get_by_subject_class_name_logic_type_and_logic_detail(
-            $class_name,
-            'And',
-            join(",", @base_property_names, @non_aggregate_properties),
-        );
-        push @object_fabricators, sub {
+        my @aggregate_properties = ($aggregate ? @$aggregate : ());
+        unshift(@aggregate_properties, 'count') unless (grep { $_ eq 'count' } @aggregate_properties);
+
+        my $fab_subref = sub {
             my $row = $_[0];
-            # my $ss_rule = $template->get_rule_for_values(@values, @$row[0..$division_point]);
-            # not sure why the above gets an error but this doesn't...
-            my @a = @$row[0..$division_point];
-            my $ss_rule = $template->get_rule_for_values(@values, @a); 
+            my @group_values = @$row[0..$division_point];
+            my $ss_rule = $subset_template->get_rule_for_values(@values, @group_values); 
             my $set = $set_class->get($ss_rule->id);
             unless ($set) {
-                die "Failed to fabricate $set_class for rule $ss_rule!";
+                Carp::croak("Failed to fabricate $set_class for rule $ss_rule");
             }
             @$set{@aggregate_properties} = @$row[$division_point+1..$#$row];
             return $set;
         };
+
+        my $object_fabricator = UR::Context::ObjectFabricator->_create(
+                                    fabricator => $fab_subref,
+                                    context    => $self,
+                                );
+        unshift @object_fabricators, $object_fabricator;
     }
     else {
         # regular instances
@@ -2302,7 +2146,7 @@ sub _create_import_iterator_for_underlying_context {
     my @addl_join_comparators;
     if (@addl_loading_info) {
         if ($group_by) {
-            die "cross-datasource group-by is not supported yet!";
+            Carp::croak("cross-datasource group-by is not supported yet");
         }
         my($addl_object_fabricators, $addl_join_comparators) =
                 $self->_create_secondary_loading_closures( $template_data,
@@ -2324,6 +2168,7 @@ sub _create_import_iterator_for_underlying_context {
 
     # Make the iterator we'll return.
     my $next_object_to_return;
+    my @object_ids_from_fabricators;
     my $underlying_context_iterator = sub {
         return undef unless $db_iterator;
 
@@ -2389,7 +2234,7 @@ sub _create_import_iterator_for_underlying_context {
                     if ($obj) {
                         # The last time this happened, it was because a get() was done on an abstract
                         # base class with only 'id' as a param.  When the subclassified rule was
-                        # turned into SQL in UR::DataSource::RDBMS::_generate_template_data_for_loading()
+                        # turned into SQL in UR::DataSource::QueryPlan()
                         # it removed that one 'id' filter, since it assummed any class with more than
                         # one ID property (usually classes have a named whatever_id property, and an alias 'id'
                         # property) will have a rule that covered both ID properties
@@ -2444,7 +2289,10 @@ sub _create_import_iterator_for_underlying_context {
             # get one or more objects from this row of results
             my $re_iterate = 0;
             my @imported;
-            for my $object_fabricator (@object_fabricators) {
+            #for my $object_fabricator (@object_fabricators) {
+            for (my $i = 0; $i < @object_fabricators; $i++) {
+                my $object_fabricator = $object_fabricators[$i];
+
                 # The usual case is that the query is just against one data source, and so the importer
                 # callback is just given the row returned from the DB query.  For multiple data sources,
                 # we need to smash together the primary and all the secondary lists
@@ -2470,12 +2318,24 @@ sub _create_import_iterator_for_underlying_context {
                     $re_iterate = 1;
                 }
                 push @imported, $imported_object;
+
+                # If the object ID for fabricator slot $i changes, then we can apply the 
+                # all_params_loaded changes from iterators 0 .. $i-1 because we know we've
+                # loaded all the hangoff data related to the previous object
+                # remember that the last fabricator in the list is for the primary object
+                if (defined $imported_object and ref($imported_object)) {
+                    if (!defined $object_ids_from_fabricators[$i]) {
+                        $object_ids_from_fabricators[$i] = $imported_object->id;
+                    } elsif ($object_ids_from_fabricators[$i] ne $imported_object->id) {
+                        for (my $j = 0; $j < $i; $j++) {
+                            $object_fabricators[$j]->apply_all_params_loaded;
+                        }
+                        $object_ids_from_fabricators[$i] = $imported_object->id;
+                    }
+                }
             }
 
             $primary_object_for_next_db_row = $imported[-1];
-            my $this_object_was_already_cached = defined($primary_object_for_next_db_row)
-                                              && ref($primary_object_for_next_db_row)
-                                              && exists($primary_object_for_next_db_row->{'__get_serial'});
 
             foreach my $obj (@imported) {
                 # The object importer will return undef for an object if no object
@@ -2487,15 +2347,6 @@ sub _create_import_iterator_for_underlying_context {
                 $obj->{'__get_serial'} = $this_get_serial;
             }
 
-            if ($this_object_was_already_cached) {
-                # Don't return objects that already exist in the current context
-                # FIXME - when we can stack contexts in the same application, and the 
-                # loaded context is recorded on the object, use that context as the
-                # test above instead of the existence of a __get_serial
-                $primary_object_for_next_db_row = undef;
-                redo LOAD_AN_OBJECT;
-            }
-            
             if ($re_iterate and $primary_object_for_next_db_row and ! ref($primary_object_for_next_db_row)) {
                 # It is possible that one or more objects go into subclasses which require more
                 # data than is on the results row.  For each subclass (or set of subclasses),
@@ -2547,11 +2398,11 @@ sub _create_import_iterator_for_underlying_context {
             
         } # end of loop until we have a defined object to return
 
-        foreach my $object_fabricator ( @object_fabricators ) {
-            # Don't apply all_params_loaded for primary fab until it's all done
-            next if ($object_fabricator eq $object_fabricators[-1]);
-            $object_fabricator->apply_all_params_loaded;
-        }
+        #foreach my $object_fabricator ( @object_fabricators ) {
+        #    # Don't apply all_params_loaded for primary fab until it's all done
+        #    next if ($object_fabricator eq $object_fabricators[-1]);
+        #    $object_fabricator->apply_all_params_loaded;
+        #}
 
         my $retval = $next_object_to_return;
         $next_object_to_return = $primary_object_for_next_db_row;
@@ -2575,6 +2426,23 @@ sub _create_import_iterator_for_underlying_context {
 sub __merge_db_data_with_existing_object {
     my($self, $class_name, $existing_object, $pending_db_object_data, $property_names) = @_;
 
+    unless (defined $pending_db_object_data) {
+        # This means a row in the database is missing for an object we loaded before
+        if (defined($existing_object)
+            and $self->object_exists_in_underlying_context($existing_object)
+            and $existing_object->__changes__
+        ) {
+            my $id = $existing_object->id;
+            Carp::croak("$class_name ID '$id' previously existed in an underlying context, has since been deleted from that context, and the cached object now has unsavable changes.\nDump: ".Data::Dumper::Dumper($existing_object)."\n");
+        } else {
+#print "Removing object id ".$existing_object->id." because it has been removed from the database\n";
+            UR::Context::LoadingIterator->_remove_object_from_other_loading_iterators($existing_object);
+            $existing_object->__signal_change__('delete');
+            $self->_abandon_object($existing_object);
+            return $existing_object;
+        }
+    }
+
     my $expected_db_data;
     if (exists $existing_object->{'db_saved_uncommitted'}) {
         $expected_db_data = $existing_object->{'db_saved_uncommitted'};
@@ -2593,14 +2461,15 @@ sub __merge_db_data_with_existing_object {
     foreach my $property ( @$property_names ) {
         no warnings 'uninitialized';
 
-        next unless (exists $existing_object->{$property});   # All direct properties are stored in the same-named hash key, right?
+        # All direct properties are stored in the same-named hash key, right?
+        next unless (exists $existing_object->{$property});
 
         my $object_value      = $existing_object->{$property};
         my $db_value          = $pending_db_object_data->{$property};
         my $expected_db_value = $expected_db_data->{$property};
 
         if ($object_value ne $expected_db_value) {
-            $different = 1;
+            $different++;
         }
 
         
@@ -2647,6 +2516,13 @@ sub __merge_db_data_with_existing_object {
     %$expected_db_data = (%$expected_db_data, %$pending_db_object_data);
 
     if (! $different) {
+        # FIXME HACK!  This is to handle the case when you get an object, start a software transaction,
+        # change something in the database for that object, reload the object (so __merge updates the value 
+        # found in the DB), then rollback the transaction.  The act of updating the value here in __merge makes
+        # a change record that gets undone when the transaction is rolled back.  After the rollback, the current
+        # value goes back to the originally loaded value, db_committed has the newly clhanged DB value, but
+        # _change_count is 0 turning off change tracking makes it so this internal change isn't undone by rollback
+        local $UR::Context::Transaction::log_all_changes = 0;  # HACK!
         # The object has no local changes.  Go ahead and update the current value, too
         foreach my $property ( @$property_names ) {
             no warnings 'uninitialized';
@@ -2655,6 +2531,10 @@ sub __merge_db_data_with_existing_object {
             $existing_object->$property($pending_db_object_data->{$property});
         }
     }
+
+    # re-figure how many changes are really there
+    my @change_count = $existing_object->__changes__;
+    $existing_object->{'_change_count'} = scalar(@change_count);
 
     return $different;
 }
@@ -2830,14 +2710,18 @@ sub _get_objects_for_class_and_rule_from_cache {
     # Get all objects which are loaded in the application which match
     # the specified parameters.
     my ($self, $class, $rule) = @_;
-    my ($template,@values) = $rule->template_and_values;
     
+    my ($template,@values) = $rule->template_and_values;
+
     #my @param_list = $rule->params_list;
     #print "CACHE-GET: $class @param_list\n";
-    
+
     my $strategy = $rule->{_context_query_strategy};    
     unless ($strategy) {
-        if ($rule->num_values == 0) {
+        if ($rule->template->group_by) {
+            $strategy = $rule->{_context_query_strategy} = "set intersection";
+        }
+        elsif ($rule->num_values == 0) {
             $strategy = $rule->{_context_query_strategy} = "all";
         }
         elsif ($rule->is_id_only) {
@@ -2857,7 +2741,6 @@ sub _get_objects_for_class_and_rule_from_cache {
             my $id = $rule->value_for_id();
             
             unless (defined $id) {
-                $DB::single = 1;
                 $id = $rule->value_for_id();
             }
             
@@ -2877,7 +2760,8 @@ sub _get_objects_for_class_and_rule_from_cache {
             else {
                 # The $id is a normal scalar.
                 if (not defined $id) {
-                    Carp::cluck("Undefined id passed as params!");
+                    Carp::carp("Undefined id passed as params for query on $class");
+                    $id ||= '';
                 }
                 my $match;
                 # FIXME This is a performance optimization for class metadata to avoid the search through
@@ -2937,14 +2821,23 @@ sub _get_objects_for_class_and_rule_from_cache {
             my %params = $rule->params_list;
             my $should_evaluate_later;
             for my $key (keys %params) {
-                delete $params{$key} if substr($key,0,1) eq '-' or substr($key,0,1) eq '_';
-                my $prop_meta = $class_meta->property_meta_for_name($key);
-                if ($prop_meta && $prop_meta->is_many) {
-                    # These indexes perform poorly in the general case if we try to index
-                    # the is_many properties.  Instead, strip them out from the basic param
-                    # list, and evaluate the superset of indexed objects through the rule
+                if (substr($key,0,1) eq '-' or substr($key,0,1) eq '_') {
+                    delete $params{$key};
+                }
+                elsif ($key =~ /^\w*\./) {
+                    # a chain of properties
                     $should_evaluate_later = 1;
                     delete $params{$key};
+                }
+                else { 
+                    my $prop_meta = $class_meta->property_meta_for_name($key);
+                    if ($prop_meta && $prop_meta->is_many) {
+                        # These indexes perform poorly in the general case if we try to index
+                        # the is_many properties.  Instead, strip them out from the basic param
+                        # list, and evaluate the superset of indexed objects through the rule
+                        $should_evaluate_later = 1;
+                        delete $params{$key};
+                    }
                 }
             }
             
@@ -2981,7 +2874,6 @@ sub _get_objects_for_class_and_rule_from_cache {
                 unless ("@matches" eq "@matches2") {
                     print "@matches\n";
                     print "@matches2\n";
-                    $DB::single = 1;
                     #Carp::cluck("Mismatch!");
                     my @matches3 = $index->get_objects_matching(@values);
                     my @matches4 = $index->get_objects_matching(@values);                
@@ -2995,6 +2887,59 @@ sub _get_objects_for_class_and_rule_from_cache {
             } else {
                 return $index->get_objects_matching(@values);
             }
+        }
+        elsif ($strategy eq 'set intersection') {
+            #print $rule->num_values, "  ", $rule->is_id_only, "\n";
+            my $template = $rule->template;
+            my $group_by = $template->group_by;
+
+            # get the objects in memory, and make sets for them if they do not exist 
+            my $rule_no_group = $rule->remove_filter('-group_by');
+            $rule_no_group = $rule_no_group->remove_filter('-order_by');
+            my @objects_in_set = $self->_get_objects_for_class_and_rule_from_cache($class, $rule_no_group);
+            my @sets_from_grouped_objects = _group_objects($rule_no_group->template,\@values,$group_by,\@objects_in_set);
+
+            # determine the template that the grouped subsets will use
+            # find templates which are subsets of that template
+            # find sets with a 
+            my $set_class = $class . '::Set';
+            my $expected_template_id = $rule->template->_template_for_grouped_subsets->id;
+            my @matches = 
+                grep {
+                    # TODO: make the template something indexable so we can pull from index
+                    my $bx = UR::BoolExpr->get($_->id);
+                    my $bxt = $bx->template;
+                    if ($bxt->id ne $expected_template_id) {
+                        #print "TEMPLATE MISMATCH $expected_template_id does not match $bxt->{id}! set: $_ with bxid $bx->{id} cannot be under rule $rule_no_group" . Data::Dumper::Dumper($_);
+                        ();
+                    }
+                    elsif (not $bx->is_subset_of($rule_no_group) ) {
+                        #print "SUBSET MISMATCH: $rule_no_group is not a superset of $_ with bxid $bx->{id}" . Data::Dumper::Dumper($_);
+                        ();
+                    }
+                    else {
+                        #print "MATCH: $rule_no_group with $expected_template_id matches $bx $bx->{id}" . Data::Dumper::Dumper($_);
+                        ($_);
+                    }
+                }
+                $self->all_objects_loaded($set_class);
+           
+            # Code to check that newly fabricated set definitions are in the set we query back out:
+            # my @all = $self->all_objects_loaded($set_class);
+            # my %expected;
+            # @expected{@sets_from_grouped_objects} = @sets_from_grouped_objects;
+            # for my $match (@matches) {
+            #    delete $expected{$match};
+            # }
+            # if (keys %expected) {
+            #    #$DB::single = 1;
+            #    print Data::Dumper::Dumper(\%expected);
+            # }
+
+            return @matches;
+        }
+        else {
+            die "unknown strategy $strategy";
         }
     };
         
@@ -3012,15 +2957,25 @@ sub _get_objects_for_class_and_rule_from_cache {
             push @results, map { $class->get($this => $_, -recurse => $recurse) } @values;
         }
     }
-    
-    if (@results > 1) {
-        my $sorter = $template->sorter;
-        @results = sort $sorter @results;
-    }
 
-    if (my $group_by = $template->group_by) {
-        # return sets instead of the actual objects
-        @results = _group_objects($template,\@values,$group_by,\@results);
+    my $group_by = $template->group_by;
+    #if ($group_by) {
+    #    # return sets instead of the actual objects
+    #    @results = _group_objects($template,\@values,$group_by,\@results);
+    #}
+
+    if (@results > 1) {
+        my $sorter;
+        if ($group_by) {
+            # We need to rewrite the original rule on the member class to be a rule
+            # on the Set class to do proper ordering
+            my $set_class = $template->subject_class_name . '::Set';
+            my $set_template = UR::BoolExpr::Template->resolve($set_class, -group_by => $group_by);
+            $sorter = $set_template->sorter;
+        } else {
+            $sorter = $template->sorter;
+        }
+        @results = sort $sorter @results;
     }
 
     # Return in the standard way.
@@ -3031,7 +2986,7 @@ sub _get_objects_for_class_and_rule_from_cache {
 
 sub _group_objects {
     my ($template,$values,$group_by,$objects)  = @_;
-    my $sub_template = $template;
+    my $sub_template = $template->remove_filter('-group_by');
     for my $property (@$group_by) {
         $sub_template = $sub_template->add_filter($property);
     }
@@ -3039,12 +2994,22 @@ sub _group_objects {
     my @groups;
     my %seen;
     for my $result (@$objects) {
-        my @extra_values = map { $result->$_ } @$group_by;
-        my $bx = $sub_template->get_rule_for_values(@$values,@extra_values);
-        next if $seen{$bx};
-        $seen{$bx} = 1;
-        my $group = $set_class->get($bx->id); 
-        push @groups, $group;
+        my %values_for_group_property;
+        foreach my $group_property ( @$group_by ) {
+            my @values = $result->$group_property;
+            if (@values) {
+                $values_for_group_property{$group_property} = \@values;
+            } else {
+                $values_for_group_property{$group_property} = [ undef ];
+            }
+        }
+        my @combinations = UR::Util::combinations_of_values(map { $values_for_group_property{$_} } @$group_by);
+        foreach my $extra_values ( @combinations ) {
+            my $bx = $sub_template->get_rule_for_values(@$values,@$extra_values);
+            next if $seen{$bx->id}++;
+            my $group = $set_class->get($bx->id);
+            push @groups, $group;
+        }
     }
     return @groups;
 }
@@ -3107,6 +3072,17 @@ sub _get_all_subsets_of_params {
     return @rest, map { [$first, @$_ ] } @rest;
 }
 
+sub query_underlying_context {
+    my $self = shift;
+    unless (ref $self) {
+        $self = $self->current;
+    }
+    if (@_) {
+        $self->{'query_underlying_context'} = shift;
+    }
+    return $self->{'query_underlying_context'};
+}
+
 
 # all of these delegate to the current context...
 
@@ -3115,12 +3091,12 @@ sub has_changes {
 }
 
 sub commit {
-    my $self = shift;
 
-    unless ($self) {
-        warn 'UR::Context::commit() called as a function, not a method.  Assumming commit on current context';
-        $self = UR::Context->current();
-    }
+    Carp::carp 'UR::Context::commit() called as a function, not a method.  Assumming commit on current context' unless @_;
+
+    my $self = shift;
+    $self = UR::Context->current() unless ref $self;
+
     $self->__signal_change__('precommit');
 
     unless ($self->_sync_databases) {
@@ -3300,23 +3276,7 @@ sub _sync_databases {
     my @invalid = grep { $_->__errors__ } @changed_objects;
     #my @invalid = UR::Util->mapreduce_grep(sub { $_[0]->__errors__}, @changed_objects);
     if (@invalid) {
-        # Create a helpful error message for the developer.
-        $self->error_message('Invalid data for save!');
-        my @msg;
-        for my $obj (@invalid)
-        {
-            no warnings;
-            my $msg = $obj->class . " identified by " . $obj->__display_name__ . " has problems on\n";
-            my @problems = $obj->__errors__;
-            foreach my $error ( @problems ) {
-                my @property_names = $error->properties;
-                my $desc = $error->desc;
-                my $prop_noun = scalar(@property_names) > 1 ? 'properties' : 'property';
-                $msg .= "    $prop_noun " . join(', ', map { "'$_'" } @property_names) . ": $desc\n";
-            }
-            $msg .= "    Current state:\n" . Data::Dumper::Dumper($obj);
-            $self->error_message($msg);
-        }
+        $self->display_invalid_data_for_save(\@invalid);
         goto PROBLEM_SAVING;
         #return;
     }
@@ -3375,6 +3335,40 @@ sub _sync_databases {
     return;
 }
 
+
+sub display_invalid_data_for_save {
+    my $self = shift;
+    my @objects_with_errors = @{shift @_};
+
+    $self->error_message('Invalid data for save!');
+
+    for my $obj (@objects_with_errors) {
+        no warnings;
+        my $msg = $obj->class . " identified by " . $obj->__display_name__ . " has problems on\n";
+        my @problems = $obj->__errors__;
+        foreach my $error ( @problems ) {
+            $msg .= $error->__display_name__ . "\n";
+        }
+
+        $msg .= "    Current state:\n";
+        my $datadumper = Data::Dumper::Dumper($obj);
+        my $nr_of_lines = $datadumper =~ tr/\n//;
+        if ($nr_of_lines > 40) {
+            # trim it down to the first and last 15 lines
+            $datadumper =~ m/^((?:.*\n){15})/;
+            $msg .= $1;
+            $datadumper =~ m/((?:.*\n?){3})$/;
+            $msg .= "[...]\n$1\n";
+        } else {
+            $msg .= $datadumper;
+        }
+        $self->error_message($msg);
+    }
+
+    return 1;
+}
+
+
 sub _reverse_all_changes {
     my $self = shift;
     my $class;
@@ -3398,7 +3392,8 @@ sub _reverse_all_changes {
     my @all_subclasses_loaded = sort UR::Object->subclasses_loaded;
     for my $class_name (@all_subclasses_loaded) { 
         next unless $class_name->can('__meta__');
-        
+        next if $class_name->isa("UR::Value");
+
         my @objects_this_class = $self->all_objects_loaded_unsubclassed($class_name);
         next unless @objects_this_class;
         
@@ -3430,7 +3425,7 @@ sub _reverse_all_changes {
                 }
                 next;
             }
-        }       
+        }
         else {
             # non-ghost regular entity
             for my $object (@$objects_this_class) {
@@ -3461,9 +3456,11 @@ sub _reverse_all_changes {
                                  $property_meta->is_delegated ||
                                  $property_meta->is_legacy_eav ||
                                  ! $property_meta->is_mutable ||
-                                 $property_meta->is_transient);
+                                 $property_meta->is_transient ||
+                                 $property_meta->is_constant);
                         $object->$property_name($saved->{$property_name});
                     }
+                    delete $object->{'_change_count'};
                 }
                 else {
                     # Object not in database, get rid of it.
@@ -3475,6 +3472,7 @@ sub _reverse_all_changes {
             } # next non-ghost object
         } 
     } # next class
+
     return 1;
 }
 
@@ -3570,7 +3568,7 @@ sub _dump_change_snapshot {
     my $class = shift;
     my %params = @_;
 
-    my @c = grep { $_->__changes__ } $UR::Context::current->all_objects_loadedi('UR::Object');
+    my @c = grep { $_->__changes__ } $UR::Context::current->all_objects_loaded('UR::Object');
 
     my $fh;
     if (my $filename = $params{filename})
@@ -3849,6 +3847,20 @@ context.
 Returns the UR::Context instance of whatever is the most currently created
 Context.  Can be called as a class or object method.
 
+=item query_underlying_context
+
+  my $should_load = $context->query_underlying_context();
+  $context->query_underlying_context(1);
+
+A property of the Context that sets the default value of the C<$should_load>
+flag inside C<get_objects_for_class_and_rule> as described below.  Initially,
+its value is undef, meaning that during a get(), the Context will query the
+underlying data sources only if this query has not been done before.  Setting
+this property to 0 will make the Context never query data sources, meaning
+that the only objects retrievable are those already in memory.  Setting the
+property to 1 means that every query will hit the data sources, even if the
+query has been done before.
+
 =item get_objects_for_class_and_rule
 
   @objs = $context->get_objects_for_class_and_rule(
@@ -3859,7 +3871,8 @@ Context.  Can be called as a class or object method.
                     );
 
 This is the method that serves as the main entry point to the Context behind
-the C<get()>, C<load()> and C<is_loaded()> methods of L<UR::Object>.  
+the C<get()>, and C<is_loaded()> methods of L<UR::Object>, and C<reload()> method
+of UR::Context.
 
 C<$class_name> and C<$boolexpr> are required arguments, and specify the 
 target class by name and the rule used to filter the objects the caller
@@ -3871,9 +3884,10 @@ always ask the relevent data sources, even if the Context believes the
 requested data is in the object cache,  A false but defined value means the
 Context should not ask the data sources for new data, but only return what
 is currently in the cache matching the rule.  The value C<undef> means the
-Context should use its own judgement about asking the data sources for new
-data, and will merge cached and external data as necessary to fulfill the
-request.
+Context should use the value of its query_underlying_context property.  If
+that is also undef, then it will use its own judgement about asking the
+data sources for new data, and will merge cached and external data as
+necessary to fulfill the request.
 
 C<$should_return_iterator> is a flag indicating whether this method should
 return the objects directly as a list, or iterator function instead.  If
@@ -4079,7 +4093,7 @@ through this iterator will have $serial_number in its C<__get_serial> hashref
 key.
 
 It works by first getting an iterator for the data source (the
-C<$db_iterator>).  It calls L</_get_template_data_for_loading> to find out
+C<$db_iterator>).  It calls L</_resolve_query_plan_for_ds_and_bxt> to find out
 how data is to be loaded and whether this request spans multiple data
 sources.  It calls L</__create_object_fabricator_for_loading_template> to get
 a list of closures to transform the primary data source's data into UR
@@ -4099,19 +4113,19 @@ subclassing, then additional importing iterators are created to handle that.
 Finally, the objects matching the rule are returned to the caller one at a
 time.
 
-=item _get_template_data_for_loading
+=item _resolve_query_plan_for_ds_and_bxt
 
-  my $template_data = $context->_get_template_data_for_loading(
+  my $template_data = $context->_resolve_query_plan_for_ds_and_bxt(
                                     $data_source,
                                     $boolexpr_tmpl
                                 );
-  my($template_data, @addl_info) = $context->_get_template_data_for_loading(
+  my($template_data, @addl_info) = $context->_resolve_query_plan_for_ds_and_bxt(
                                                  $data_source,
                                                  $boolexpr_tmpl
                                              );
 
 When a request is made that will hit one or more data sources,
-C<_get_template_data_for_loading> is used to call a method of the same name
+C<_resolve_query_plan_for_ds_and_bxt> is used to call a method of the same name
 on the data source.  It retuns a hashref used by many other parts of the 
 object loading system, and describes what data source to use, how to query
 that data source to get the objects, how to use the raw data returned by
@@ -4160,9 +4174,9 @@ this method is used to construct a rule against applicable against the
 secondary data source.  C<$primary_rule> is the L<UR::BoolExpr> rule used
 in the original query.  C<$delegated_properties> is a listref of
 L<UR::Object::Property> objects as returned by
-L</_get_template_data_for_loading()> linking the primary to the secondary data
+L</_resolve_query_plan_for_ds_and_bxt()> linking the primary to the secondary data
 source.  C<$secondary_rule_tmpl> is the rule template, also as returned by 
-L</_get_template_data_for_loading()>.
+L</_resolve_query_plan_for_ds_and_bxt()>.
 
 =item _create_secondary_loading_closures
 
@@ -4174,7 +4188,7 @@ When reolving a request that spans multiple data sources,
 this method is used to construct two lists of subrefs to aid in the request.
 C<$primary_rule_tmpl> is the L<UR::BoolExpr::Template> rule template made
 from the original rule.  C<@addl_info> is the same list returned by
-L</_get_template_data_for_loading>.  For each secondary data source, there
+L</_resolve_query_plan_for_ds_and_bxt>.  For each secondary data source, there
 will be one item in the two listrefs that are returned, and in the same
 order.
 

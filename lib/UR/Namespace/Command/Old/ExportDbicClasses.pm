@@ -3,7 +3,7 @@ package UR::Namespace::Command::Old::ExportDbicClasses;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -37,14 +37,12 @@ sub x_execute {
     my $self = shift;
     my $params = shift;
     
-$DB::single=1;
+#$DB::single = 1;
     unless ($self->bare_args) {
         $self->error_message("No class names were specified on the command line");
         $self->status_message($self->help_usage_complete_text,"\n");
         return;
     }
-
-    #$self->_init;
 
     my $namespace = $self->namespace_name;
     unless ($namespace) {

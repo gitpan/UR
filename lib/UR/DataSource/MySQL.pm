@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::MySQL',
@@ -22,7 +22,7 @@ sub driver { "mysql" }
 #    return $self->_database_file_path;
 #}
 
-sub owner { uc(shift->_singleton_object->login) }
+sub owner { shift->_singleton_object->login }
 
 #sub login {
 #    undef
@@ -41,11 +41,6 @@ sub _init_created_dbh
 {
     my ($self, $dbh) = @_;
     return unless defined $dbh;
-
-    my ($name, $value) = $dbh->selectrow_array("SHOW VARIABLES LIKE 'lower_case_table_names'");
-    unless ($value == 1) {
-        $self->warning_message("UR requires the mysqld server variable lower_case_table_names be set to 1 for case-insensitive table names in queries.  The current value is '$value'");
-    }
 
     $dbh->{LongTruncOk} = 0;
     return $dbh;
@@ -66,11 +61,11 @@ sub _get_sequence_name_for_table_and_column {
     my $self = shift->_singleton_object;
     my ($table_name,$column_name) = @_;
     
-    my $dbh = $self->get_default_dbh();
+    my $dbh = $self->get_default_handle();
     
     # See if the sequence generator "table" is already there
     my $seq_table = sprintf('URMETA_%s_%s_SEQ', $table_name, $column_name);
-    $DB::single = 1;
+    #$DB::single = 1;
     unless ($self->{'_has_sequence_generator'}->{$seq_table} or
             grep {$_ eq $seq_table} $self->get_table_names() ) {
         unless ($dbh->do("CREATE TABLE IF NOT EXISTS $seq_table (next_value integer PRIMARY KEY AUTO_INCREMENT)")) {
@@ -85,7 +80,7 @@ sub _get_sequence_name_for_table_and_column {
 sub _get_next_value_from_sequence {
     my($self,$sequence_name) = @_;
 
-    my $dbh = $self->get_default_dbh();
+    my $dbh = $self->get_default_handle();
 
     # FIXME can we use a statement handle with a wildcard as the table name here?
     unless ($dbh->do("INSERT into $sequence_name values(null)")) {
@@ -114,7 +109,7 @@ sub get_bitmap_index_details_from_data_dictionary {
 sub set_savepoint {
 my($self,$sp_name) = @_;
 
-    my $dbh = $self->get_default_dbh;
+    my $dbh = $self->get_default_handle;
     my $sp = $dbh->quote($sp_name);
     $dbh->do("savepoint $sp_name");
 }
@@ -123,7 +118,7 @@ my($self,$sp_name) = @_;
 sub rollback_to_savepoint {
 my($self,$sp_name) = @_;
 
-    my $dbh = $self->get_default_dbh;
+    my $dbh = $self->get_default_handle;
     my $sp = $dbh->quote($sp_name);
     $dbh->do("rollback to savepoint $sp_name");
 }
@@ -133,7 +128,7 @@ my($self,$sp_name) = @_;
 sub get_unique_index_details_from_data_dictionary {
 my($self,$table_name) = @_;
 
-    my $dbh = $self->get_default_dbh();
+    my $dbh = $self->get_default_handle();
     return undef unless $dbh;
 
     #$table_name = $dbh->quote($table_name);
@@ -174,6 +169,34 @@ sub get_foreign_key_details_from_data_dictionary {
 
     return $self->SUPER::get_foreign_key_details_from_data_dictionary(@new_params);
 }
+
+my %ur_data_type_for_vendor_data_type = (
+     # DB type      UR Type
+    'TINYINT'    => ['Integer', undef],
+    'SMALLINT'   => ['Integer', undef],
+    'MEDIUMINT'  => ['Integer', undef],
+    'BIGINT'     => ['Integer', undef],
+
+    'BINARY'     => ['Text', undef],
+    'VARBINARY'  => ['Text', undef],
+    'TINYTEXT'   => ['Text', undef],
+    'MEDIUMTEXT' => ['Text', undef],
+    'LONGTEXT'   => ['Text', undef],
+
+    'TINYBLOB'   => ['Blob', undef],
+    'MEDIUMBLOB' => ['Blob', undef],
+    'LONGBLOB'   => ['Blob', undef],
+);
+sub ur_data_type_for_data_source_data_type {
+    my($class,$type) = @_;
+
+    my $urtype = $ur_data_type_for_vendor_data_type{uc($type)};
+    unless (defined $urtype) {
+        $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
+    }
+    return $urtype;
+}
+
 
 
 1;

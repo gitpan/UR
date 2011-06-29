@@ -5,7 +5,7 @@ package UR::Object::Type; # hold methods for the class which cover Module Read/W
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 our %meta_classes;
 our $bootstrapping = 1;
@@ -33,7 +33,7 @@ sub resolve_class_description_perl {
         my @parent_class_objects = map { UR::Object::Type->is_loaded(class_name => $_) } @i;
                     
         unless (@i and @i == @parent_class_objects) {
-            $DB::single=1;
+            #$DB::single = 1;
             Carp::confess("No inheritance meta-data found for ( @i / @parent_class_objects)" . $self->class_name)
         }
         
@@ -103,7 +103,7 @@ sub resolve_class_description_perl {
             
     # These property names are either written in other places in this sub, or shouldn't be written out
     my %addl_property_names = map { $_ => 1 } $self->__meta__->all_property_type_names;
-    my @specified = qw/is class_name type_name table_name id_by er_role is_abstract generated data_source_id schema_name doc namespace id first_sub_classification_method_name property_metas pproperty_names id_property_metas meta_class_name/;
+    my @specified = qw/is class_name type_name table_name id_by er_role is_abstract generated data_source_id schema_name doc namespace id first_sub_classification_method_name property_metas pproperty_names id_property_metas meta_class_name id_generator/;
     delete @addl_property_names{@specified};
     for my $property_name (sort keys %addl_property_names) {
         my $property_obj = $class_meta_meta->property_meta_for_name($property_name);
@@ -150,6 +150,8 @@ sub resolve_class_description_perl {
     }
 
     my %sections_seen;
+    my $data_source_id = $self->data_source_id;
+    my ($data_source) = ($data_source_id ? UR::DataSource->get($data_source_id) : undef);
     foreach my $section ( ( 'id_by', 'has', 'has_many', 'has_optional', keys(%properties_by_section) ) ) {
         next unless ($properties_by_section{$section});
         next if ($sections_seen{$section});
@@ -181,6 +183,7 @@ sub resolve_class_description_perl {
                                         $property_meta,
                                         has_table => $has_table,
                                         section => $section,
+                                        data_source => $data_source,
                                         attributes_have => \@property_meta_property_names);
 
             foreach ( @fields ) {
@@ -214,6 +217,18 @@ sub resolve_class_description_perl {
 
     $perl .= "    schema_name => '" . $self->schema_name . "',\n" if $self->schema_name;
     $perl .= "    data_source => '" . $self->data_source_id . "',\n" if $self->data_source_id;
+
+    my $print_id_generator;
+    if (my $id_generator = $self->id_generator) {
+        if ($self->data_source_id and $id_generator eq '-urinternal') {
+            $print_id_generator = 1;
+        } elsif (! $self->data_source_id and $id_generator eq '-urinternal') {
+            $print_id_generator = 0;
+        } else {
+            $print_id_generator = 1;
+        }
+        $perl .= "    id_generator => '$id_generator',\n" if ($print_id_generator);
+    }
 
     my $doc = $self->doc;
     if (defined($doc)) {
@@ -302,7 +317,14 @@ sub _get_display_fields_for_property {
             die("no column for property on class with table: " . $property->property_name .
                 " class: " . $self->class_name . "?");
         }
-        if (uc($property->column_name) ne uc($property->property_name)) {
+        if ( ( $params{'data_source'}
+                and $params{'data_source'}->table_and_column_names_are_upper_case
+                and $property->column_name ne uc($property->property_name)
+             )
+             or
+             ( $property->column_name ne $property->property_name)
+        ) {
+            # If the column name doesn't match the property name, write it out
             push @fields,  "column_name => '" . $property->column_name . "'";
         }
         $seen{'column_name'} = 1;
@@ -406,7 +428,7 @@ sub _get_display_fields_for_property {
     $section =~ m/^has_(.*)/;
     my @sections = split('_',$1 || '');
     
-    for my $std_field_name (qw/optional abstract transient constant class_wide many deprecated/) {
+    for my $std_field_name (qw/optional abstract transient constant classwide many deprecated/) {
         $seen{$property_name} = 1;
         next if (grep { $std_field_name eq $_ } @sections); # Don't print is_optional if we're in the has_optional section
         my $property_name = "is_" . $std_field_name;

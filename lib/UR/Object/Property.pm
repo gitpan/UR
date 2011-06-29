@@ -1,60 +1,101 @@
 package UR::Object::Property;
-
 use warnings;
 use strict;
+
 require UR;
+
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.30"; # UR $VERSION;;
-our @CARP_NOT = qw( UR::DataSource::RDBMS );
+our $VERSION = "0.32"; # UR $VERSION;;
+our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
 
-# TODO: make these methods on UR::Value::Type metadata
-our %NUMERIC_TYPES = (
-        'INTEGER' => 1,
-        'NUMBER'  => 1,
-        'FLOAT'   => 1,
-);
+sub is_direct {
+    my $self = shift;
+    if ($self->is_calculated or $self->is_constant or $self->is_many or $self->via) {
+        return 0;
+    }
+    return 1;
+}
 
 sub is_numeric {
     my $self = shift;
-
     unless (defined($self->{'_is_numeric'})) {
-        my $type = uc($self->data_type);
-        $self->{'_is_numeric'} = $NUMERIC_TYPES{$type} || 0;
+        my $class = $self->_data_type_as_class_name;
+        unless ($class) {
+            return;
+        }
+        $self->{'_is_numeric'} = $class->isa("UR::Value::Number");
     }
     return $self->{'_is_numeric'};
-}    
+}
 
-# TODO: This is used by the code which maps RDBMS tables to 
-# UR types, and should really be in the RDBMS datasource and its subclasses.
-our %generic_data_type_for_vendor_data_type =
-(
-    'CHAR'        => 'Text',
-    'VARCHAR2'    => 'Text',
-    'NCHAR'       => 'Text',
-    'NVARCHAR2'   => 'Text',
-    'ROWID'       => 'Text',
-    'LONG'        => 'Text',
-    'LONGRAW'     => 'Text',
-    
-    'FLOAT'       => 'Float',
-    
-    'NUMBER'      => 'Float',  # not true, but sometimes true
-    
-    'DATE'        => 'DateTime',
-    'TIMESTAMP'   => 'DateTime',
- 
-    'BLOB'        => 'Ugly',
-    'CLOB'        => 'Ugly',
-    'NCLOB'       => 'Ugly',
-    'RAW'         => 'Ugly',
-    'UNDEFINED'   => 'Ugly',
-);
+sub _data_type_as_class_name {
+    my $self = $_[0];
+    return $self->{_data_type_as_class_name} ||= do {
+        my $source_class = $self->class_name;
+        #this is so NUMBER -> Number
+        my $foreign_class = $self->data_type;
 
-sub generic_data_type {
-    no warnings;
-    return $generic_data_type_for_vendor_data_type{$_[0]->{data_type}};
+        if (not $foreign_class) {
+            if ($self->via or $self->to) {
+                my @joins = UR::Object::Join->resolve_chain(
+                    $self->class_name,
+                    $self->property_name,
+                );
+                $foreign_class = $joins[-1]->foreign_class;
+            }
+        }
+
+        # TODO: allowing "is => 'Text'" instead of is => 'UR::Value::Text' is syntactic sugar
+        # We should have an is_primitive flag set on these so we do efficient work.
+
+        my ($ns) = ($source_class =~ /^([^:]+)::/);
+        if ($ns and not $ns->isa("UR::Namespace")) {
+            $ns = undef;
+        }
+
+        my $final_class;
+        if ($foreign_class) {
+            if ($foreign_class->can('__meta__')) {
+                $final_class = $foreign_class;
+            }
+            else {
+                my ($ns_value_class, $ur_value_class);
+
+                if ($ns and $ns->can("get")) {
+                    $ns_value_class = $ns . '::Value::' . $foreign_class;
+                    if ($ns_value_class->can('__meta__')) {
+                        $final_class = $ns_value_class;
+                    }
+                }
+
+                if (!$final_class) {
+                    $ur_value_class = 'UR::Value::' . $foreign_class;
+                    if ($ur_value_class->can('__meta__')) {
+                        $final_class = $ur_value_class;
+                    }
+                }
+                if (!$final_class) {
+                    $ur_value_class = 'UR::Value::' . ucfirst(lc($foreign_class));
+                    if ($ur_value_class->can('__meta__')) {
+                        $final_class = $ur_value_class;
+                    }
+                }
+            }
+        }
+
+        if (!$final_class) {
+            if (!$ns or $ns->get()->allow_sloppy_primitives) {
+                $final_class = 'UR::Value::SloppyPrimitive';
+            }
+            else {
+                Carp::confess("Failed to find a ${ns}::Value::* or UR::Value::* module for primitive type $foreign_class!");
+            }
+        }
+
+        $final_class;
+    };
 }
 
 # TODO: this is a method on the data source which takes a given property.
@@ -199,142 +240,13 @@ sub _get_direct_join_linkage {
     return @retval;
 }
 
-my @old = qw/source_class source_class_meta source_property_names foreign_class foreign_class_meta foreign_property_names/;
-my @new = qw/foreign_class foreign_class_meta foreign_property_names source_class source_class_meta source_property_names/;
-sub _get_joins {
+sub _resolve_join_chain {
     my $self = shift;
-    unless ($self->{_get_joins}) {
-        my $class_meta = UR::Object::Type->get(class_name => $self->class_name);
-        my @joins;
-        
-        if (my $via = $self->via) {
-            my $via_meta = $class_meta->property_meta_for_name($via);
-            unless ($via_meta) {
-                my $property_name = $self->property_name;
-                my $class_name = $self->class_name;
-                Carp::croak "Can't resolve property '$property_name' of $class_name: No via meta for '$via'?";
-            }
-
-            if ($via_meta->to and ($via_meta->to eq '-filter')) {
-                return $via_meta->_get_joins;
-            }
-
-            unless ($via_meta->data_type) {
-                my $property_name = $self->property_name;
-                my $class_name = $self->class_name;
-                Carp::croak "Can't resolve property '$property_name' of $class_name: No data type for '$via'?";
-            }
-            push @joins, $via_meta->_get_joins();
-            
-            my $to = $self->to;
-            unless ($to) {
-                $to = $self->property_name;
-            }
-            if (my $where = $self->where) {
-                if ($where->[1] eq 'name') {
-                    @$where = reverse @$where;
-                }            
-                my $join = pop @joins;
-                #my $where_rule = $join->{foreign_class}->define_boolexpr(@$where);                
-                my $where_rule = UR::BoolExpr->resolve($join->{foreign_class}, @$where);                
-                my $id = $join->{id};
-                $id .= ' ' . $where_rule->id;
-                push @joins, { %$join, id => $id, where => $where };
-            }
-            unless ($to eq 'self' or $to eq '-filter') {
-                my $to_class_meta = eval { $via_meta->data_type->__meta__ };
-                unless ($to_class_meta) {
-                    Carp::croak("Can't get class metadata for " . $via_meta->data_type
-                                . " while resolving property '" . $self->property_name . "' in class " . $self->class_name . "\n"
-                                . "Is the data_type for property '" . $via_meta->property_name . "' in class "
-                                . $via_meta->class_name . " correct?");
-                }
-
-                my $to_meta = $to_class_meta->property_meta_for_name($to);
-                unless ($to_meta) {
-                    my $property_name = $self->property_name;
-                    my $class_name = $self->class_name;
-                    Carp::croak "Can't resolve property '$property_name' of $class_name: No '$to' property found on " . $via_meta->data_type;
-                }
-                push @joins, $to_meta->_get_joins();
-            }
-        }
-        else {
-            my $source_class = $class_meta->class_name;            
-            my $foreign_class = $self->data_type;
-            my $where = $self->where;
-            if (defined($where) and defined($where->[1]) and $where->[1] eq 'name') {
-                @$where = reverse @$where;
-            }
-            
-            if (defined($foreign_class) and $foreign_class->can('get')) {
-                #print "class $foreign_class, joining...\n";
-                my $foreign_class_meta = $foreign_class->__meta__;
-                my $property_name = $self->property_name;
-                my $id = $source_class . '::' . $property_name;
-                if ($where) {
-                    #my $where_rule = $foreign_class->define_boolexpr(@$where);
-                    my $where_rule = UR::BoolExpr->resolve($foreign_class, @$where);
-                    $id .= ' ' . $where_rule->id;
-                }
-                if (my $id_by = $self->id_by) { 
-                    my(@source_property_names, @foreign_property_names);
-                    # This ensures the linking properties will be in the right order
-                    my @pairs = $self->get_property_name_pairs_for_join;
-                    @source_property_names  = map { $_->[0] } @pairs;
-                    @foreign_property_names = map { $_->[1] } @pairs;
-               
-                    if (ref($id_by) eq 'ARRAY') {
-                        # satisfying the id_by requires joins of its own
-                        foreach my $id_by_property_name ( @$id_by ) {
-                            my $id_by_property = $class_meta->property_meta_for_name($id_by_property_name);
-                            next unless ($id_by_property and $id_by_property->is_delegated);
-                           
-                            push @joins, $id_by_property->_get_joins();
-                            $source_class = $joins[-1]->{'foreign_class'};
-                            @source_property_names = @{$joins[-1]->{'foreign_property_names'}};
-                        }
-                    }
-
-                    push @joins, {
-                                   id => $id,
-                                   source_class => $source_class,
-                                   source_property_names => \@source_property_names,
-                                   foreign_class => $foreign_class,
-                                   foreign_property_names => \@foreign_property_names,
-                                   where => $where,
-                                 };
-                }
-                elsif (my $reverse_as = $self->reverse_as) { 
-                    my $foreign_class = $self->data_type;
-                    my $foreign_class_meta = $foreign_class->__meta__;
-                    my $foreign_property_via = $foreign_class_meta->property_meta_for_name($reverse_as);
-                    unless ($foreign_property_via) {
-                        Carp::confess("No property '$reverse_as' in class $foreign_class, needed to resolve property '" .
-                                      $self->property_name . "' of class " . $self->class_name);
-                    }
-                    @joins = reverse $foreign_property_via->_get_joins();
-                    for (@joins) { 
-                        @$_{@new} = @$_{@old};
-                    }
-                    $joins[0]->{'where'} = $where if $where;
-
-                } else {
-                    $self->error_message("Property $id has no 'id_by' or 'reverse_as' property metadata");
-                }
-            }
-            else {
-                #print "   value $foreign_class ..nojoin\n";
-            }
-        }
-        
-        $self->{_get_joins} = \@joins;
-        return @joins;        
-        
-    }
-    return @{ $self->{_get_joins} };
+    return UR::Object::Join->resolve_chain(
+        $self->class_name,
+        $self->property_name,
+    );
 }
-
 
 sub label_text {
     # The name of the property in friendly terms.
@@ -524,7 +436,7 @@ Indicates this property can be changed by a mechanism other than its normal
 accessor method.  Signals are not emmitted even when it does change via
 its normal accessor method.
 
-=item is_class_wide => Boolean
+=item is_classwide => Boolean
 
 Indicates this property's storage is shared among all instances of the class.
 When the value is changed for one instance, that change is effective for all

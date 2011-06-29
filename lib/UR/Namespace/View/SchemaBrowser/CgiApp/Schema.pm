@@ -3,7 +3,7 @@ package UR::Namespace::View::SchemaBrowser::CgiApp::Schema;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use base 'UR::Namespace::View::SchemaBrowser::CgiApp::Base';
 
@@ -23,7 +23,7 @@ my($self) = @_;
 sub show_schema_page {
 my($self) = @_;
 
-$DB::single=1;
+#$DB::single = 1;
     my @namespace_names = $self->GetNamespaceNames();
     my $namespace_name = $self->namespace_name;
 

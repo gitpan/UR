@@ -117,7 +117,7 @@ object.
 require 5.006_000;
 use warnings;
 use strict;
-our $VERSION = "0.30"; # UR $VERSION; 
+our $VERSION = "0.32"; # UR $VERSION; 
 
 # set up module
 use base qw(UR::ModuleBase);
@@ -142,7 +142,11 @@ UR::Util->generate_readwrite_methods(%default_values);
 sub create($@)
 {
     my ($class, @initial_prop) = @_;
-    return bless({%default_values,@initial_prop},$class);
+    my $self = bless({%default_values,@initial_prop},$class);
+    if (not ref($self->{properties}) eq 'ARRAY') {
+        $self->{properties} = [ $self->{properties} ];
+    }
+    return $self;
 }
 
 sub delete($)
@@ -163,12 +167,12 @@ sub filter
 }
 
 sub __display_name__ {
-    my $self = $_[0];
-    my $msg = uc($self->type) . ": " . $self->desc;
-    my @properties = $self->properties;
-    if (@properties) {
-        $msg .= " on " . join(",",@properties);
-    }
+    my $self = shift;
+    my $desc = $self->desc;
+    my $prefix = uc($self->type);
+    my @properties = map { "'$_'" } $self->properties;
+    my $prop_noun = scalar(@properties) > 1 ? 'properties' : 'property';
+    my $msg = "$prefix: $prop_noun " . join(', ', @properties) . ": $desc";
     return $msg;
 }
 

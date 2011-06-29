@@ -6,7 +6,7 @@ package UR::Namespace::Command::Update::ClassDiagram;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -51,11 +51,9 @@ use constant MAX_X_AUTO_POSITION => 800;
 sub execute {
     my $self = shift;
 
-    $self->_init or return;
-
     my $params = shift;
     
-$DB::single=1;
+#$DB::single = 1;
     my $namespace = $self->namespace_name;
     eval "use $namespace";
     if ($@) {

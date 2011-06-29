@@ -5,7 +5,7 @@ package UR::Namespace::Command::Update::RenameClass;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -32,10 +32,6 @@ sub execute {
     my $self = shift;
     $old = shift;
     $new = shift;
-    unless ($self->_init()) {
-        $self->error_message("Failed to initialize.  Exiting.");
-        return;
-    }
     $self->error_message("rename $old to $new not implemented");
     return;
 }

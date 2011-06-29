@@ -3,7 +3,7 @@ use warnings;
 use strict;
 
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use Sys::Hostname;
 use Cwd;
@@ -14,6 +14,10 @@ our %meta_classes;
 our $bootstrapping = 1;
 our @partially_defined_classes;
 our $pwd_at_compile_time = cwd();
+
+# each method which caches data on the class for properties stores its hash key here
+# when properties mutate this is cleared
+our @cache_keys;
 
 sub property_metas {
     my $self = $_[0];
@@ -49,8 +53,35 @@ sub ancestry_class_metas {
 }
 
 our $PROPERTY_META_FOR_NAME_TEMPLATE;
+push @cache_keys, '_property_meta_for_name';
 sub property_meta_for_name {
     my ($self, $property_name) = @_;
+
+    if (index($property_name,'.') != -1) {
+        my @chain = split(/\./,$property_name);
+        my $last_class_meta = $self;
+        my $last_class_name = $self->id;
+        my @pmeta;
+        for my $full_link (@chain) {
+            my ($link) = ($full_link =~ /^([^\-\?]+)/);
+            my $property_meta = $last_class_meta->property_meta_for_name($link);
+            push @pmeta, $property_meta;
+            last if $link eq $chain[-1];
+            my @joins = UR::Object::Join->resolve_chain($last_class_name, $link);
+            unless (@joins) {
+                Carp::confess("No joins for $full_link?");
+            }
+            $last_class_name = $joins[-1]{foreign_class};
+            $last_class_meta = $last_class_name->__meta__;
+        }
+        return @pmeta if wantarray;
+        return $pmeta[-1];
+    }
+
+    my $pos = index($property_name,'-'); 
+    if ($pos != -1) {
+        $property_name = substr($property_name,0,$pos);
+    }
 
     if (exists($self->{'_property_meta_for_name'}) and $self->{'_property_meta_for_name'}->{$property_name}) {
        return $self->{'_property_meta_for_name'}->{$property_name};
@@ -68,15 +99,51 @@ sub property_meta_for_name {
     return;
 }
 
+sub _flatten_property_name {
+    my ($self, $name) = @_;
+    
+    my $flattened_name = '';
+    my @add_keys;
+    my @add_values;
+
+    my @meta = $self->property_meta_for_name($name);
+    for my $meta (@meta) {
+        my @joins = $meta->_resolve_join_chain();
+        for my $join (@joins) {
+            if ($flattened_name) {
+                $flattened_name .= '.'; 
+            }
+            $flattened_name .= $join->{source_name_for_foreign};
+            if (my $where = $join->{where}) {
+                $flattened_name .= '-' . $join->sub_group_label; 
+                my $join_class = $join->{foreign_class};
+                my $bx2 = UR::BoolExpr->resolve($join_class,@$where);
+                my $bx2_flat = $bx2->flatten(); # recurses through this
+                my ($bx2_flat_template, @values) = $bx2_flat->template_and_values();
+                my @keys = @{ $bx2_flat_template->{_keys} };
+                for my $key (@keys) {
+                    next if substr($key,0,1) eq '-';
+                    my $full_key = $flattened_name . '?.' . $key;
+                    push @add_keys, $full_key;
+                    push @add_values, shift @values;
+                }
+                if (@values) {
+                    Carp:confess("Unexpected mismatch in count of keys and values!");
+                }
+            }
+        }
+    }
+    return ($flattened_name, \@add_keys, \@add_values);
+};
+
 our $DIRECT_ID_PROPERTY_METAS_TEMPLATE;
-sub direct_id_property_metas
-{
+sub direct_id_property_metas {
     my $self = _object(shift);
-    $DIRECT_ID_PROPERTY_METAS_TEMPLATE ||= UR::BoolExpr::Template->resolve('UR::Object::Property', 'class_name', 'property_name', 'is_id true');
+    $DIRECT_ID_PROPERTY_METAS_TEMPLATE ||= UR::BoolExpr::Template->resolve('UR::Object::Property', 'class_name', 'property_name', 'is_id >=');
     my $class_name = $self->class_name;
     my @id_property_objects =
         map { $UR::Context::current->get_objects_for_class_and_rule('UR::Object::Property', $_) }
-        map { $DIRECT_ID_PROPERTY_METAS_TEMPLATE->get_rule_for_values($class_name, $_, 1) }
+        map { $DIRECT_ID_PROPERTY_METAS_TEMPLATE->get_rule_for_values($class_name, $_, 0) }
         @{$self->{'id_by'}};
 
     @id_property_objects = sort { $a->is_id <=> $b->is_id } @id_property_objects;
@@ -177,6 +244,7 @@ sub ancestry_class_names {
     return @$ordered_inherited_class_names;
 }
 
+push @cache_keys, '_all_property_names';
 sub all_property_names {
     my $self = shift;
     
@@ -187,13 +255,14 @@ sub all_property_names {
     my %seen = ();   
     my $all_property_names = $self->{_all_property_names} = [];
     for my $class_name ($self->class_name, $self->ancestry_class_names) {
+        next if $class_name eq 'UR::Object';
         my $class_meta = UR::Object::Type->get($class_name);
         if (my $has = $class_meta->{has}) {
             push @$all_property_names, 
                 grep { 
                     not exists $has->{$_}{id_by}
                 }
-                grep { $_ ne "id" && !exists $seen{$_} } 
+                grep { !exists $seen{$_} } 
                 sort keys %$has;
             foreach (@$all_property_names) {
                 $seen{$_} = 1;
@@ -201,7 +270,6 @@ sub all_property_names {
         }
     }
     return @$all_property_names;
-    
 }
 
 
@@ -437,16 +505,49 @@ sub sorter {
     #TODO: there are possibilities of it sorting different than a DB on mixed numbers and alpha data
     my ($self,@properties) = @_;
     push @properties, $self->id_property_names;
-    my $key = join(",",@properties);
-    my $sorter = $self->{_sorter}{$key} ||= sub($$) {
-        no warnings;   # don't print a warning about non-numeric comparison with <=> on the next line
+    my $key = join("__",@properties);
+    my $sorter = $self->{_sorter}{$key};
+    unless ($sorter) {
+        my @is_numeric;
         for my $property (@properties) {
-            my $cmp = ($_[0]->$property <=> $_[1]->$property || $_[0]->$property cmp $_[1]->$property);
-            return $cmp if $cmp;
+            my $pmeta;
+            if ($self->isa("UR::Object::Set::Type")) {
+                # If we're a set, we want to examine the property of our members.
+                my $subject_class = $self->class_name;
+                $subject_class =~ s/::Set$//g;
+                $pmeta = $subject_class->__meta__->property($property);
+            } else {
+                $pmeta = $self->property($property);
+            }
+            if ($pmeta) {
+                my $is_numeric = $pmeta->is_numeric;
+                push @is_numeric, $is_numeric;
+            }
+            elsif ($UR::initialized) {
+                Carp::cluck("Failed to find property meta for $property on $self?  Cannot produce a sorter for @properties");
+                push @is_numeric, 0;
+            }
+            else {
+                push @is_numeric, 0;
+            }
         }
-        return 0;
-    };
-    Sub::Name::subname("UR::Object::Type::sorter__class_".$self->class_name, $sorter);
+        no warnings;   # don't print a warning about undef values ...alow them to be treated as 0 or '' 
+        $sorter = $self->{_sorter}{$key} ||= sub($$) {
+            for (my $n = 0; $n < @properties; $n++) {
+                my $property = $properties[$n];
+                my $cmp;
+                if ($is_numeric[$n]) {
+                    $cmp = ($_[0]->$property <=> $_[1]->$property);
+                }
+                else {
+                    $cmp = ($_[0]->$property cmp $_[1]->$property);
+                }                    
+                return $cmp if $cmp;
+            }
+            return 0;
+        };
+    }
+    Sub::Name::subname("UR::Object::Type::sorter__" . $self->class_name . '__' . $key, $sorter);
     return $sorter;
 }
 
@@ -489,42 +590,76 @@ sub is_uncachable {
     return $uncachable_types{$class_name};
 }
 
-# Support the autogeneration of unique IDs for objects which require them.
-# We use the host, time, and pid.
-our $autogenerate_id_base = join(" ",hostname(), $$, time);
+
+# Mechanisms for generating object IDs when none were specified at
+# creation time
+
+sub autogenerate_new_object_id_uuid {
+    require Data::UUID;
+    my $uuid = Data::UUID->new->create_hex();
+    $uuid =~ s/^0x//;
+    return $uuid;
+}
+
+our $autogenerate_id_base_format = join(" ",Sys::Hostname::hostname(), "%s", time); # the %s gets $$ when needed
 our $autogenerate_id_iter = 10000;
-sub autogenerate_new_object_id {
-    my $self = shift;
-    my $rule = shift;
+sub autogenerate_new_object_id_urinternal {
+    my($self, $rule) = @_;
+
+    my @id_property_names = $self->id_property_names;
+    if (@id_property_names > 1) {
+        # we really could, but it seems like if you 
+        # asked to do it, it _has_ to be a mistake.  If there's a legitimate
+        # reason, this check should be removed
+        $self->error_message("Can't autogenerate ID property values for multiple ID property class " . $self->class_name);
+        return;
+    }
+    return sprintf($autogenerate_id_base_format, $$) . " " . (++$autogenerate_id_iter);
+}
+
+sub autogenerate_new_object_id_datasource {
+    my($self,$rule) = @_;
 
     my ($data_source) = $UR::Context::current->resolve_data_sources_for_class_meta_and_rule($self);
     if ($data_source) {
         return $data_source->autogenerate_new_object_id_for_class_name_and_rule(
             $self->class_name,
             $rule
-        )
+        );
+    } else {
+        Carp::croak("Class ".$self->class." has id_generator '-datasource', but the class has no data source to delegate to");
     }
-    else {
-        my @id_property_names = $self->id_property_names;
-        if (@id_property_names > 1) {
-            # we really could (as you can see below), but it seems like if you 
-            # asked to do it, it _has_ to be a mistake.  If there's a legitimate
-            # reason, this check should be removed
-            $self->error_message("Can't autogenerate ID property values for multiple ID property class " . $self->class_name);
-            return;
-        }
-        return $autogenerate_id_base . " " . (++$autogenerate_id_iter);
+}
 
-        #my @id_parts;
-        #my $supplied_params = $rule->legacy_params_hash;
-        #foreach my $prop ( $self->id_property_names ) {
-        #    if (exists $supplied_params->{$prop}) {
-        #        push(@id_parts,$supplied_params->{$prop});
-        #    } else {
-        #        push(@id_parts, $autogenerate_id_base . " " . (++$autogenerate_id_iter));
-        #    }
-        #}
-        #return join("\t",@id_parts);
+
+# Support the autogeneration of unique IDs for objects which require them.
+sub autogenerate_new_object_id {
+    my $self = shift;
+    my $rule = shift;
+
+    my $id_generator = $self->id_generator;
+
+    if (ref($id_generator) eq 'CODE') {
+        return $id_generator->($self,$rule);
+
+    } elsif ($id_generator and $id_generator =~ m/^\-(\S+)/) {
+        my $id_method = 'autogenerate_new_object_id_' . $1;
+        unless ($self->can($id_method)) {
+            Carp::croak("'$id_generator' is an invalid id_generator for class "
+                        . $self->class_name
+                        . ": Can't locate object method '$id_method' via package ".ref($self));
+        }
+        return $self->$id_method($rule);
+
+    } else {
+        # delegate to the data source
+        my ($data_source) = $UR::Context::current->resolve_data_sources_for_class_meta_and_rule($self);
+        if ($data_source) {
+            return $data_source->autogenerate_new_object_id_for_class_name_and_rule(
+                $self->class_name,
+                $rule
+            )
+        }
     }
 }
 
@@ -603,7 +738,7 @@ sub generate_support_class_for_extension {
         delete $class_params{meta_class_name};
         delete $class_params{subclassify_by};
         delete $class_params{sub_classification_meta_class_name};
-        delete $class_params{id_sequence_generator_name};
+        delete $class_params{id_generator};
         delete $class_params{id};
         delete $class_params{is};
 
@@ -613,7 +748,6 @@ sub generate_support_class_for_extension {
             delete $_->{class_name};
             delete $_->{type_name};
             delete $_->{property_name};
-            $_->{is_optional} = !$id_property_names{$_};
         }
         
         %class_params = (
@@ -742,11 +876,19 @@ sub _load {
     }
 
     # Check the filesystem.  The file may create its metadata object.
-    if ($class->class->use_module_with_namespace_constraints($class_name)) {
+    eval "use $class_name";
+    unless ($@) {
         # If the above module was loaded, and is an UR::Object,
         # this will find the object.  If not, it will return nothing.
         $class_obj = $UR::Context::current->get_objects_for_class_and_rule($class,$rule,0);
         return $class_obj if $class_obj;
+    }
+    if ($@) {
+        # We need to handle $@ here otherwise we'll see
+        # "Can't locate UR/Object/Type/Ghost.pm in @INC" error.
+        # We want to fall through "in the right circumstances".
+        Carp::croak("Error while autoloading with 'use $class_name': $@") unless ($@ =~ /Can't locate \S+ in \@INC/);
+        # FIXME: I think other conditions here will result in silent errors.
     }
 
     # Parse the specified class name to check for a suffix.
@@ -990,6 +1132,7 @@ sub _object {
 }
 
 # new version gets everything, including "id" itself and object ref properties
+push @cache_keys, '_all_property_type_names';
 sub all_property_type_names {
     my $self = shift;
     
@@ -1032,40 +1175,37 @@ sub column_for_property {
     my $self = _object(shift);
     Carp::croak('must pass a property_name to column_for_property') unless @_;
     my $property_name = shift;
-    my $class_name = $self->class_name;
-    my $column_name;
-    do { 
-    no strict 'refs';
-     $column_name = ${$class_name . "::column_for_property"}{ $property_name };
-    };
-    return $column_name if $column_name;
-    for my $class_object ( $self->ancestry_class_metas )
-    {
-        my $cn = $class_object->class_name;
-        do { 
-	no strict 'refs';
-        $column_name = ${$cn . "::column_for_property"}{ $property_name };
-	};
+
+    my($properties,$columns) = @{$self->{'_all_properties_columns'}};
+    for (my $i = 0; $i < @$properties; $i++) {
+        if ($properties->[$i] eq $property_name) {
+            return $columns->[$i];
+        }
+    }
+
+    for my $class_object ( $self->ancestry_class_metas ) {
+        my $column_name = $class_object->column_for_property($property_name);
         return $column_name if $column_name;
     }
-    $class_name = $self->class_name;
     return;
 }
 
 sub property_for_column {
     my $self = _object(shift);
-    die 'must pass a column_name to property_for_column' unless @_;
+    Carp::croak('must pass a column_name to property_for_column') unless @_;
     my $column_name = shift;
-    my $class_name = $self->class_name;
-    my $property_name = ${$class_name . "::property_for_column"}{ $column_name };
-    return $property_name if $property_name;
-    for my $class_object ( $self->ancestry_class_metas )
-    {
-        my $cn = $class_object->class_name;
-        $property_name = ${$cn . "::property_for_column"}{ $column_name };
+
+    my($properties,$columns) = @{$self->{'_all_properties_columns'}};
+    for (my $i = 0; $i < @$columns; $i++) {
+        if ($columns->[$i] eq $column_name) {
+            return $properties->[$i];
+        }
+    }
+
+    for my $class_object ( $self->ancestry_class_metas ) {
+        my $property_name = $class_object->property_for_column($column_name);
         return $property_name if $property_name;
     }
-    $class_name = $self->class_name;
     return;
 }
 
@@ -1200,12 +1340,12 @@ sub _property_change_callback {
             }
             $class_obj->{'has'}->{$property_name} = \%new_property;
         }
-        if ($property_obj->is_id) {
+        if (defined $property_obj->is_id) {
             &_id_property_change_callback($property_obj, 'create');
         }
 
     } elsif ($method eq 'delete') {
-        if ($property_obj->is_id) {
+        if (defined $property_obj->is_id) {
             &_id_property_change_callback($property_obj, 'delete');
         }
         delete $class_obj->{'has'}->{$property_name};
@@ -1221,10 +1361,11 @@ sub _property_change_callback {
     } 
 
     # Invalidate the cache used by all_property_names()
-    $class_obj->_invalidate_cached_data_for_subclasses('_all_property_names');
-    $class_obj->_invalidate_cached_data_for_subclasses('_property_meta_for_name');
-    $class_obj->_invalidate_cached_data_for_subclasses('_all_property_type_names');
+    for my $key (@cache_keys) {
+        $class_obj->_invalidate_cached_data_for_subclasses($key);
+    }
 }
+
 
 # Some expensive-to-calculate data gets stored in the class meta hashref
 # and needs to be removed for all the existing subclasses
@@ -1278,12 +1419,12 @@ sub _id_property_change_callback {
                 return;
             }
         }
-        $DB::single = 1;
+        #$DB::single = 1;
         Carp::confess("Internal data consistancy problem: could not find property named $property_name in id_by list for class meta " . $class->class_name);
 
     } else {
         # Shouldn't get here since ID properties can't be changed, right?
-        $DB::single = 1;
+        #$DB::single = 1;
         Carp::confess("Shouldn't be here as ID properties can't change");
         1;
     }

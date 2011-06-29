@@ -3,7 +3,7 @@ package UR::Object::View::Default::Text;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 class UR::Object::View::Default::Text {
     is => 'UR::Object::View',
@@ -134,7 +134,7 @@ sub _generate_content_for_aspect {
     }
     
     my $aspect_name = $aspect->name;
-$DB::single=1 if $aspect_name eq 'inputs';
+#$DB::single = 1 if $aspect_name eq 'inputs';
 
     my @value;
     eval {

@@ -5,7 +5,7 @@ package UR::Object;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use Data::Dumper;
 use Scalar::Util qw(blessed);
@@ -122,6 +122,7 @@ sub unload {
         my @unloaded;
 
         # unload all objects of this class
+        my @involved_classes = ( $class );
         for my $obj ($cx->all_objects_loaded_unsubclassed($class))
         {
             push @unloaded, $obj->unload;
@@ -130,6 +131,7 @@ sub unload {
         # unload any objects that belong to any subclasses
         for my $subclass ($cx->subclasses_loaded($class))
         {
+            push @involved_classes, $subclass;
             push @unloaded, $subclass->unload;
         }
 
@@ -139,6 +141,9 @@ sub unload {
                 delete $UR::Context::all_params_loaded->{$template_id};
             }
         }
+
+        # Turn off the all_objects_are_loaded flags
+        delete @$UR::Context::all_objects_are_loaded{@involved_classes};
 
         return @unloaded;
     }
@@ -227,23 +232,23 @@ sub create_subscription  {
     }
 
     if (my @unknown = keys %params) {
-        die "Unknown options @unknown passed to create_subscription!";
+        Carp::croak "Unknown options @unknown passed to create_subscription!";
     }
 
     # print STDOUT "Caught subscription class $class id $id property $property callback $callback $note\n";
 
     # validate
     if (my @bad_params = %params) {
-        die "Bad params passed to add_listener: @bad_params";
+        Carp::croak "Bad params passed to add_listener: @bad_params";
     }
 
     # Allow the class to know that it is getting a subscription.
     # It may choose to turn on/off optimizations depending on whether anyone is watching it.
     # It may also reject all subscriptions because it knows it is too busy to signal changes.
     unless($class->validate_subscription($method,$id,$callback)) {
-        $DB::single = 1;
+        #$DB::single = 1;
         $class->validate_subscription($method,$id,$callback);
-        Carp::confess("Failed to validate requested subscription: @_\n");
+        Carp::croak("Failed to validate requested subscription: @_\n");
         return 0; # If/when the above is removed.
     }
 

@@ -4,7 +4,7 @@ package UR::Namespace::Command::Test::Eval;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -42,9 +42,6 @@ EOS
 
 sub execute {
     my $self = shift;
-    unless ($self->_init()) {
-        return; 
-    }
     for my $src ($self->bare_args) {
         eval "use Data::Dumper; use YAML; no strict; no warnings; \n" . $src;
         if ($@) {

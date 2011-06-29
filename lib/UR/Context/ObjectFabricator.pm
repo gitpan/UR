@@ -6,12 +6,14 @@ use warnings;
 use Scalar::Util;
 use UR::Context;
 
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
-# A helper package for UR::Context to keep track about 
+# A helper package for UR::Context to keep track of the subrefs used
+# to create objects from database data
 # These are normal Perl objects, not UR objects, so they get 
 # regular refcounting and scoping
 
+our @CARP_NOT = qw( UR::Context );
 
 my %all_object_fabricators;
 
@@ -34,7 +36,7 @@ sub _create {
     $self->{'context'} = $params{'context'};
 
     $self->{'all_params_loaded'} = $params{'all_params_loaded'} || {};
-    $self->{'in_clause_values'} = $params{'in_clause_values'} || [];
+    $self->{'in_clause_values'} = $params{'in_clause_values'} || {};
 
     $all_object_fabricators{$self} = $self;
     Scalar::Util::weaken($all_object_fabricators{$self});
@@ -44,7 +46,7 @@ sub _create {
 
 
 sub create_for_loading_template {
-    my($fab_class, $context, $loading_template, $template_data, $rule, $rule_template, $values, $dsx) = @_;
+    my($fab_class, $context, $loading_template, $query_plan, $rule, $rule_template, $values, $dsx) = @_;
 
     my @values = @$values;
 
@@ -66,25 +68,25 @@ sub create_for_loading_template {
 
     # FIXME, right now, we don't have a rule template for joined entities...
 
-    my $rule_template_id                            = $template_data->{rule_template_id};
-    my $rule_template_without_recursion_desc        = $template_data->{rule_template_without_recursion_desc};
-    my $rule_template_id_without_recursion_desc     = $template_data->{rule_template_id_without_recursion_desc};
-    my $rule_matches_all                            = $template_data->{rule_matches_all};
-    my $rule_template_is_id_only                    = $template_data->{rule_template_is_id_only};
-    my $rule_specifies_id                           = $template_data->{rule_specifies_id};
-    my $rule_template_specifies_value_for_subtype   = $template_data->{rule_template_specifies_value_for_subtype};
+    my $rule_template_id                            = $query_plan->{rule_template_id};
+    my $rule_template_without_recursion_desc        = $query_plan->{rule_template_without_recursion_desc};
+    my $rule_template_id_without_recursion_desc     = $query_plan->{rule_template_id_without_recursion_desc};
+    my $rule_matches_all                            = $query_plan->{rule_matches_all};
+    my $rule_template_is_id_only                    = $query_plan->{rule_template_is_id_only};
+    my $rule_specifies_id                           = $query_plan->{rule_specifies_id};
+    my $rule_template_specifies_value_for_subtype   = $query_plan->{rule_template_specifies_value_for_subtype};
 
-    my $recursion_desc                              = $template_data->{recursion_desc};
-    my $recurse_property_on_this_row                = $template_data->{recurse_property_on_this_row};
-    my $recurse_property_referencing_other_rows     = $template_data->{recurse_property_referencing_other_rows};
+    my $recursion_desc                              = $query_plan->{recursion_desc};
+    my $recurse_property_on_this_row                = $query_plan->{recurse_property_on_this_row};
+    my $recurse_property_referencing_other_rows     = $query_plan->{recurse_property_referencing_other_rows};
 
-    my $needs_further_boolexpr_evaluation_after_loading = $template_data->{'needs_further_boolexpr_evaluation_after_loading'};
+    my $needs_further_boolexpr_evaluation_after_loading = $query_plan->{'needs_further_boolexpr_evaluation_after_loading'};
 
     my $rule_id = $rule->id;
     my $rule_without_recursion_desc = $rule_template_without_recursion_desc->get_rule_for_values(@values);
 
     my $loading_base_object;
-    if ($loading_template == $template_data->{loading_templates}[0]) {
+    if ($loading_template == $query_plan->{loading_templates}[0]) {
         $loading_base_object = 1;
     }
     else {
@@ -168,88 +170,35 @@ sub create_for_loading_template {
     # finalized
     my $local_all_params_loaded = {};
 
-    my %hints_or_delegation;
+    my($hints_or_delegation,$delegations_with_no_objects);
     if (!$loading_base_object) {
-        my $query_class_meta = $rule_template->subject_class_name->__meta__;
-
-        my %hints;
-        if ($rule_template->hints) {
-            $hints{$_} = 1 foreach(@{ $rule_template->hints });
-        }
-        my %delegations;
-        if (@{ $template_data->{'joins'}} ) {
-            foreach my $delegated_property_name ( $rule_template->_property_names ) {
-                my $delegated_property_meta = $query_class_meta->property_meta_for_name($delegated_property_name);
-                next unless ($delegated_property_meta and $delegated_property_meta->is_delegated);
-                $delegations{$delegated_property_name} = 1;
-            }
-        }
-
-        DELEGATION:
-        foreach my $delegation ( (keys %hints), (keys %delegations)) {
-            my $delegated_property_meta = $query_class_meta->property_meta_for_name($delegation);
-            next DELEGATION unless $delegated_property_meta;
-            JOIN:
-            foreach my $join ( $delegated_property_meta->_get_joins ) {
-                next unless ($join->{'foreign_class'} eq $loading_template->{'data_class_name'});
-
-                # Is this the equivalent of loading by the class' ID?
-                my $foreign_class_meta = $join->{'foreign_class'}->__meta__;
-                my %join_properties = map { $_ => 1 } @{$join->{'foreign_property_names'}};
-                my $join_has_all_id_props = 1;
-                foreach my $foreign_id_prop ( $foreign_class_meta->all_id_property_metas ) {
-                    next if ($foreign_id_prop->class_name eq 'UR::Object');  # Skip the manufactured property called id
-                    next if (delete $join_properties{ $foreign_id_prop->property_name });
-                    # If we get here, there's an ID property that isn't mentioned in the join properties
-                    $join_has_all_id_props = 0;
-                    last;
-                }
-                next JOIN if ( $join_has_all_id_props and ! scalar(keys %join_properties));
-
-                my @template_filter_names = @{$join->{'foreign_property_names'}};
-                my @where_values;
-                if ($join->{'where'}) {
-                    for (my $i = 0; $i < @{$join->{'where'}}; $i += 2) {
-                        push @template_filter_names, $join->{'where'}->[$i];
-                        push @where_values, $join->{'where'}->[$i+1];
-                    }
-                }
-
-                if ($delegations{$delegation}) {
-                    my $delegation_final_property_meta = $delegated_property_meta->final_property_meta;
-                    if ($delegation_final_property_meta
-                        and
-                        $delegation_final_property_meta->class_name eq $join->{'foreign_class'}
-                    ) {
-                        # This delegation points to (or at least through) this join's foreign class
-                        # We'll note that these related objects were loaded as a result of being
-                        # connected to the primary object by this value, and filtered by the
-                        # delegation property's value
-                        push @template_filter_names, $delegation_final_property_meta->property_name;
-                    }
-                }
-
-                $hints_or_delegation{$delegation} ||= [];
-                my $related_rule_tmpl = UR::BoolExpr::Template->resolve($join->{'foreign_class'},
-                                                                        @template_filter_names);
-                push @{$hints_or_delegation{$delegation}}, [ [ $related_rule_tmpl->_property_names ], $related_rule_tmpl];
-
-                if ($hints{$delegation}) {
-                    # Make notes in all_params_loaded about these things we're hinting on.
-                    # This way, if they return no matches, then we'll remember that for later queries
-                    my @related_obj_values = map { $rule->value_for($_) } @{$join->{'source_property_names'}};
-                    my $related_obj_rule = $related_rule_tmpl->get_rule_for_values(@related_obj_values, @where_values);
-                    $UR::Context::all_params_loaded->{$related_rule_tmpl->id}->{$related_obj_rule->id} = undef;
-                    $local_all_params_loaded->{$related_rule_tmpl->id}->{$related_obj_rule->id} = 0;
-                }
-            }
-        }
+        ($hints_or_delegation,$delegations_with_no_objects)
+             = $fab_class->_resolve_delegation_data($rule,$loading_template,$query_plan,$local_all_params_loaded);
     }
 
     my $fabricator_obj;  # filled in after the closure definition
     my $object_fabricator = sub {
 
         my $next_db_row = $_[0];
+
+        # If all the columns for this object are undef, then this doesn't encode an actual
+        # object, it's a result of a left join that matched nothing
+        my $values_exist;
+        foreach my $column ( @column_positions ) {
+            if (defined($next_db_row->[$column])) {
+                $values_exist = 1;
+                last;
+            }
+        }
+        if (!$loading_base_object and !$values_exist and $delegations_with_no_objects) {
+            my $templates_and_rules = $fab_class->_lapl_data_for_delegation_data($delegations_with_no_objects, $next_db_row);
+            while ( my($template_id, $rule_id) = each %$templates_and_rules) {
+                $local_all_params_loaded->{$template_id}->{$rule_id} = 0;
+                $UR::Context::all_params_loaded->{$template_id}->{$rule_id} = 0;
+            }
+            return;
+        }
+            
 
         my $pending_db_object_data = { %initial_object_data };
         @$pending_db_object_data{@property_names} = @$next_db_row[@column_positions];
@@ -264,7 +213,6 @@ sub create_for_loading_template {
         }
 
         unless (defined $pending_db_object_id) {
-            #$DB::single = $DB::stopper;
             return undef;
             Carp::confess(
                 "no id found in object data for $class_name?\n"
@@ -318,7 +266,6 @@ sub create_for_loading_template {
                     }
                 }
                 elsif ($sub_classification_meta_class_name) {
-                    #$DB::single = 1;
                     # Group objects requiring reclassification by type, 
                     # and catch anything which doesn't need reclassification.
 
@@ -435,7 +382,13 @@ sub create_for_loading_template {
                 }
             }
 
-            unless ($subclass_name eq $class) {
+            if ($subclass_name eq $class) {
+                # This object doesn't need additional subclassing
+                # Signal that the object has been loaded
+                # NOTE: until this is done indexes cannot be used to look-up an object
+                $pending_db_object->__signal_change__('load');
+            } 
+            else {
                 # we did this above, but only checked the base class
                 my $subclass_ghost_class = $subclass_name->ghost_class;
                 if ($UR::Context::all_objects_loaded->{$subclass_ghost_class}{$pending_db_object_id}) {
@@ -471,9 +424,8 @@ sub create_for_loading_template {
 
                     if ($already_loaded and !$different and !$merge_exception) {
                         if ($pending_db_object == $already_loaded) {
-                            print "ALREADY LOADED SAME OBJ?\n";
-                            $DB::single = 1;
-                            die "The loaded object already exists in its target subclass?!";
+                            Carp::croak("An object of type ".$already_loaded->class." with ID '".$already_loaded->id
+                                        ."' was just loaded, but already exists in the object cache in the proper subclass");
                         }
                         if ($loading_base_object) {
                             # Get our records about loading this object
@@ -486,7 +438,6 @@ sub create_for_loading_template {
                         }
 
                         # This will wipe the above data from the object and the contex...
-                        #$pending_db_object->unload;
                         delete $UR::Context::all_objects_loaded->{$class}->{$pending_db_object_id};
 
                         if ($loading_base_object) {
@@ -495,6 +446,7 @@ sub create_for_loading_template {
                             $dsx->_record_that_loading_has_occurred($loading_info);
                         }
 
+                        bless($pending_db_object,'UR::DeletedRef');
                         $pending_db_object = $already_loaded;
                     }
                     else {
@@ -509,18 +461,19 @@ sub create_for_loading_template {
 
                         my $prev_class_name = $pending_db_object->class;
                         my $id = $pending_db_object->id;
-                        $pending_db_object->__signal_change__("unload");
+                        #$pending_db_object->__signal_change__("unload");
                         delete $UR::Context::all_objects_loaded->{$prev_class_name}->{$id};
                         delete $UR::Context::all_objects_are_loaded->{$prev_class_name};
                         if ($merge_exception) {
                             # Now that we've removed traces of the incorrectly-subclassed $pending_db_object,
                             # we can pass up any exception generated in __merge_db_data_with_existing_object
-                            die $merge_exception;
+                            Carp::croak($merge_exception);
                         }
                         if ($already_loaded) {
                             # The new object should replace the old object.  Since other parts of the user's program
                             # may have references to this object, we need to copy the values from the new object into
                             # the existing cached object
+                            bless($pending_db_object,'UR::DeletedRef');
                             $pending_db_object = $already_loaded;
                         } else {
                             # This is a completely new object
@@ -562,17 +515,11 @@ sub create_for_loading_template {
                 # the object may no longer match the rule after subclassifying...
                 if ($loading_base_object and not $rule->evaluate($pending_db_object)) {
                     #print "Object does not match rule!" . Dumper($pending_db_object,[$rule->params_list]) . "\n";
-                    #$DB::single = 1;
                     #$rule->evaluate($pending_db_object);
                     return;
                 }
             } # end of sub-classification code
 
-            # Signal that the object has been loaded
-            # NOTE: until this is done indexes cannot be used to look-up an object
-            $pending_db_object->__signal_change__('load');
-
-            #$DB::single = 1;
             if (
                 $loading_base_object
                 and
@@ -585,16 +532,33 @@ sub create_for_loading_template {
         } # end handling newly loaded objects
 
         # If the rule had hints, mark that we loaded those things too, in all_params_loaded
-        if (keys(%hints_or_delegation)) {
-            #$DB::single=1;
-            foreach my $property ( keys(%hints_or_delegation) ) {
-                foreach my $hint_data ( @{ $hints_or_delegation{$property}} ) {
-                    my @values = map { $pending_db_object->$_ } @{$hint_data->[0]}; # source property names
-                    my $rule_tmpl = $hint_data->[1];
-                    my $related_obj_rule = $rule_tmpl->get_rule_for_values(@values);
-                    $UR::Context::all_params_loaded->{$rule_tmpl->id}->{$related_obj_rule->id} = undef;
-                    $local_all_params_loaded->{$rule_tmpl->id}->{$related_obj_rule->id}++;
-                 }
+        if ($hints_or_delegation) {
+            my $templates_and_rules = $fab_class->_lapl_data_for_delegation_data($hints_or_delegation,
+                                                                                 $next_db_row,
+                                                                                 $pending_db_object);
+            while ( my($template_id, $rule_id) = each %$templates_and_rules) {
+                $local_all_params_loaded->{$template_id}->{$rule_id}++;
+                $UR::Context::all_params_loaded->{$template_id}->{$rule_id} = undef;
+            }
+        }
+
+        # note all of the joins which follow this object as having been "done"
+        if (my $next_joins = $loading_template->{next_joins}) {
+            if (0) {
+                # disabled until a fully reframed query is the basis for these joins
+                for my $next_join (@$next_joins) {
+                    my ($bxt_id, $values, $value_position_property_name) = @$next_join;
+                    for (my $n = 0; $n < @$value_position_property_name; $n+=2) {
+                        my $pos = $value_position_property_name->[$n];
+                        my $name = $value_position_property_name->[$n+1];
+                        $values->[$pos] = $pending_db_object->$name;
+                    }   
+                    my $bxt = UR::BoolExpr::Template::And->get($bxt_id);
+                    my $bx = $bxt->get_rule_for_values(@$values);
+                    $UR::Context::all_params_loaded->{$bxt->{id}}->{$bx->{id}} = undef;
+                    $local_all_params_loaded->{$bxt->{id}}->{$bx->{id}}++;
+                    print "remembering $bx\n";
+                }
             }
         }
 
@@ -697,6 +661,187 @@ sub create_for_loading_template {
 }
 
 
+# Given the data created in _resolve_delegation_data (rule templates and values/valuerefs)
+# return a hash of template IDs => rule IDs that need to be manipulated in local_all_params_loaded
+sub _lapl_data_for_delegation_data {
+    my($fab_class, $delegation_data_list, $next_db_row, $pending_db_object) = @_;
+
+    my %tmpl_and_rules;
+
+#$DB::single=1;
+    foreach my $delegation_data ( @$delegation_data_list ) {
+        my $value_sources = $delegation_data->[0];
+        my $rule_tmpl  = $delegation_data->[1];
+        my @values;
+        foreach my $value_source ( @$value_sources ) {
+            if (! ref($value_source)) {
+                push @values, $value_source;
+            } elsif (Scalar::Util::looks_like_number($$value_source)) {
+                push @values, $next_db_row->[$$value_source];
+            } elsif ($pending_db_object) {
+                my $method_name = $$value_source;
+                my $result = eval { $pending_db_object->$method_name };
+                push @values, $result;
+            } else {
+                Carp::croak("Can't resolve value for '".$$value_source."' in delegation data when there is no object involved");
+            }
+        }
+        my $rule = $rule_tmpl->get_rule_for_values(@values);
+        $tmpl_and_rules{$rule_tmpl->id} = $rule->id;
+    }
+    return \%tmpl_and_rules;
+}
+
+
+# This is used by fabricators created as a result of filters or hints on delegated properties
+# of the primary object to pre-calculate rule templates and value sources that can be combined
+# with these templates to make rules.  The resulting template and rule IDs are then plugged into
+# all_params_loaded to indicate these related objects are loaded so that subsequent queries
+# will not hit the data sources.
+sub _resolve_delegation_data {
+    my($fab_class,$rule,$loading_template,$query_plan,$local_all_params_loaded) = @_;
+
+    my $rule_template = $rule->template;
+
+    my $query_class_meta = $rule_template->subject_class_name->__meta__;
+
+    my %hints;
+    if ($rule_template->hints) {
+        $hints{$_} = 1 foreach(@{ $rule_template->hints });
+    }
+    my %delegations;
+    if (@{ $query_plan->{'joins'}} ) {
+        foreach my $delegated_property_name ( $rule_template->_property_names ) {
+            my $delegated_property_meta = $query_class_meta->property_meta_for_name($delegated_property_name);
+            next unless ($delegated_property_meta and $delegated_property_meta->is_delegated);
+            $delegations{$delegated_property_name} = 1;
+        }
+    }
+
+    my $this_object_num = $loading_template->{'object_num'};
+
+    my $join = $query_plan->_get_alias_join($loading_template->{'table_alias'});
+    return unless $join;  # would this ever be false?
+    return unless ($join->{'foreign_class'} eq $loading_template->{'data_class_name'}); # sanity check
+
+    my $delegated_property_meta;
+    # Find out which delegation property was responsible for this object being loaded
+    DELEGATIONS:
+    foreach my $delegation ((keys %hints), (keys %delegations)) {
+        my $query_property_meta = $query_class_meta->property_meta_for_name($delegation);
+        next DELEGATIONS unless $query_property_meta;
+
+        my @joins_from_delegation = $query_property_meta->_resolve_join_chain();
+        foreach my $join_from_delegation ( @joins_from_delegation ) {
+            if ($join_from_delegation->id eq $join->id) {
+                $delegated_property_meta = $query_property_meta;
+                last DELEGATIONS;
+            }
+        }
+    }
+    return unless $delegated_property_meta;
+    my $delegated_property_name = $delegated_property_meta->property_name;
+
+    return if $join->destination_is_all_id_properties();
+
+    my @template_filter_names = @{$join->{'foreign_property_names'}};
+    my @template_filter_values;
+    foreach my $name ( @template_filter_names ) {
+        my $column_num = $query_plan->column_index_for_class_property_and_object_num(
+                                          $join->{'foreign_class'},
+                                          $name,
+                                          $this_object_num);
+        if (defined $column_num) {
+             push @template_filter_values, \$column_num;
+        } else {
+             my $prop_name = $name;
+             push @template_filter_values, \$prop_name;
+        }
+    }
+
+    if ($join->{'where'}) {
+        for (my $i = 0; $i < @{$join->{'where'}}; $i += 2) {
+            push @template_filter_names, $join->{'where'}->[$i];
+            push @template_filter_values, $join->{'where'}->[$i+1];
+        }
+    }
+
+    if ($delegations{$delegated_property_name}) {
+        my $delegation_final_property_meta = $delegated_property_meta->final_property_meta;
+        if ($delegation_final_property_meta
+            and
+            $delegation_final_property_meta->class_name eq $join->{'foreign_class'}
+        ) {
+            # This delegation points to (or at least through) this join's foreign class
+            # We'll note that these related objects were loaded as a result of being
+            # connected to the primary object by this value, and filtered by the
+            # delegation property's value
+            my $delegation_final_property_name = $delegation_final_property_meta->property_name;
+            my $column_num = $query_plan->column_index_for_class_property_and_object_num(
+                                              $join->{'foreign_class'},
+                                              $delegation_final_property_name,
+                                              $this_object_num);
+            push @template_filter_names, $delegation_final_property_name;
+            if ($delegation_final_property_meta->column_name and ! defined ($column_num)) {
+                # sanity check
+                Carp::carp("Could not determine column offset in result set for property "
+                           . "$delegation_final_property_name of class " . $join->{'foreign_class'}
+                           . " even though it has column_name " . $delegation_final_property_meta->column_name);
+                $column_num = undef;
+            }
+            if (defined $column_num) {
+                push @template_filter_values, \$column_num;
+            } else {
+                push @template_filter_values, \$delegation_final_property_name;
+            }
+        }
+    }
+
+    # For missing objects, ie. a left join was done and it matched nothing
+    my @missing_prop_names;
+    my @missing_values;
+    for (my $i = 0; $i < @{ $join->{'foreign_property_names'}}; $i++) {
+        # we're using the source class/property here because we're going to denote that a value
+        # of the source class of the join matched nothing
+        push @missing_prop_names, $join->{'foreign_property_names'}->[$i];
+        my $source_class = $join->{'source_class'};
+        my $source_prop_name = $join->{'source_property_names'}->[$i];
+        my $column_num = $query_plan->column_index_for_class_and_property_before_object_num($source_class,
+                                                                                            $source_prop_name,
+                                                                                            $this_object_num);
+        if (defined $column_num) {
+            push @missing_values, \$column_num;
+        } else {
+            Carp::croak("Can't determine resultset column for $source_class property $source_prop_name for rule $rule");
+        }
+    }
+    if ($join->{'where'}) {
+        for (my $i = 0; $i < @{$join->{'where'}}; $i+=2 ) {
+            my $where_prop = $join->{'where'}->[$i];
+            my $value = $join->{'where'}->[$i+1];
+            push @missing_prop_names, $where_prop;
+            push @missing_values, $value;
+        }
+    }
+
+    my $missing_rule_tmpl = UR::BoolExpr::Template->resolve($join->{'foreign_class'}, @missing_prop_names);
+
+    my $related_rule_tmpl = UR::BoolExpr::Template->resolve($join->{'foreign_class'},
+                                                            @template_filter_names);
+
+    my(@hints_or_delegation, @delegations_with_no_objects);
+    # Items in the first listref can be one of three things:
+    # 1) a reference to an integer - meaning retrieve the value from this column in the result set
+    # 2) a reference to a string   - meaning retrieve the value from the object usign this as a property name
+    # 3) a string - meaning this is a literal value to fill in directly
+    # The second item is a rule template we'll be feeding these values in to
+    push @hints_or_delegation, [ \@template_filter_values, $related_rule_tmpl];
+    push @delegations_with_no_objects, [\@missing_values, $missing_rule_tmpl];
+
+    return (\@hints_or_delegation, \@delegations_with_no_objects);
+}
+
+
 
 sub all_object_fabricators {
     return values %all_object_fabricators;
@@ -730,6 +875,8 @@ sub fabricate {
 
     &{$self->{'fabricator'}};
 }
+
+
 
 # Returns true if this fabricator has loaded an object matching this boolexpr
 sub is_loading_in_progress_for_boolexpr {

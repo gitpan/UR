@@ -3,7 +3,7 @@ package UR::Namespace::Command::Sys::ClassBrowser;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -32,8 +32,6 @@ sub help_brief {
 
 sub execute {
     my $self = shift;
-
-    $self->_init or return;
 
     my $params = shift;
   

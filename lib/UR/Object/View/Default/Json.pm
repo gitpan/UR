@@ -3,7 +3,7 @@ package UR::Object::View::Default::Json;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 use JSON;
 
@@ -57,7 +57,7 @@ sub _generate_content_for_aspect {
     my $aspect_name = $aspect->name;
 
     my $aspect_meta = $self->subject_class_name->__meta__->property($aspect_name);
-    warn $aspect_name if ref($subject) =~ /Set/;
+    #warn $aspect_name if ref($subject) =~ /Set/;
 
     my @value;
     eval {
@@ -112,7 +112,7 @@ sub _generate_content_for_aspect {
         }
     }
 
-    if ($aspect_meta->is_many) {
+    if ($aspect_meta && $aspect_meta->is_many) {
         return $ref;
     } else {
         return shift @$ref;

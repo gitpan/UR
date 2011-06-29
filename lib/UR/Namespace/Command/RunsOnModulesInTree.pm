@@ -7,7 +7,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -52,13 +52,9 @@ sub execute
 {
     my $self = shift;
 
-    unless ($self->SUPER::_init(@_)) {
-        return;
-    }
-
     my $params = shift;
 
-    my $namespace = $self->namespace_subdir;
+    my $namespace = $self->namespace_name;
     unless ($namespace) {
         die "This command can only be run from a directory tree under a UR namespace module.\n";
     }
@@ -143,7 +139,7 @@ sub execute
                 exit 0;
             }
         }
-        $DB::single = 1;
+        #$DB::single = 1;
         while (keys %child_processes) {
             my $child_pid = wait();
             if ($child_pid == -1) {

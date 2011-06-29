@@ -8,7 +8,7 @@ require Term::ANSIColor;
 use UR;
 use UR::Object::Command::List::Style;
 
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 class UR::Object::Command::List {
     is => 'Command',
@@ -26,6 +26,11 @@ class UR::Object::Command::List {
             is => 'Text',
             is_optional => 1,
             doc => 'Specify which columns to show, in order.' 
+        },
+        order_by => {
+            is => 'Text',
+            is_optional => 1,
+            doc => 'Output rows are listed sorted by these named columns in increasing order',
         },
         style => { 
             is => 'Text',
@@ -66,7 +71,7 @@ sub sub_command_sort_position { .2 };
 sub create {
     my $class = shift;
     my $self = $class->SUPER::create(@_);
-	$DB::single=1;
+	#$DB::single = 1;
 
     # validate style
     $self->error_message( 
@@ -77,6 +82,17 @@ sub create {
         ) 
     ) 
         and return unless grep { $self->style eq $_ } valid_styles();
+
+#    my $show = $self->show;
+#    my @show = split(',',$show);
+#    my $subject_class_name = $self->subject_class_name;
+#    foreach my $item ( @show ) {
+#        next unless $self->_show_item_is_property_name($item);
+#        unless ($subject_class_name->can($item)) {
+#            $self->error_message("Parameter $item in the 'show' list is not supported by subject class $subject_class_name");
+#            return;
+#        }
+#    }
 
     unless ( ref $self->output ){
         my $ofh = IO::File->new("> ".$self->output);
@@ -93,13 +109,24 @@ sub _resolve_boolexpr {
     my ($bool_expr, %extra) = UR::BoolExpr->resolve_for_string(
         $self->subject_class_name, 
         $self->_complete_filter, 
-        $self->_hint_string
+        $self->_hint_string,
+        $self->order_by,
     );
 
     $self->error_message( sprintf('Unrecognized field(s): %s', join(', ', keys %extra)) )
         and return if %extra;
 
     return $bool_expr;
+}
+
+
+# Used by create() and execute() to distinguish whether an item from the show list
+# is likely a property of the subject class or a more complicated expression that needs
+# to be eval-ed later
+sub _show_item_is_property_name {
+    my($self, $item) = @_;
+
+    return $item =~ m/^[\w\.]+$/;
 }
 
 sub execute {  
@@ -130,7 +157,7 @@ sub execute {
         my @show;
         my $expr;
         for my $item (split(/,/, $show)) {
-            if ($item =~ /^\w+$/ and not defined $expr) {
+            if ($self->_show_item_is_property_name($item) and not defined $expr) {
                 push @show, $item;
             }
             else {
@@ -181,7 +208,7 @@ Filtering:
  Create filter equations by combining filterable properties with operators and
      values.
  Combine and separate these 'equations' by commas.  
- Use single quotes (') to contain values with spaces: name='genome center'
+ Use single quotes (') to contain values with spaces: name='genome institute'
  Use percent signs (%) as wild cards in like (~).
  Use backslash or single quotes to escape characters which have special meaning
      to the shell such as < > and &
@@ -204,7 +231,7 @@ EOS
         $doc .= " $help_synopsis\n";
     } else {
         $doc .= <<EOS
- lister-command --filter name=Bob --show id,name,address
+ lister-command --filter name=Bob --show id,name,address --order name
  lister-command --filter name='something with space',employees\>200,job~%manager
  lister-command --filter cost:20000-90000
  lister-command --filter answer:yes/maybe
@@ -355,7 +382,10 @@ sub valid_styles {
 
 sub _hint_string {
     my $self = shift;
-    return $self->show;
+
+    my @show_parts = grep { $self->_show_item_is_property_name($_) }
+                          split(',',$self->show);
+    return join(',',@show_parts);
 }
 
 

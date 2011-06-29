@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 use IO::File;
 
 class UR::Namespace::Command::Test::TrackObjectRelease {
@@ -31,7 +31,7 @@ usually because of a reference being held."
 sub execute {
     my $self = shift;
 
-$DB::single=1;
+#$DB::single = 1;
     my $file = $self->file;
     my $fh = IO::File->new($file,'r');
 

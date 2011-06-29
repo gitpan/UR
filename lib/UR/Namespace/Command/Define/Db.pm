@@ -3,7 +3,7 @@ package UR::Namespace::Command::Define::Db;
 use warnings;
 use strict;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 use IO::File; # required to import symbols used below
 
 UR::Object::Type->define(
@@ -76,8 +76,6 @@ sub data_source_module_pathname {
 
 sub execute {
     my $self = shift;
-
-    $self->_init or return;
 
     my $namespace = $self->namespace_name;
     unless ($namespace) {
@@ -211,6 +209,33 @@ sub _post_module_written_sqlite {
 
     return 1;
 }
+
+sub _post_module_written_pg {
+    my ($self, $pathname, $server) = @_;
+    return 1;
+}
+
+
+sub _post_module_written_oracle {
+    my ($self, $pathname, $server) = @_;
+    return 1;
+}
+
+sub _post_module_written_mysql {
+    my ($self, $pathname, $server) = @_;
+    return 1;
+}
+
+sub _post_module_written_file {
+    my ($self, $pathname, $server) = @_;
+    return 1;
+}
+
+sub _post_module_written_filemux {
+    my ($self, $pathname, $server) = @_;
+    return 1;
+}
+
 
 
 sub _try_connect {

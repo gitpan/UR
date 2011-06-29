@@ -3,7 +3,7 @@ package UR::Namespace::Command::Old::Info;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -27,8 +27,6 @@ sub is_sub_command_delegator { 0;}
 
 sub execute {
 my($self, $params) = @_;
-
-    $self->_init or return;
 
     my $namespace = $self->namespace_name;
     # FIXME why dosen't require work here?

@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 use Sys::Hostname;
 
 *namespace = \&get_namespace;
@@ -30,6 +30,15 @@ sub get_name {
     my $class = shift->class;
     return lc(substr($class,index($class,"::DataSource")+14));
 }
+
+# The default used to be to force table/column/constraint/etc names to
+# upper case when storing them in the MetaDB, and in the column_name
+# metadata for properties.  The new behavior is to just use whatever the
+# database supplies us when interrogating the data dictionary.
+# For datasources/clases that still need the old behavior, override this
+# to make the column_name metadata for properties forced to upper-case
+sub table_and_column_names_are_upper_case { 0; }
+
 
 # Basic, dumb data sources do not support joins within a single
 # query.  Instead the Context logic can perform a cross datasource
@@ -101,17 +110,15 @@ sub _get_class_data_for_loading {
     return $class_data;
 }
     
-sub _get_template_data_for_loading {
+sub _resolve_query_plan {
     my ($self, $rule_template) = @_;
-    my $template_data = $rule_template->{loading_data_cache};
-    unless ($template_data) {
-        $template_data = 
-            $rule_template->{loading_data_cache} =
-                $self->_generate_template_data_for_loading($rule_template,@_);
-    } 
-    return $template_data;
+    my $qp = UR::DataSource::QueryPlan->get(
+        rule_template => $rule_template,
+        data_source => $self,
+    );
+    $qp->_init() unless $qp->_is_initialized;
+    return $qp;
 }
-
 
 # Child classes can override this to return a different datasource
 # depending on the rule passed in
@@ -185,433 +192,6 @@ sub _generate_class_data_for_loading {
     return $class_data;
 }
 
-sub _generate_template_data_for_loading {
-    # TODO: most of this only applies to the RDBMS subclass,
-    # but some applies to any datasource.  It doesn't hurt to have the RDBMS stuff
-    # here and ignored, but it's not placed correctly.
-    
-    my ($self, $rule_template) = @_;
-        
-    # class-based values
-    
-    my $class_name = $rule_template->subject_class_name;
-    my $class_meta = $class_name->__meta__;
-    my $class_data = $self->_get_class_data_for_loading($class_meta);       
-
-    my @parent_class_objects                = @{ $class_data->{parent_class_objects} };
-    my @all_properties                      = @{ $class_data->{all_properties} };
-#    my $first_table_name                    = $class_data->{first_table_name};
-    my $sub_classification_meta_class_name  = $class_data->{sub_classification_meta_class_name};
-    my $subclassify_by    = $class_data->{subclassify_by};
-    
-    my @all_id_property_names               = @{ $class_data->{all_id_property_names} };
-    my @id_properties                       = @{ $class_data->{id_properties} };   
-    my $id_property_sorter                  = $class_data->{id_property_sorter};    
-    
-#    my $order_by_clause                     = $class_data->{order_by_clause};
-    
-#    my @lob_column_names                    = @{ $class_data->{lob_column_names} };
-#    my @lob_column_positions                = @{ $class_data->{lob_column_positions} };
-    
-#    my $query_config                        = $class_data->{query_config}; 
-#    my $post_process_results_callback       = $class_data->{post_process_results_callback};
-
-    my $sub_typing_property                 = $class_data->{sub_typing_property};
-    my $class_table_name                    = $class_data->{class_table_name};
-    #my @type_names_under_class_with_no_table= @{ $class_data->{type_names_under_class_with_no_table} };
-    
-    # individual query/boolexpr based
-    
-    my $recursion_desc = $rule_template->recursion_desc;
-    my $recurse_property_on_this_row;
-    my $recurse_property_referencing_other_rows;
-    if ($recursion_desc) {
-        ($recurse_property_on_this_row,$recurse_property_referencing_other_rows) = @$recursion_desc;        
-    }        
-    
-    # _usually_ items freshly loaded from the DB don't need to be evaluated through the rule
-    # because the SQL gets constructed in such a way that all the items returned would pass anyway.
-    # But in certain cases (a delegated property trying to match a non-object value (which is a bug
-    # in the caller's code from one point of view) or with calculated non-sql properties, then the
-    # sql will return a superset of the items we're actually asking for, and the loader needs to
-    # validate them through the rule
-    my $needs_further_boolexpr_evaluation_after_loading; 
-    
-    # Does fulfilling this request involve querying more than one data source?
-    my $is_join_across_data_source;
-
-    my @sql_params;
-    my @filter_specs;         
-    my @property_names_in_resultset_order;
-    my $object_num = 0; # 0-based, usually zero unless there are joins
-    
-    my @filters = $rule_template->_property_names;
-    my %filters =     
-        map { $_ => 0 }
-        grep { substr($_,0,1) ne '-' }
-        @filters;
-    
-    unless (@all_id_property_names == 1 && $all_id_property_names[0] eq "id") {
-        delete $filters{'id'};
-    }
-    
-    my (
-        @sql_joins,
-        @sql_filters, 
-        $prev_table_name, 
-        $prev_id_column_name, 
-        $eav_class, 
-        @eav_properties,
-        $eav_cnt, 
-        %pcnt, 
-        $pk_used,
-        @delegated_properties,    
-        %outer_joins,
-    );
-
-    for my $co ( $class_meta, @parent_class_objects ) {
-#        my $table_name = $co->table_name;
-#        next unless $table_name;
-
-#        $first_table_name ||= $table_name;
-
-        my $type_name  = $co->type_name;
-        my $class_name = $co->class_name;
-        
-        last if ( ($class_name eq 'UR::Object') or (not $class_name->isa("UR::Object")) );
-        
-        my @id_property_objects = $co->direct_id_property_metas;
-        
-        if (@id_property_objects == 0) {
-            @id_property_objects = $co->property_meta_for_name("id");
-            if (@id_property_objects == 0) {
-                $DB::single = 1;
-                Carp::confess("Couldn't determine ID properties for $class_name\n");
-            }
-        }
-        
-        my %id_properties = map { $_->property_name => 1 } @id_property_objects;
-        my @id_column_names =
-            map { $_->column_name }
-            @id_property_objects;
-        
-#        if ($prev_table_name)
-#        {
-#            # die "Database-level inheritance cannot be used with multi-value-id classes ($class_name)!" if @id_property_objects > 1;
-#            Carp::confess("No table for class $co->{class_name}") unless $table_name; 
-#            push @sql_joins,
-#                $table_name =>
-#                    {
-#                        $id_property_objects[0]->column_name => { 
-#                            link_table_name => $prev_table_name, 
-#                            link_column_name => $prev_id_column_name 
-#                        }
-#                    };
-#            delete $filters{ $id_property_objects[0]->property_name } if $pk_used;
-#        }
-
-        for my $property_name (sort keys %filters)
-        {                
-            my $property = UR::Object::Property->get(type_name => $type_name, property_name => $property_name);                
-            next unless $property;
-            
-            my $operator       = $rule_template->operator_for($property_name);
-            my $value_position = $rule_template->value_position_for_property_name($property_name);
-            
-            delete $filters{$property_name};
-            $pk_used = 1 if $id_properties{ $property_name };
-            
-#            if ($property->can("expr_sql")) {
-#                my $expr_sql = $property->expr_sql;
-#                push @sql_filters, 
-#                    $table_name => 
-#                        { 
-#                            # cheap hack of putting a whitespace differentiates 
-#                            # from a regular column below
-#                            " " . $expr_sql => { operator => $operator, value_position => $value_position }
-#                        };
-#                next;
-#            }
-            
-            if ($property->is_legacy_eav) {
-                die "Old GSC EAV can be handled with a via/to/where/is_mutable=1";
-            }
-            elsif ($property->is_transient) {
-                die "Query by transient property $property_name on $class_name cannot be done!";
-            }
-            elsif ($property->is_delegated) {
-                push @delegated_properties, $property;
-            }
-            elsif ($property->is_calculated) {
-                $needs_further_boolexpr_evaluation_after_loading = 1;
-            }
-            else {
-                # normal column: filter on it
-                push @sql_filters, 
-                    $class_name => 
-                        { 
-                            $property_name => { operator => $operator, value_position => $value_position }
-                        };
-            }
-        }
-        
-#        $prev_table_name = $table_name;
-        $prev_id_column_name = $id_property_objects[0]->column_name;
-        
-    } # end of inheritance loop
-        
-    if ( my @errors = keys(%filters) ) { 
-        my $class_name = $class_meta->class_name;
-        $self->error_message('Unknown param(s) (' . join(',',@errors) . ") used to generate SQL for $class_name!");
-        Carp::confess();
-    }
-
-    my $last_class_name = $class_name;
-    my $last_class_object = $class_meta;        
-#    my $last_table_alias = $last_class_object->table_name; 
-    my $alias_num = 1;
-
-    my %joins_done;
-    my @joins_done;
-    my $joins_across_data_sources;
-
-    DELEGATED_PROPERTY:
-    for my $delegated_property (@delegated_properties) {
-        my $last_alias_for_this_chain;
-    
-        my $property_name = $delegated_property->property_name;
-        my @joins = $delegated_property->_get_joins;
-        my $relationship_name = $delegated_property->via;
-        unless ($relationship_name) {
-           $relationship_name = $property_name;
-           $needs_further_boolexpr_evaluation_after_loading = 1;
-        }
-
-        my $delegate_class_meta = $delegated_property->class_meta;
-        my $via_accessor_meta = $delegate_class_meta->property_meta_for_name($relationship_name);
-        my $final_accessor = $delegated_property->to;            
-        my $final_accessor_meta = $via_accessor_meta->data_type->__meta__->property_meta_for_name($final_accessor);
-        unless ($final_accessor_meta) {
-            Carp::croak("No property '$final_accessor' on class " . $via_accessor_meta->data_type .
-                          " while resolving property $property_name on class $class_name");
-        }
-        while($final_accessor_meta->is_delegated) {
-            $final_accessor_meta = $final_accessor_meta->to_property_meta();
-            unless ($final_accessor_meta) {
-                Carp::croak("No property '$final_accessor' on class " . $via_accessor_meta->data_type .
-                              " while resolving property $property_name on class $class_name");
-            }
-        }
-        $final_accessor = $final_accessor_meta->property_name;
-
-        #print "$property_name needs join "
-        #    . " via $relationship_name "
-        #    . " to $final_accessor"
-        #    . " using joins ";
-        
-        #my $final_table_name_with_alias = $first_table_name; 
-        
-        for my $join (@joins) {
-            #print "\tjoin $join\n";
-
-            my $source_class_name = $join->{source_class};
-            my $source_class_object = $join->{'source_class_meta'} || $source_class_name->__meta__;
-
-            my $foreign_class_name = $join->{foreign_class};
-            my $foreign_class_object = $join->{'foreign_class_meta'} || $foreign_class_name->__meta__;
-            my($foreign_data_source) = $UR::Context::current->resolve_data_sources_for_class_meta_and_rule($foreign_class_object, $rule_template);
-            if (! $foreign_data_source) {
-                $needs_further_boolexpr_evaluation_after_loading = 1;
-                next DELEGATED_PROPERTY;
-
-            } elsif ($foreign_data_source ne $self or
-                    ! $self->does_support_joins or
-                    ! $foreign_data_source->does_support_joins
-                )
-            {
-                push(@{$joins_across_data_sources->{$foreign_data_source->id}}, $delegated_property);
-                next DELEGATED_PROPERTY;
-            }
-
-            my @source_property_names = @{ $join->{source_property_names} };
-
-            my @source_table_and_column_names = 
-                map {
-                    my $p = $source_class_object->property_meta_for_name($_);
-                    unless ($p) {
-                        Carp::confess("No property $_ for class $source_class_object->{class_name}\n");
-                    }
-                    [$p->class_name->__meta__->class_name, $p->property_name];
-                }
-                @source_property_names;
-
-            #print "source column names are @source_table_and_column_names for $property_name\n";            
-
-            my $foreign_table_name = $foreign_class_name;
-
-            unless ($foreign_table_name) {
-                # If we can't make the join because there is no datasource representation
-                # for this class, we're done following the joins for this property
-                # and will NOT try to filter on it at the datasource level
-                $needs_further_boolexpr_evaluation_after_loading = 1;
-                next DELEGATED_PROPERTY;
-            }
-
-            my @foreign_property_names = @{ $join->{foreign_property_names} };
-            my @foreign_property_meta = 
-                map {
-                    $foreign_class_object->property_meta_for_name($_)
-                }
-                @foreign_property_names;
-            
-            my @foreign_column_names = 
-                map {
-                    # TODO: encapsulate
-                    $_->is_calculated ? (defined($_->calculate_sql) ? ($_->calculate_sql) : () ) : ($_->property_name)
-                }
-                @foreign_property_meta;
-                
-            unless (@foreign_column_names) {
-                # all calculated properties: don't try to join any further
-                last;
-            }
-            unless (@foreign_column_names == @foreign_property_meta) {
-                # some calculated properties, be sure to re-check for a match after loading the object
-                $needs_further_boolexpr_evaluation_after_loading = 1;
-            }
-            
-            my $alias = $joins_done{$join->{id}};
-            unless ($alias) {            
-                $alias = "${relationship_name}_${alias_num}";
-                $alias_num++;
-                $object_num++;
-                
-                push @sql_joins,
-                    "$foreign_table_name $alias" =>
-                        {
-                            map {
-                                $foreign_property_names[$_] => { 
-                                    link_table_name     => $last_alias_for_this_chain || $source_table_and_column_names[$_][0],
-                                    link_column_name    => $source_table_and_column_names[$_][1] 
-                                }
-                            }
-                            (0..$#foreign_property_names)
-                        };
-                    
-                # Add all of the columns in the join table to the return list.                
-                push @all_properties, 
-                    map { [$foreign_class_object, $_, $alias, $object_num] }
-                    sort { $a->property_name cmp $b->property_name }
-                    grep { defined($_->column_name) && $_->column_name ne '' }
-                    UR::Object::Property->get( type_name => $foreign_class_object->type_name );
-              
-                $joins_done{$join->{id}} = $alias;
-                push @joins_done, $join;
-                
-            }
-            
-            # Set these for after all of the joins are done
-            $last_class_name = $foreign_class_name;
-            $last_class_object = $foreign_class_object;
-            $last_alias_for_this_chain = $alias;
-            #$last_table_alias = $alias;
-            #$final_table_name_with_alias = "$foreign_table_name $alias";
-            
-        } # next join
-
-        unless ($delegated_property->via) {
-            next;
-        }
-
-        my $final_accessor_property_meta = $last_class_object->property_meta_for_name($final_accessor);
-        if ($final_accessor_property_meta
-            and $final_accessor_property_meta->class_name eq 'UR::Object'
-            and $final_accessor_property_meta->property_name eq 'id')
-        {
-            # This is the 'fake' id property.  Remap it to the class' real ID property name
-            my @id_properties = $last_class_object->id_property_names;
-            if (@id_properties != 1) {
-                # TODO - we could add further joins and not have to evaluate later
-                $needs_further_boolexpr_evaluation_after_loading = 1;
-                next;
-
-            } else {
-                $final_accessor_property_meta = $last_class_object->property_meta_for_name($id_properties[0]);
-            }
-            
-        }
-
-        unless ($final_accessor_property_meta) {
-            Carp::croak("No property metadata for property named '$final_accessor' in class " . $last_class_object->class_name
-                        . " while resolving joins for property '" .$delegated_property->property_name . "' in class "
-                        . $delegated_property->class_name);
-        }
-
-       
-        my $sql_lvalue;
-        if ($final_accessor_property_meta->is_calculated) {
-            $sql_lvalue = $final_accessor_property_meta->calculate_sql;
-            unless (defined($sql_lvalue)) {
-                $needs_further_boolexpr_evaluation_after_loading = 1;
-                next;
-            }
-        }
-        else {
-            $sql_lvalue = $final_accessor_property_meta->column_name;
-            unless (defined($sql_lvalue)) {
-                Carp::confess("No column name set for non-delegated/calculated property $property_name of $class_name");
-            }
-        }
-
-        my $operator       = $rule_template->operator_for($property_name);
-        my $value_position = $rule_template->value_position_for_property_name($property_name);                
-        #push @sql_filters, 
-        #    $final_table_name_with_alias => { 
-        #        $sql_lvalue => { operator => $operator, value_position => $value_position } 
-        #    };
-    } # next delegated property
-    
-    for my $property_meta_array (@all_properties) {
-        push @property_names_in_resultset_order, $property_meta_array->[1]->property_name; 
-    }
-    
-    my $rule_template_without_recursion_desc = ($recursion_desc ? $rule_template->remove_filter('-recurse') : $rule_template);
-    
-    my $rule_template_specifies_value_for_subtype;
-    if ($sub_typing_property) {
-        $rule_template_specifies_value_for_subtype = $rule_template->specifies_value_for($sub_typing_property)
-    }
-
-    my $per_object_in_resultset_loading_detail = $self->_generate_loading_templates_arrayref(\@all_properties);
-
-    my $template_data = $rule_template->{loading_data_cache} = {
-        %$class_data,
-        
-        properties_for_params                       => \@all_properties,  
-        property_names_in_resultset_order           => \@property_names_in_resultset_order,
-        joins                                       => \@sql_joins,
-        
-        rule_template_id                            => $rule_template->id,
-        rule_template_without_recursion_desc        => $rule_template_without_recursion_desc,
-        rule_template_id_without_recursion_desc     => $rule_template_without_recursion_desc->id,
-        rule_matches_all                            => $rule_template->matches_all,
-        rule_specifies_id                           => ($rule_template->specifies_value_for('id') || undef),
-        rule_template_is_id_only                    => $rule_template->is_id_only,
-        rule_template_specifies_value_for_subtype   => $rule_template_specifies_value_for_subtype,
-        
-        recursion_desc                              => $rule_template->recursion_desc,
-        recurse_property_on_this_row                => $recurse_property_on_this_row,
-        recurse_property_referencing_other_rows     => $recurse_property_referencing_other_rows,
-        
-        loading_templates                           => $per_object_in_resultset_loading_detail,
-
-        joins_across_data_sources                   => $joins_across_data_sources,
-    };
-
-        
-    return $template_data;
-}
-
 sub _generate_loading_templates_arrayref {
     # Each entry represents a table alias in the query.
     # This accounts for different tables, or multiple occurrances 
@@ -619,19 +199,59 @@ sub _generate_loading_templates_arrayref {
     # table.
     
     my $class = shift;
-    my $sql_cols = shift;
+    my $db_cols = shift;
+    my $obj_joins = shift;
+    my $bxt = shift;
 
     use strict;
     use warnings;
 
+    my %obj_joins_by_source_alias;
+    if (0) { # ($obj_joins) {
+        my @obj_joins = @$obj_joins;
+        while (@obj_joins) {
+            my $foreign_alias = shift @obj_joins;
+            my $data = shift @obj_joins;
+            for my $foreign_property_name (sort keys %$data) {
+                next if $foreign_property_name eq '-is_required';
+                
+                my $source_alias = $data->{$foreign_property_name}{'link_alias'};
+                my $detail = $obj_joins_by_source_alias{$source_alias}{$foreign_alias} ||= {};
+                # warnings come from the above because we don't have 'link_alias' in filters.
+
+                my $source_property_name = $data->{$foreign_property_name}{'link_property_name'};
+                if ($source_property_name) {
+                    # join
+                    my $links = $detail->{links} ||= [];
+                    push @$links, $foreign_property_name, $source_property_name;
+                }
+
+                if (exists $data->{value}) {
+                    # filter
+                    my $operator = $data->{operator};
+                    my $value = $data->{value};
+                    my $filter = $detail->{filter} ||= [];
+                    my $key = $foreign_property_name;
+                    $key .= ' ' . $operator if $operator;
+                    push @$filter, $key, $value;
+                }
+            }
+        }
+    }
+    else {
+        #Carp::cluck("no obj joins???");
+    }
+
     my %templates;
     my $pos = 0;
     my @templates;
-    for my $col_data (@$sql_cols) {
+    my %alias_object_num;
+    for my $col_data (@$db_cols) {
         my ($class_obj, $prop, $table_alias, $object_num, $class_name) = @$col_data;
         unless (defined $object_num) {
             die "No object num for loading template data?!";
         }
+        #Carp::confess() unless $table_alias;
         my $template = $templates[$object_num];
         unless ($template) {
             $template = {
@@ -646,6 +266,7 @@ sub _generate_loading_templates_arrayref {
                 id_resolver => undef, # subref
             };
             $templates[$object_num] = $template;
+            $alias_object_num{$table_alias} = $object_num;
         }
         push @{ $template->{property_names} }, $prop->property_name;
         push @{ $template->{column_positions} }, $pos;
@@ -656,10 +277,6 @@ sub _generate_loading_templates_arrayref {
     for my $template (@templates) {
         next unless $template;  # This join may have resulted in no template?!
         my @id_property_names;
-        unless (defined $template->{data_class_name}) {
-            $DB::single=1;
-            print "No data class name in template: ", Data::Dumper::Dumper($template); 
-        }
         for my $id_class_name ($template->{data_class_name}, $template->{data_class_name}->inheritance) {
             my $id_class_obj = UR::Object::Type->get(class_name => $id_class_name);
             last if @id_property_names = $id_class_obj->id_property_names;
@@ -690,8 +307,46 @@ sub _generate_loading_templates_arrayref {
             }                    
         }
         else {
-            die "No id column positions for template " . Data::Dumper::Dumper($template);
+            Carp::croak("Can't determine which columns will hold the ID property data for class "
+                        . $template->{data_class_name} . ".  It's ID properties are (" . join(', ', @id_property_names)
+                        . ") which do not appear in the class' property list (" . join(', ', @{$template->{'property_names'}}).")");
         }             
+
+        my $source_alias = $template->{table_alias};
+        if (0 and my $join_data_for_source_table = $obj_joins_by_source_alias{$source_alias}) {
+            # there are joins which come from this entity to other entities
+            # as these entities are loaded, remember the individual queries covered by this object returning
+            # NOTE: when we join a <> b, we remember that we've loaded all of the b for a when _a_ loads, not b,
+            # since it's possible that there ar zero of b, and we don't want to perform the query for b 
+            my $source_object_num = $template->{object_num};
+            my $source_class_name = $template->{data_class_name};
+            my $next_joins = $template->{next_joins} ||= [];
+            for my $foreign_alias (keys %$join_data_for_source_table) {
+                my $foreign_object_num = $alias_object_num{$foreign_alias};
+                Carp::confess("no alias for $foreign_alias?") if not defined $foreign_object_num;
+                my $foreign_template = $templates[$foreign_object_num];
+                my $foreign_class_name = $foreign_template->{data_class_name};
+
+                my $join_data = $join_data_for_source_table->{$foreign_alias};
+                my %links = map { $_ ? @$_ : () } $join_data->{links};
+                my %filters = map { $_ ? @$_ : () } $join_data->{filters};
+                
+                my @keys = sort (keys %links, keys %filters);
+                my @value_position_source_property;
+                for (my $n = 0; $n < @keys; $n++) {
+                    my $key = $keys[$n];
+                    if ($links{$key} and $filters{$key}) {
+                        Carp::confess("unexpected same key $key in filters and joins");
+                    }
+                    my $source_property_name = $links{$key};
+                    next unless $source_property_name;
+                    push @value_position_source_property, $n, $source_property_name; 
+                }
+                my $bx = $foreign_class_name->define_boolexpr(map { $_ => $filters{$_} } @keys);
+                my ($bxt, @values) = $bx->template_and_values();
+                push @$next_joins, [ $bxt->id, \@values, \@value_position_source_property ];
+            }
+        }
     }        
 
     return \@templates;        
@@ -772,7 +427,6 @@ sub _first_class_in_inheritance_with_a_table {
 
 
     unless ($class) {
-        $DB::single = 1;
         Carp::confess("No class?");
     }
     my $class_object = $class->__meta__;
@@ -1068,6 +722,12 @@ sub create_from_inline_class_data {
         die "Failed to construct $ds_class_name: " . $ds_class_name->error_message();
     }
     return $ds;
+}
+
+sub ur_data_type_for_data_source_data_type {
+    my($class,$type) = @_;
+
+    return [undef,undef];   # The default that should give reasonable behavior
 }
 
 

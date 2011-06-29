@@ -4,9 +4,13 @@ package UR::Util;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 use Cwd;
 use Data::Dumper;
+
+sub d {
+    Data::Dumper->new([@_])->Terse(1)->Indent(0)->Useqq(1)->Dump;
+}
 
 sub null_sub { }
 
@@ -14,7 +18,7 @@ sub used_libs {
     my @extra;
     my @compiled_inc = UR::Util::compiled_inc();
     my @perl5lib = split(':', $ENV{PERL5LIB});
-    map { $_ =~ s/\/+$// } (@compiled_inc, @perl5lib);
+    map { $_ =~ s/\/+$// } (@compiled_inc, @perl5lib);   # remove trailing slashes
     map { $_ = Cwd::abs_path($_) || $_ } (@compiled_inc, @perl5lib);
     for my $inc (@INC) {
         $inc =~ s/\/+$//;
@@ -24,7 +28,9 @@ sub used_libs {
         push @extra, $inc;
     }
     unshift @extra, ($ENV{PERL_USED_ABOVE} ? split(":", $ENV{PERL_USED_ABOVE}) : ());
+    map { $_ =~ s/\/+$// } (@compiled_inc, @perl5lib);   # remove trailing slashes again
     @extra = _unique_elements(@extra);
+
     return @extra;
 }
 
@@ -81,7 +87,6 @@ sub deep_copy {
 sub value_positions_map {
     my ($array) = @_;
     my %value_pos;
-    my $a;
     for (my $pos = 0; $pos < @$array; $pos++) {
         my $value = $array->[$pos];
         if (exists $value_pos{$value}) {
@@ -111,6 +116,26 @@ sub positions_of_values {
     #        Carp::confess()
     #    }
     return @translated_positions;
+}
+
+
+# Get all combinations of values
+# input is a list of listrefs of values
+sub combinations_of_values {
+    return [] unless @_;
+
+    my $first_values = shift;
+
+    $first_values = [ $first_values ] unless (ref($first_values) and ref($first_values) eq 'ARRAY');
+
+    my @retval;
+    foreach my $sub_combination ( &combinations_of_values(@_) ) {
+        foreach my $value ( @$first_values ) {
+            push @retval, [$value, @$sub_combination];
+        }
+    }
+
+    return @retval;
 }
 
 # generate a method
@@ -178,12 +203,48 @@ sub _define_method {
 
 =over
 
+=item path_relative_to
+
+  $rel_path = UR::Util::path_relative_to($base, $target);
+
+Returns the pathname to $target relative to $base.  If $base
+and $target are the same, then it returns '.'.  If $target is
+a subdirectory of of $base, then it returns the portion of $target
+that is unique compared to $base.  If $target is not a subdirectory
+of $base, then it returns a relative pathname starting with $base.
+
+=cut
+
+sub path_relative_to {
+    my($base,$target) = @_;
+
+    $base = Cwd::abs_path($base);
+    $target = Cwd::abs_path($target);
+
+    my @base_path_parts = split('/', $base);
+    my @target_path_parts = split('/', $target);
+    my $i;
+    for ($i = 0;
+         $i < @base_path_parts and $base_path_parts[$i] eq $target_path_parts[$i];
+         $i++
+    ) { ; }
+
+    my $rel_path = '../' x (scalar(@base_path_parts) - $i)
+                      .
+                      join('/', @target_path_parts[$i .. $#target_path_parts]);
+    $rel_path = '.' unless length($rel_path);
+    return $rel_path;
+}
+ 
+
+=over
+
 =item generate_readwrite_methods
 
   UR::Util->generate_readwrite_methods
   (
-      some_scalar_property = 1,
-      some_array_property = []
+      some_scalar_property => 1,
+      some_array_property => []
   );
 
 This method generates accessor/set methods named after the keys of its
@@ -228,8 +289,8 @@ sub generate_readwrite_methods
 
   UR::Util->generate_readwrite_methods_override
   (
-      some_scalar_property = 1,
-      some_array_property = []
+      some_scalar_property => 1,
+      some_array_property => []
   );
 
 Same as generate_readwrite_function except that we force the functions
@@ -266,8 +327,8 @@ sub generate_readwrite_methods_override
 
   UR::Util->generate_readonly_methods
   (
-      some_scalar_property = 1,
-      some_array_property = []
+      some_scalar_property => 1,
+      some_array_property => []
   );
 
 This method generates accessor methods named after the keys of its
@@ -325,7 +386,7 @@ be tested, and should return a true of false value.
 sub mapreduce_grep($&@) {
     my $class = shift;
     my $subref = shift;
-$DB::single=1;
+#$DB::single = 1;
 
 
     # First check fast... should we do parallel at all?

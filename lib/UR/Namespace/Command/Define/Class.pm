@@ -2,7 +2,7 @@ package UR::Namespace::Command::Define::Class;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
 
 class UR::Namespace::Command::Define::Class {
     is => 'UR::Namespace::Command::Base',
@@ -44,8 +44,6 @@ sub execute {
         $self->error_message("No class name(s) provided!");
         return;
     }
-
-    $self->_init or return;
 
     my $namespace = $self->namespace_name;
     my $is = $self->extends || 'UR::Object';

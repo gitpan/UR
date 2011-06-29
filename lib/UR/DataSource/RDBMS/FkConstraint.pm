@@ -4,7 +4,8 @@ use warnings;
 package UR::DataSource::RDBMS::FkConstraint;
 
 use UR;
-our $VERSION = "0.30"; # UR $VERSION;
+our $VERSION = "0.32"; # UR $VERSION;
+
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS::FkConstraint',
     is => ['UR::DataSource::RDBMS::Entity'],
@@ -48,7 +49,7 @@ sub _table_classes {
 sub get_with_special_params {
     my($class,$rule,%args) = @_;
 
-$DB::single=1;
+#$DB::single = 1;
     my $column_name = delete $args{'column_name'};
     my $r_column_name = delete $args{'r_column_name'};
 
