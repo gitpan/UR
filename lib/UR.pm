@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = "0.32"; # UR $VERSION
+our $VERSION = "0.33"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -76,6 +76,9 @@ END {
             }
         }
         print STDERR "\n";
+    }
+    if ($ENV{UR_DBI_SUMMARIZE_SQL}) {
+        UR::DBI::print_sql_summary();
     }
 }
 
@@ -468,7 +471,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.32
+This document describes UR version 0.33
 
 =head1 SYNOPSIS
 

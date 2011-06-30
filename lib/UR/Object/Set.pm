@@ -3,7 +3,7 @@ package UR::Object::Set;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.32"; # UR $VERSION;
+our $VERSION = "0.33"; # UR $VERSION;
 
 our @CARP_NOT = qw( UR::Object::Type );
 
@@ -98,7 +98,7 @@ sub __display_name__ {
     
 
 sub get_with_special_parameters {
-    warn "this method will be removed shortly";
+    Carp::cluck("Getting sets by directly properties of their members method will be removed shortly because of ambiguity on the meaning of 'id'.  Please update the code which calls this.");
     my $class = shift;
     my $bx = shift;
     my @params = @_;

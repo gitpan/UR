@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.32"; # UR $VERSION;
+our $VERSION = "0.33"; # UR $VERSION;
 
 use IO::File;
 use File::Slurp     qw/write_file/;
@@ -299,7 +299,7 @@ sub _get_command_tree {
     my $module_name = $command;
     $module_name =~ s|::|/|g;
     $module_name .= '.pm';
-    my $input_path = $self->input_path;
+    my $input_path = $self->input_path ? $self->input_path : '';
     my $module_path = $INC{$module_name};
     $self->status_message("Loaded $command from $module_name at $module_path");
 

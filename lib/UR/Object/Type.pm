@@ -6,7 +6,7 @@ require UR;
 
 # Used during bootstrapping.
 our @ISA = qw(UR::Object);
-our $VERSION = "0.32"; # UR $VERSION;;
+our $VERSION = "0.33"; # UR $VERSION;;
 
 our @CARP_NOT = qw( UR::Object UR::Context  UR::ModuleLoader Class::Autouse UR::BoolExpr );
 
@@ -69,6 +69,7 @@ sub property {
         # optimize for the common case
         my ($self, $property_name) = @_;
         my $class_names = $self->_property_name_class_map->{$property_name};
+        return unless $class_names and @$class_names;
         my $id = $class_names->[0] . "\t" . $property_name;
         return UR::Object::Property->get($id); 
     }

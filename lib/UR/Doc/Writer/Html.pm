@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.32"; # UR $VERSION;
+our $VERSION = "0.33"; # UR $VERSION;
 
 use UR::Doc::Section;
 use UR::Doc::Pod2Html;
@@ -46,7 +46,7 @@ sub _render_header {
     my $title;
     $translator->output_string($title);
     $translator->parse_string_document("=pod\n\n".$self->title."\n\n=cut\n\n");
-    $self->_append("<h1><a name=\"___top\"/>$title</h1>\n");
+    $self->_append("<h1><a name=\"___top\"></a>$title</h1>\n");
 
 }
 

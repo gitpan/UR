@@ -3,7 +3,7 @@ use warnings;
 use strict;
 
 require UR;
-our $VERSION = "0.32"; # UR $VERSION;
+our $VERSION = "0.33"; # UR $VERSION;
 
 use Sys::Hostname;
 use Cwd;
@@ -98,6 +98,30 @@ sub property_meta_for_name {
     }
     return;
 }
+
+# A front-end for property_meta_for_name, but
+# will translate the generic 'id' property into the class' real ID property,
+# if it's not called 'id'
+sub _concrete_property_meta_for_class_and_name {
+    my($self,$property_name) = @_;
+
+    my $property_meta = $self->property_meta_for_name($property_name);
+
+    if ($property_meta
+        and $property_meta->class_name eq 'UR::Object'
+        and $property_meta->property_name eq 'id')
+    {
+        # This is the generic id property.  Remap it to the class' real ID property name
+        my @id_properties = $self->id_property_names;
+        if (@id_properties == 1 and $id_properties[0] eq 'id') {
+            return $property_meta;
+        }
+        return map { $self->_concrete_property_meta_for_class_and_name($_) } @id_properties;
+    }
+    return $property_meta;
+}
+
+
 
 sub _flatten_property_name {
     my ($self, $name) = @_;
