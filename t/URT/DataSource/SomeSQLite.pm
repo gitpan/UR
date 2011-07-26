@@ -13,14 +13,37 @@ BEGIN {
     our $FILE = $fh->filename();
     $fh->close();
     # The DB file now exists with 0 size
+
+    our $DUMP_FILE = File::Temp::tmpnam();
 }
 
 use UR::Object::Type;
 use URT;
 class URT::DataSource::SomeSQLite {
-    is => ['UR::DataSource::SQLite'],
+    is => ['UR::DataSource::SQLite','UR::Singleton'],
     type_name => 'urt datasource somesqlite',
 };
+
+
+# Don't print warnings about loading up the DB if running in the test harness
+# Similar code exists in URT::DataSource::Meta.
+sub _dont_emit_initializing_messages {
+    my($msgobj, $dsobj, $msgtype) = @_;
+
+    my $message = $msgobj->text;
+    if ($message !~ m/^Re-creating/) {
+        $dsobj->message_callback($msgtype, undef);
+        my $msg_method = $msgtype . '_message';
+        $dsobj->$msg_method($message);
+        $dsobj->message_callback($msgtype, \&_dont_emit_initializing_messages);
+    }
+}
+
+if ($ENV{'HARNESS_ACTIVE'}) {
+    # don't emit messages while running in the test harness
+    __PACKAGE__->message_callback('warning', \&_dont_emit_initializing_messages);
+}
+
 
 END {
     my @paths_to_remove = map { __PACKAGE__->$_ } qw(server _data_dump_path _schema_path);
@@ -32,6 +55,11 @@ END {
 sub server {
     our $FILE;
     return $FILE;
+}
+
+sub _data_dump_path {
+    our $DUMP_FILE;
+    return $DUMP_FILE;
 }
 
 1;

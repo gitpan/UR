@@ -28,7 +28,7 @@ This module subclasses DBI, and provides a few extra methods useful when using a
 require 5.006_000;
 use warnings;
 use strict;
-our $VERSION = "0.33"; # UR $VERSION;;
+our $VERSION = "0.34"; # UR $VERSION;;
 
 # set up module
 use base qw(Exporter DBI);
@@ -322,6 +322,9 @@ sub before_execute
 	$monitor_dml=2;
     }
     no warnings;            
+    
+    UR::DBI::log_sql_for_summary($sql);    # $ENV{UR_DBI_SUMMARIZE_SQL}
+
     my $log_sql_str = _generate_sql_and_params_log_entry($sql, @_);
     UR::DBI::log_sql($log_sql_str);
     return $start_time;
@@ -464,8 +467,6 @@ sub _generate_sql_and_params_log_entry
 {
 
     my $sql = shift;
-
-    UR::DBI::log_sql_for_summary($sql);    # $ENV{UR_DBI_SUMMARIZE_SQL}
 
     no warnings;
     my $sql_log_str =  "\nSQL: $sql\n"; 
@@ -678,7 +679,7 @@ sub disconnect
     
     # Msg and disconnect.
     UR::DBI::before_execute("disconnecting");
-    $self->SUPER::disconnect(@_);
+    my $rv = $self->SUPER::disconnect(@_);
     UR::DBI::after_execute();
     
     # There doesn't seem to be anything less which
@@ -693,6 +694,7 @@ sub disconnect
         $UR::DBI::common_dbh = undef;
         UR::DBI::after_execute("common dbh removed");
     }
+    return $rv;
 }
 
 sub prepare

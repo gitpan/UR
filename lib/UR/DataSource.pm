@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.33"; # UR $VERSION;
+our $VERSION = "0.34"; # UR $VERSION;
 use Sys::Hostname;
 
 *namespace = \&get_namespace;
@@ -14,6 +14,7 @@ UR::Object::Type->define(
     doc => 'A logical database, independent of prod/dev/testing considerations or login details.',
     has => [
         namespace => { calculate_from => ['id'] },
+        is_connected => { is => 'Boolean', default_value => 0, is_optional => 1 },
     ],
 );
 
@@ -144,7 +145,7 @@ sub _generate_class_data_for_loading {
     my @all_properties;
     my $first_table_name;
     for my $co ( $class_meta, @parent_class_objects ) {
-        my $table_name = $co->table_name;
+        my $table_name = $co->table_name || '__default__';
         
         $first_table_name ||= $table_name;
         $sub_classification_method_name ||= $co->sub_classification_method_name;

@@ -1,14 +1,9 @@
 use strict;
 use warnings;
-use Test::More;
+use Test::More tests => 19;
 use DBD::SQLite;
+
 print $DBD::SQLite::VERSION,"\n";
-if ($DBD::SQLite::VERSION >= 1.26) {
-    plan skip_all => "know to not work on sqlite > 1.26_04"
-}
-else {
-    plan tests=> 19;
-}
 use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__).'/../..';
@@ -26,15 +21,19 @@ use URT::DataSource::SomeSQLite;
 our($tmp_file1, $tmp_file2);
 $tmp_file1 = File::Temp::tmpnam() . "_ur_testsuite_83_db1.sqlite3";
 $tmp_file2 = File::Temp::tmpnam() . "_ur_testsuite_83_db2.sqlite3";
-END { unlink($tmp_file1, $tmp_file2); }
+END {
+    unlink $tmp_file1 if defined $tmp_file1;
+    unlink $tmp_file2 if defined $tmp_file2;
+}
 
 my $dbh = URT::DataSource::SomeSQLite->get_default_handle;
 
 ok($dbh, 'Got a database handle');
 
 # A sqlite-ism way of pretending we have different schemas
-ok($dbh->do('commit'), 'Commit pending transactions');
 my $autocommit = $dbh->{'AutoCommit'};
+ok($dbh->do('commit'), 'Commit pending transactions');
+$dbh->{'AutoCommit'} = 1;
 
 # I'd rather use memory DBs, but SQLite segfaults in commit() below
 ok($dbh->do("attach database '$tmp_file1' as PROD_DB"), 'defined PROD_DB schema');
@@ -99,10 +98,10 @@ my $self = shift;
     my @ret_data = ( { FK_NAME => 'product_person_fk',
                        UK_TABLE_SCHEM => 'PEOPLE',
                        UK_TABLE_NAME => 'PEOPLE',
-                       UK_COLUMN_NAME => 'PERSON_ID',
+                       UK_COLUMN_NAME => 'person_id',
                        FK_TABLE_SCHEM => 'PROD_DB',
                        FK_TABLE_NAME => 'PRODUCT',
-                       FK_COLUMN_NAME => 'CREATOR_ID' } );
+                       FK_COLUMN_NAME => 'creator_id' } );
     my $returned_sth = $sponge->prepare("foreign_key_info $table", {
         rows => [ map { [ @{$_}{@returned_names} ] } @ret_data ],
         NUM_OF_FIELDS => scalar @returned_names,

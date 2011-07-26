@@ -3,7 +3,7 @@ package UR::Object::View::Default::Json;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.33"; # UR $VERSION;
+our $VERSION = "0.34"; # UR $VERSION;
 
 use JSON;
 
@@ -12,7 +12,8 @@ class UR::Object::View::Default::Json {
     has_constant => [
         toolkit     => { value => 'json' },
     ],
-    has => [
+    has_optional => [
+        encode_options => { is => 'ARRAY', default_value => ['ascii', 'pretty', 'allow_nonref', 'canonical'], doc => 'Options to enable on the JSON object; see the documentation for the JSON Perl module' },
     ],
 };
 
@@ -20,7 +21,18 @@ my $json;
 sub _json {
     my ($self) = @_;
     return $json if defined $json;
-    return $json = JSON->new->ascii->pretty->allow_nonref;
+
+    $json = JSON->new;
+    foreach my $opt ( @{ $self->encode_options } ) {
+        eval { $json = $json->$opt; };
+        if ($@) {
+            Carp::croak("Can't initialize JSON object for encoding.  Calling method $opt from encode_options died: $@");
+        }
+        if (!$json) {
+            Carp::croak("Can't initialize JSON object for encoding.  Calling method $opt from encode_options returned false");
+        }
+    }
+    return $json;
 }
 
 sub _generate_content {

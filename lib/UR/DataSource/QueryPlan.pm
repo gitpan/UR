@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.33"; # UR $VERSION;
+our $VERSION = "0.34"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -120,7 +120,7 @@ sub _init {
         # Once all callers are using the API for this we won't need "_init".
         $self->_init_core();
         $self->_init_default() if $ds->isa("UR::DataSource::Default");
-        $self->_init_remote_cache() if $ds->isa("UR::DataSource::RemoteCache");
+        #$self->_init_remote_cache() if $ds->isa("UR::DataSource::RemoteCache");
     }
 
     # This object is currently still used as a hashref, but the properties
@@ -1142,6 +1142,9 @@ sub _resolve_object_join_data_for_property_chain {
     # something non-optional
     $is_optional = 0;
     for my $pmeta (@pmeta) {
+        if (!$pmeta) {
+            Carp::croak "Can't resolve joins for ".$rule_template->subject_class_name . " property '$property_name': No property metadata found for that class and property_name";
+        }
         push @joins, $pmeta->_resolve_join_chain();
         $is_optional = 1 if $pmeta->is_optional or $pmeta->is_many;
     }

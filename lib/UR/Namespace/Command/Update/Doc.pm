@@ -4,12 +4,11 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.33"; # UR $VERSION;
+our $VERSION = "0.34"; # UR $VERSION;
 
 use IO::File;
-use File::Slurp     qw/write_file/;
-use File::Basename  qw/dirname/;
-use File::Path      qw/make_path/;
+use File::Basename;
+use File::Path;
 use YAML;
 
 class UR::Namespace::Command::Update::Doc {
@@ -146,7 +145,7 @@ sub execute {
                 $self->status_message("output path is not a directory!: " . $self->output_path);
             }
             else {
-                make_path($self->output_path);
+                File::Path::make_path($self->output_path);
                 if (-d $self->output_path) {
                     $self->status_message("using output directory " . $self->output_path);
                 }
@@ -157,10 +156,8 @@ sub execute {
         }
     }
 
-    local $Command::V1::entry_point_bin = $entry_point_bin;
-    local $Command::V2::entry_point_bin = $entry_point_bin;
-    local $Command::V1::entry_point_class = $entry_point_class;
-    local $Command::V2::entry_point_class = $entry_point_class;
+    local $Command::entry_point_bin = $entry_point_bin;
+    local $Command::entry_point_class = $entry_point_class;
 
     my @command_trees = map( $self->_get_command_tree($_), @targets);
     $self->_generate_index(@command_trees);
@@ -182,7 +179,14 @@ sub _generate_index {
             if (-e $index_path) {
                 $self->warning_message("Index generation overwriting existing file at $index_path");
             }
-            write_file($index_path, \$index);
+
+            my $fh = IO::File->new($index_path, 'w');
+            unless ($fh) {
+                Carp::croak("Can't open file $index_path for writing: $!");
+            }
+            $fh->print($index);
+            $fh->close();
+
             $self->_index_filename($index_filename) if -e $index_path;
         } else {
             $self->warning_message("Unable to generate index");
@@ -251,7 +255,7 @@ sub _get_output_dir {
     my ($self, $class_name) = @_;
 
     return $self->output_path if defined $self->output_path;
-    return dirname($class_name->__meta__->module_path);
+    return File::Basename::dirname($class_name->__meta__->module_path);
 }
 
 sub _navigation_info {
@@ -319,7 +323,6 @@ sub _get_command_tree {
         $tree->{command_name} = $command->command_name;
         $tree->{command_name_brief} = $command->command_name_brief;
     }
-
     $tree->{uri} = $self->_make_filename($tree->{command_name});
 
     if ($command->can("sub_command_classes")) {

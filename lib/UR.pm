@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = "0.33"; # UR $VERSION
+our $VERSION = "0.34"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -82,6 +82,8 @@ END {
     }
 }
 
+#Class::AutoloadCAN must be used before Class::Autouse, or the can methods will break in confusing ways.
+use Class::AutoloadCAN;
 use Class::Autouse;
 BEGIN {
     my $v = $Class::Autouse::VERSION;
@@ -471,7 +473,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.33
+This document describes UR version 0.34
 
 =head1 SYNOPSIS
 

@@ -15,10 +15,10 @@ package UR::DataSource::File;
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.33"; # UR $VERSION;
+our $VERSION = "0.34"; # UR $VERSION;
 
 use Fcntl qw(:DEFAULT :flock);
-use Errno qw(EINTR EAGAIN);
+use Errno qw(EINTR EAGAIN EOPNOTSUPP);
 use File::Temp;
 use File::Basename;
 use IO::File qw();
@@ -80,6 +80,7 @@ sub get_default_handle {
         }
 
         $self->{'_fh'} = $fh;
+        $self->is_connected(1);
     }
     return $self->{'_fh'};
 }
@@ -91,6 +92,7 @@ sub disconnect_default_handle {
         flock($fh,LOCK_UN);
         $fh->close();
         $self->{'_fh'} = undef;
+        $self->is_connected(0);
     }
 }
 
@@ -927,6 +929,9 @@ sub _sync_database {
     }
 
     my $read_fh = $self->get_default_handle();
+    unless ($read_fh) {
+        Carp::croak($self->class . ": Can't _sync_database(): Can't open file " . $self->server . " for reading: $!");
+    }
 
     my $original_data_file = $self->server;
     my $original_data_dir  = File::Basename::dirname($original_data_file);
@@ -1050,7 +1055,9 @@ sub _sync_database {
     }
 
     unless (flock($read_fh,LOCK_EX)) {
-        Carp::croak($self->class(). ": Can't get exclusive lock for its file: $!");
+        unless ($! == EOPNOTSUPP ) {
+            Carp::croak($self->class(). ": Can't get exclusive lock for file ".$self->server.": $!");
+        }
     }
 
     # write headers to the new file

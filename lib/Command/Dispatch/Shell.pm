@@ -2,9 +2,6 @@ package Command::V2;  # additional methods to dispatch from a command-line
 use strict;
 use warnings;
 
-our $entry_point_class;
-our $entry_point_bin;
-
 sub execute_with_shell_params_and_exit {
     # This automatically parses command-line options and "does the right thing":
     # TODO: abstract out all dispatchers for commands into a given API
@@ -14,8 +11,8 @@ sub execute_with_shell_params_and_exit {
         die "No params expected for execute_with_shell_params_and_exit()!";
     }
 
-    $entry_point_class ||= $class;
-    $entry_point_bin ||= File::Basename::basename($0);
+    $Command::entry_point_class ||= $class;
+    $Command::entry_point_bin ||= File::Basename::basename($0);
 
     if ($ENV{COMP_LINE}) {
         require Getopt::Complete;
@@ -948,6 +945,44 @@ sub _get_user_verification_for_param_value_drilldown {
     }
     else {
         die $self->error_message("Conditional exception, should not have been reached!");
+    }
+}
+
+sub _ask_user_question {
+    my $self = shift;
+    my $question = shift;
+    my $timeout = shift;
+    my $valid_values = shift || "yes|no";
+    my $default_value = shift || undef;
+    my $pretty_valid_values = shift || $valid_values;
+    $valid_values = lc($valid_values);
+    my $input;
+    $timeout = 60 unless(defined($timeout));
+
+    local $SIG{ALRM} = sub { print STDERR "Exiting, failed to reply to question '$question' within '$timeout' seconds.\n"; exit; };
+    print STDERR "\n$question\n";
+    print STDERR "Reply with $pretty_valid_values: ";
+
+    unless ($self->_can_interact_with_user) {
+        print STDERR "\n";
+        die $self->error_message("Attempting to ask user question but cannot interact with user!");
+    }
+
+    alarm($timeout) if ($timeout);
+    chomp($input = <STDIN>);
+    alarm(0) if ($timeout);
+
+    print STDERR "\n";
+
+    if(lc($input) =~ /^$valid_values$/) {
+        return lc($input);
+    }
+    elsif ($default_value) {
+        return $default_value;
+    }
+    else {
+        $self->error_message("'$input' is an invalid answer to question '$question'\n\n");
+        return;
     }
 }
 
