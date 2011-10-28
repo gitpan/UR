@@ -5,7 +5,7 @@ use warnings;
 
 use UR::Context;
 
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 # A helper package for UR::Context to handling queries which require loading
 # data from outside the current context.  It is responsible for collating 
@@ -66,7 +66,6 @@ my %all_loading_iterators;
 sub _create {
     my($class, $cached, $context, $normalized_rule, $data_source, $this_get_serial ) = @_;
 
-
     my $underlying_context_iterator = $context->_create_import_iterator_for_underlying_context(
               $normalized_rule, $data_source, $this_get_serial);
 
@@ -118,9 +117,13 @@ sub _create {
         return;
     };
 
+    my $limit = $normalized_rule->template->limit;
+    my $offset = $normalized_rule->template->offset;
+
     my $me_loading_iterator_as_string;  # See note below the closure definition
     my $loading_iterator = sub {
 
+        return if (defined($limit) and !$limit);
         my $next_object;
 
         PICK_NEXT_OBJECT_FOR_LOADING:
@@ -262,13 +265,13 @@ sub _create {
                          # some other kind of change?
                          $next_object = $next_obj_underlying_context;
                          $next_obj_underlying_context = undef;
-                         last PICK_NEXT_OBJECT_FOR_LOADING;
+                         next PICK_NEXT_OBJECT_FOR_LOADING;
                      }
                 } else {
                     # If the object has no changes, it must be something newly brought into the system.
                     $next_object = $next_obj_underlying_context;
                     $next_obj_underlying_context = undef;
-                    last PICK_NEXT_OBJECT_FOR_LOADING;
+                    next PICK_NEXT_OBJECT_FOR_LOADING;
                 }
             }
 
@@ -310,7 +313,7 @@ sub _create {
                             # In any case, return the cached object.
                             $next_object = $next_obj_current_context;
                             $next_obj_current_context = undef;
-                            last PICK_NEXT_OBJECT_FOR_LOADING;
+                            next PICK_NEXT_OBJECT_FOR_LOADING;
                         }
                         elsif ($change_is_bx_filter_property->($next_obj_current_context)) {
                             # The change was that the object originally did not the filter, but since being
@@ -319,7 +322,7 @@ sub _create {
                             delete $db_seen_ids_that_are_not_deleted{$next_obj_current_context_id};
                             $next_object = $next_obj_current_context;
                             $next_obj_current_context = undef;
-                            last PICK_NEXT_OBJECT_FOR_LOADING;
+                            next PICK_NEXT_OBJECT_FOR_LOADING;
                         }
                         else {
                             # The change is not an order-by property.  This object must have been deleted
@@ -337,7 +340,7 @@ sub _create {
                             # We saw this already on the DB iterator.  It's not deleted. Go ahead and return it
                             $next_object = $next_obj_current_context;
                             $next_obj_current_context = undef;
-                            last PICK_NEXT_OBJECT_FOR_LOADING;
+                            next PICK_NEXT_OBJECT_FOR_LOADING;
 
                         }
                         elsif ($normalized_rule->is_id_only) {
@@ -374,7 +377,7 @@ sub _create {
                     # a newly created object.
                     $next_object = $next_obj_current_context;
                     $next_obj_current_context = undef;
-                    last PICK_NEXT_OBJECT_FOR_LOADING;
+                    next PICK_NEXT_OBJECT_FOR_LOADING;
                 }
 
             } elsif (!defined($next_obj_current_context)
@@ -396,16 +399,25 @@ sub _create {
                 $next_obj_current_context = undef;
                 $next_obj_underlying_context = undef;
                 $next_object = undef;
-                Carp::croak("Loading iterator internal error.  Could not pick an next object for loading.\n"
+                Carp::croak("Loading iterator internal error.  Could not pick a next object for loading.\n"
                             . "Next object underlying context: " . Data::Dumper::Dumper($underlying_problem_obj)
                             . "\nNext object current context: ". Data::Dumper::Dumper($current_problem_obj));
  
             }
 
             return unless defined $next_object;
-        } # end while ! $next_object
+
+        # end while ! $next_object
+        } continue {
+            if ($next_object and defined($offset) and $offset) {
+                $offset--;
+                $next_object = undef;
+            }
+        }
 
         $last_loaded_id = $next_object->id if $next_object;
+
+        $limit-- if defined $limit;
 
         return $next_object;
     };  # end of the closure

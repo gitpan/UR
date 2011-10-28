@@ -5,7 +5,7 @@ use warnings;
 use File::Find;
 
 require UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::Namespace',
@@ -152,7 +152,7 @@ sub _get_class_names_under_namespace
         return if $File::Find::name =~ /\/\.deleted\//;   # .deleted directories are created by ur update classes
         return if -e $File::Find::name . '/UR_IGNORE';    # ignore a whole directory?
         return unless $File::Find::name =~ m/\.pm$/;      # must be a perl module
-        return unless $File::Find::name =~ m/($namespace\/.*)\.pm/;
+        return unless $File::Find::name =~ m/.*($namespace\/.*)\.pm/;
 
         my $try_class = $1;
         return if $try_class =~ m([^\w/]);  # Skip names that make for illegal package names.  Must be word chars or a /
@@ -161,10 +161,16 @@ sub _get_class_names_under_namespace
     };
 
     my @dirs_to_search = @INC;
+    my $path_to_check = $namespace;
+    $path_to_check .= "/$subdir" if $subdir;
+
+    @dirs_to_search = map($_ . '/' . $path_to_check, @dirs_to_search); # only look in places with namespace_name as a subdir
     unshift(@dirs_to_search, $namespace_dir) if (-d $namespace_dir);
-    @dirs_to_search = grep { $_ =~ m/\/$namespace/ or -d $_ . "/$namespace" }
-                      @dirs_to_search;  # only look in places with namespace_name as a subdir
-    find({ wanted => $wanted, preprocess => $preprocess },@dirs_to_search);
+
+    @dirs_to_search = grep { $_ =~ m/\/$path_to_check/ and -d $_ }
+                      @dirs_to_search;
+    return unless @dirs_to_search;
+    find({ wanted => $wanted, preprocess => $preprocess }, @dirs_to_search);
     return sort keys %class_names;
 }
 

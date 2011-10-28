@@ -423,7 +423,7 @@ sub help_options {
         else {
             $text .= sprintf(
                 "  %s\n%s\n",
-                Term::ANSIColor::colored($row->[0], 'bold') . "   " . $row->[1],
+                Term::ANSIColor::colored($row->[0], 'bold'), # . "   " . $row->[1],
                 Text::Wrap::wrap(
                     "    ", # 1st line indent,
                     "    ", # all other lines indent,
@@ -536,7 +536,6 @@ sub command_name {
     my $self = shift;
     my $class = ref($self) || $self;
     my $prepend = '';
-    $DB::single = 1;
     if (defined($Command::entry_point_class) and $class =~ /^($Command::entry_point_class)(::.+|)$/) {
         $prepend = $Command::entry_point_bin;
         $class = $2;

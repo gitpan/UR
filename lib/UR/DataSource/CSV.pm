@@ -25,14 +25,13 @@ use warnings;
 # with that out of the way... on to the show!
 
 require UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 use File::Basename;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::CSV',
     is => ['UR::DataSource::RDBMS'],
-    english_name => 'ur datasource csv',
     is_abstract => 1,
 );
 

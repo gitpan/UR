@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use Test::More tests=> 71;
+use Test::More tests=> 79;
 use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__).'/../..';
@@ -36,6 +36,7 @@ ok(UR::Object::Type->define(
         primary_car       => { is => 'URT::Car', via => 'cars', to => '__self__', where => ['is_primary true' => 1] },
         car_colors        => { via => 'cars', to => 'color', is_many => 1 },
         primary_car_color => { via => 'primary_car', to => 'color' },
+        primary_car_uc_color => { via => 'primary_car', to => 'uc_color' },
     ],
     data_source => 'URT::DataSource::SomeSQLite',
 ),
@@ -49,6 +50,8 @@ ok(UR::Object::Type->define(
         ],
         has => [
             color   => { is => 'String' },
+            uc_color => { calculate_from => ['color'],
+                             calculate => q( return uc($color) ) },
             is_primary => { is => 'Boolean' },
             owner   => { is => 'URT::Person', id_by => 'owner_id' },
         ],
@@ -78,6 +81,9 @@ ok(URT::DataSource::SomeSQLite->create_subscription(
                     method => 'query',
                     callback => sub {$query_text = $_[0]; $query_count++}),
     'Created a subscription for query');
+
+
+my @c = URT::Car->get(owner_id => 13, "is_primary true" => 1);
 
 
 $query_count = 0;
@@ -169,11 +175,26 @@ foreach my $color ( keys %colors ) {
     my $expected_names = $colors{$color};
     is(scalar(@names), scalar(@$expected_names), "Calling 'name' on the $color subset has the right number of names");
     is_deeply(\@names, $expected_names, 'The names are correct');
-    # First time through the loop, it indexes 2 car colors for primary cars
-    # plus 1 query each time for getting owners for each car color
-    is($query_count, $first_time ? 3 : 1, 'query count is correct');
+    is($query_count, 1, 'query count is correct');
     $first_time = 0;
 }
+
+# Make a set that includes a filtered calculated property
+$query_count = 0;
+$set = URT::Car->define_set(uc_color => 'nomatches');
+ok($set, 'Defined set of cars filtered by uc color that will not match anything');
+is($query_count, 0, 'Made no queries');
+is($set->count, 0, 'That set is empty');
+ok($query_count, 'Made a query');
+
+
+
+$query_count = 0;
+$set = URT::Person->define_set(primary_car_uc_color => 'wontmatch');
+ok($set, 'Defined set of people filtered by uc color that will not match anything');
+is($query_count, 0, 'Made no queries');
+is($set->count, 0, 'That set is empty');
+ok($query_count, 'Made a query');
 
 # Test having an -order_by in addition to -group_by.  It should throw an exception if
 # all the order_by columns don't appear in -group_by.
@@ -204,7 +225,7 @@ foreach (@subsets) {
 is_deeply([ map { $_->car_colors } @subsets ],
           [undef, 'blue', 'red', 'yellow'],
           'The color subsets were returned in the correct order');
-is($query_count, 3, 'query count is correct'); # there's 2 queries for car color indexing, one more for aggregating the car colors
+is($query_count, 1, 'query count is correct');
 
 
 @subsets = eval { URT::Person->get(-group_by => ['is_cool'], -order_by => ['car_colors'])};

@@ -10,7 +10,7 @@ use Getopt::Long;
 use Term::ANSIColor;
 require Text::Wrap;
 
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -55,7 +55,25 @@ sub _init_subclass {
     else {
         #print "no execute in $subclass_name\n";
     }
+
+    if($subclass_name->can('shortcut')) {
+        my $new_symbol = "${subclass_name}::_shortcut_body";
+        my $old_symbol = "${subclass_name}::shortcut";
+        *$new_symbol = *$old_symbol;
+        undef *$old_symbol;
+    }
+
     return 1;
+}
+
+sub shortcut {
+    my $self = shift;
+    return unless $self->can('_shortcut_body');
+
+    my $result = $self->_shortcut_body;
+    $self->result($result);
+
+    return $result;
 }
 
 sub execute {
@@ -141,7 +159,7 @@ My::Command->execute_with_shell_params_and_exit;
     $Command::entry_point_class ||= $class;
     $Command::entry_point_bin ||= File::Basename::basename($0);
 
-    if ($ENV{COMP_LINE}) {
+    if ($ENV{COMP_CWORD}) {
         require Getopt::Complete;
         my @spec = $class->resolve_option_completion_spec();
         my $options = Getopt::Complete::Options->new(@spec);
@@ -171,9 +189,17 @@ sub _execute_with_shell_params_and_return_exit_code
 
     # make --foo=bar equivalent to --foo bar
     @argv = map { ($_ =~ /^(--\w+?)\=(.*)/) ? ($1,$2) : ($_) } @argv;
-    my ($delegate_class, $params) = $class->resolve_class_and_params_for_argv(@argv);
-
-    my $rv = $class->_execute_delegate_class_with_params($delegate_class,$params);
+    my ($delegate_class, $params,$error_tag_list) = $class->resolve_class_and_params_for_argv(@argv);
+    my $rv;
+    if ($error_tag_list and @$error_tag_list) {
+        $class->error_message("There were problems resolving some command-line parameters:\n\t"
+                             . join("\n\t",
+                                    map { my($props,$type,$desc) = @$_{'properties','type','desc'};
+                                          "Property '" . join("','",@$props) . "' ($type): $desc" }
+                                    @$error_tag_list));
+    } else {
+        $rv = $class->_execute_delegate_class_with_params($delegate_class,$params);
+    }
     
     my $exit_code = $delegate_class->exit_code_for_return_value($rv);
     return $exit_code;
@@ -533,6 +559,12 @@ sub resolve_class_and_params_for_argv
         my @errors;
         local $SIG{__WARN__} = sub { push @errors, @_ };
         
+        ## Change the pattern to be '--', '-' followed by a non-digit, or '+'.
+        ## This s the effect of treating a negative number as a value of an option.
+        ## This means that we won't be allowed to have an option named, say, -1.
+        ## But since command modules' properties have to be allowable function names,
+        ## and "1" is not a valid function name, it's not really a problem
+        #Getopt::Long::Configure('prefix_pattern=--|-(?!\D)|\+');
         unless (GetOptions($params_hash,@spec)) {
             Carp::croak( join("\n", @errors) );
         }
@@ -581,6 +613,10 @@ sub resolve_class_and_params_for_argv
                 push @new_value, @parts;
             }
             @$value = @new_value;
+
+        } elsif ($value eq q('') or $value eq q("")) {
+            # Handle the special values '' and "" to mean undef/NULL
+            $params_hash->{$key} = '';
         }
 
         # turn dashes into underscores
@@ -1158,6 +1194,9 @@ sub _shell_arg_getopt_qualifier_from_property_meta
     if (defined($property_meta->data_type) and $property_meta->data_type =~ /Boolean/) {
         return '!' . $many;
     }
+    #elsif ($property_meta->is_optional) {
+    #    return ':s' . $many;
+    #}
     else {
         return '=s' . $many;
     }
@@ -1471,7 +1510,7 @@ sub _get_msgdata {
 
 for my $type (qw/error warning status debug usage/) {
 
-    for my $method_base (qw/_messages_callback queue_ dump_/) {
+    for my $method_base (qw/_messages_callback queue_ dump_ _package _file _line _subroutine/) {
         my $method = (substr($method_base,0,1) eq "_"
             ? $type . $method_base
             : $method_base . $type . "_messages"
@@ -1517,8 +1556,24 @@ for my $type (qw/error warning status debug usage/) {
                 push @$a, $msg;
             }
             $msgdata->{ $type . "_message" } = $msg;
+
+            my ($package, $file, $line, $subroutine) = caller;
+            $msgdata->{ $type . "_package" } = $package;
+            $msgdata->{ $type . "_file" } = $file;
+            $msgdata->{ $type . "_line" } = $line;
+            $msgdata->{ $type . "_subroutine" } = $subroutine;
         }
-        $msgdata->{ $type . "_message" };
+
+        if (wantarray) {
+            return (
+                $msgdata->{ $type . "_message" },
+                $msgdata->{ $type . "_package" },
+                $msgdata->{ $type . "_file" },
+                $msgdata->{ $type . "_line" },
+                $msgdata->{ $type . "_subroutine"},
+            );
+        }
+        return $msgdata->{ $type . "_message" };
     };
 
 

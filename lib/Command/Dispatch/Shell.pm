@@ -14,7 +14,7 @@ sub execute_with_shell_params_and_exit {
     $Command::entry_point_class ||= $class;
     $Command::entry_point_bin ||= File::Basename::basename($0);
 
-    if ($ENV{COMP_LINE}) {
+    if ($ENV{COMP_CWORD}) {
         require Getopt::Complete;
         my @spec = $class->resolve_option_completion_spec();
         my $options = Getopt::Complete::Options->new(@spec);
@@ -145,6 +145,12 @@ sub resolve_class_and_params_for_argv {
         my @errors;
         local $SIG{__WARN__} = sub { push @errors, @_ };
         
+        ## Change the pattern to be '--', '-' followed by a non-digit, or '+'.
+        ## This s the effect of treating a negative number as a value of an option.
+        ## This means that we won't be allowed to have an option named, say, -1.
+        ## But since command modules' properties have to be allowable function names,
+        ## and "1" is not a valid function name, it's not really a problem
+        #Getopt::Long::Configure('prefix_pattern=--|-(?!\D)|\+');
         unless (GetOptions($params_hash,@spec)) {
             for my $error (@errors) {
                 $self->error_message($error);
@@ -180,7 +186,9 @@ sub resolve_class_and_params_for_argv {
                 $params_hash->{$name} = $value;
             }
         }
-    } elsif (@ARGV) {
+    } 
+    
+    if (@ARGV and not $self->_bare_shell_argument_names) {
         ## argv but no names
         $self->error_message("Unexpected bare arguments: @ARGV!");
         return($self, undef);
@@ -196,6 +204,10 @@ sub resolve_class_and_params_for_argv {
                 push @new_value, @parts;
             }
             @$value = @new_value;
+
+        } elsif ($value eq q('') or $value eq q("")) {
+            # Handle the special values '' and "" to mean undef/NULL
+            $params_hash->{$key} = '';
         }
 
         # turn dashes into underscores
@@ -212,14 +224,29 @@ sub resolve_class_and_params_for_argv {
         $params_hash->{$new_key} = delete $params_hash->{$key};
     }
 
+    # futher work is looking for errors, and may display them
+    # if help is set, return now
+    # we might have returned sooner, but having full info available
+    # allows for dynamic help
+    if ($params_hash->{help}) {
+        return ($self, $params_hash);
+    }
+
     ##
     my $params = $params_hash;
     my $class = $self->class;
+    
+    if (my @errors = $self->_errors_from_missing_parameters($params)) {
+        return ($class, $params, \@errors);
+    }
 
-    unless (@_ && scalar($self->_missing_parameters($params)) == 0) {
+    unless (@_) {
         return ($class, $params);
     }
 
+    # should this be moved up into the methods which are only called
+    # directly from the shell, or is it okay everywhere in this module to
+    # presume we're a direct cmdline call? -ssmith
     local $ENV{UR_COMMAND_DUMP_STATUS_MESSAGES} = 1;
 
     my @params_to_resolve = $self->_params_to_resolve($params);
@@ -253,7 +280,6 @@ sub resolve_class_and_params_for_argv {
                 properties => [$p->{name}],
                 desc => "Problem resolving from $param_arg_str.",
             );
-            $self->error_message();
         }
     }
 
@@ -275,7 +301,7 @@ sub resolve_option_completion_spec {
     return \@completion_spec
 }
 
-sub _missing_parameters {
+sub _errors_from_missing_parameters {
     my ($self, $params) = @_;
 
     my $class_meta = $self->__meta__;
@@ -286,7 +312,7 @@ sub _missing_parameters {
     }
     my @property_metas = map { $class_meta->property_meta_for_name($_); } @property_names;
 
-    my @missing_property_values;
+    my @error_tags;
     for my $property_meta (@property_metas) {
         my $pn = $property_meta->property_name;
 
@@ -295,15 +321,35 @@ sub _missing_parameters {
         next if defined $property_meta->default_value;
         next if defined $params->{$pn};
 
-        push @missing_property_values, $pn;
+        my $arg = $pn;
+        $arg =~ s/_/-/g;
+        $arg = "--$arg";
+
+        if ($property_meta->is_output and not $property_meta->is_input and not $property_meta->is_param) {
+            if ($property_meta->_data_type_as_class_name->__meta__->data_source) {
+                # outputs with a data source do not need a specification 
+                # on the cmdline to "store" them after execution
+                next;
+            }
+            else {
+                push @error_tags, UR::Object::Tag->create(
+                    type => 'invalid',
+                    properties => [$pn],
+                    desc => "Output requires specified destination: " . $arg . "."
+                );
+            }
+        }
+        else {
+            $DB::single = 1;
+            push @error_tags, UR::Object::Tag->create(
+                type => 'invalid',
+                properties => [$pn],
+                desc => "Missing required parameter: " . $arg . "."
+            );
+        }
     }
 
-    @missing_property_values = map { $_ =~ s/_/-/g; "--$_" } @missing_property_values;
-    if (@missing_property_values) {
-        $self->status_message('');
-        $self->error_message("Missing required parameter(s): " . join(', ', @missing_property_values) . ".");
-    }
-    return @missing_property_values;
+    return @error_tags;
 }
 
 sub _params_to_resolve {
@@ -396,11 +442,18 @@ sub _shell_args_property_meta {
     my $rule = UR::Object::Property->define_boolexpr(@_);
     my %seen;
     my (@positional,@required,@optional);
-    foreach my $property_meta ( $class_meta->get_all_property_metas() ) {
+    my @property_meta = 
+        sort { 
+            $a->position_in_module_header <=> $b->position_in_module_header
+        } 
+        $class_meta->properties();
+    foreach my $property_meta (@property_meta) {
         my $property_name = $property_meta->property_name;
 
         next if $seen{$property_name}++;
         next unless $rule->evaluate($property_meta);
+
+        next unless $property_meta->can("is_param") and ($property_meta->is_param or $property_meta->is_input);
 
         next if $property_name eq 'id';
         next if $property_name eq 'result';
@@ -433,8 +486,8 @@ sub _shell_args_property_meta {
 
     my @result;
     @result = ( 
-        (sort { $a->property_name cmp $b->property_name } @required),
-        (sort { $a->property_name cmp $b->property_name } @optional),
+        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @required),
+        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @optional),
         (sort { $a->{shell_args_position} <=> $b->{shell_args_position} } @positional),
     );
 
@@ -457,6 +510,9 @@ sub _shell_arg_getopt_qualifier_from_property_meta {
     if (defined($property_meta->data_type) and $property_meta->data_type =~ /Boolean/) {
         return '!' . $many;
     }
+    #elsif ($property_meta->is_optional) {
+    #    return ':s' . $many;
+    #}
     else {
         return '=s' . $many;
     }
@@ -622,8 +678,7 @@ sub resolve_param_value_from_cmdline_text {
 
     my $pmeta = $self->__meta__->property($param_name);
 
-
-    print STDERR "Resolving parameter '$param_name' from command argument '$param_str'...";
+    my $param_resolve_message = "Resolving parameter '$param_name' from command argument '$param_str'...";
     my @results;
     my $require_user_verify = $pmeta->{'require_user_verify'};
     for (my $i = 0; $i < @param_args; $i++) {
@@ -648,10 +703,10 @@ sub resolve_param_value_from_cmdline_text {
         }
     }
     if (@results) {
-        print STDERR " found " . @results . ".\n";
+        $self->status_message($param_resolve_message . " found " . @results);
     }
     else {
-        print STDERR " none found.\n";
+        $self->status_message($param_resolve_message . " none found.");
     }
 
     return unless (@results);

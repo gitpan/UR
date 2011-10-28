@@ -6,12 +6,11 @@ use warnings;
 use Lingua::EN::Inflect ("PL_V","PL");
 
 require UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::Vocabulary',
     is => ['UR::Singleton'],
-    english_name => 'ur vocabulary',
     doc => 'A word in the vocabulary of a given namespace.',
 );
 

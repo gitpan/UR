@@ -4,12 +4,11 @@ use warnings;
 package UR::DataSource::RDBMS::Entity;
 
 use UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS::Entity',
     is => ['UR::Entity'],
     is_abstract => 1,
-    english_name => 'rdbms entity',
     data_source => 'UR::DataSource::Meta',
 );
 

@@ -12,7 +12,7 @@ use Path::Class; # qw(file dir);
 use DBI;
 use Cwd;
 use UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 use File::Find;
 
 use TAP::Harness;
@@ -366,7 +366,10 @@ sub _run_tests {
     }
 
     $harness_args{'jobs'} = $self->jobs if ($self->jobs > 1);
-    $harness_args{'test_args'} = $self->script_opts if $self->script_opts;
+    if ($self->script_opts) {
+        my @opts = split(/\s+/, $self->script_opts);
+        $harness_args{'test_args'} = \@opts;
+    }
     $harness_args{'multiplexer_class'} = 'My::TAP::Parser::Multiplexer';
     $harness_args{'scheduler_class'} = 'My::TAP::Parser::Scheduler';
     

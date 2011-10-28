@@ -28,7 +28,7 @@ This module subclasses DBI, and provides a few extra methods useful when using a
 require 5.006_000;
 use warnings;
 use strict;
-our $VERSION = "0.34"; # UR $VERSION;;
+our $VERSION = "0.35"; # UR $VERSION;;
 
 # set up module
 use base qw(Exporter DBI);
@@ -567,7 +567,7 @@ sub _print_query_plan
     
     $dbh->do($UR::DBI::EXPLAIN_PLAN_DML . "\n" . $sql)
         or die "Failed to produce query plan! " . $dbh->errstr;        
-    UR::Report->generate(
+    UR::DBI::Report->generate(
         sql => [$UR::DBI::EXPLAIN_PLAN_SQL],
         dbh => $dbh,
         count => 0,

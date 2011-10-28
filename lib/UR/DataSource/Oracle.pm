@@ -3,12 +3,11 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Oracle',
     is => ['UR::DataSource::RDBMS'],
-    english_name => 'ur datasource oracle',
     is_abstract => 1,
 );
 
@@ -17,6 +16,8 @@ sub driver { "Oracle" }
 sub owner { shift->_singleton_object->login }
 
 sub can_savepoint { 1 }  # Oracle supports savepoints inside transactions
+
+sub does_support_recursive_queries { 'connect by' };
 
 sub set_savepoint {
 my($self,$sp_name) = @_;

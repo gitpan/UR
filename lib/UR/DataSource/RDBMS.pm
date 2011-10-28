@@ -9,7 +9,7 @@ use Scalar::Util;
 use File::Basename;
 
 require UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS',
@@ -454,7 +454,7 @@ sub set_all_dbh_to_inactive_destroy {
     }
     my $dbh = $self->_default_dbh;
     if ($dbh) {
-        $dbh->disconnect_default_dbh;;
+        $self->disconnect_default_dbh;;
     }
     return 1;
 }
@@ -766,18 +766,6 @@ sub resolve_property_name_for_column_name {
         split("_",$column_name);
 
     my $type_name =  join("_",@words);
-    return $type_name;
-}
-
-sub resolve_attribute_name_for_column_name {
-    my $self = shift->_singleton_class_name;
-    my $column_name = shift;
-
-    my @words =                 
-        map { lc($_) }
-        split("_",$column_name);
-
-    my $type_name =  join(" ",@words);
     return $type_name;
 }
 
@@ -3019,7 +3007,7 @@ sub _generate_class_data_for_loading {
             sort { $a->property_name cmp $b->property_name }
             grep { (defined $_->column_name && $_->column_name ne '') or
                 (defined $_->calculate_sql && $_->calculate_sql ne '') }
-            UR::Object::Property->get( type_name => $co->type_name );
+            UR::Object::Property->get( class_name => $co->class_name );
 
         @direct_table_properties = @all_table_properties if $class_meta eq $co;
     }
@@ -3083,9 +3071,10 @@ sub _generate_class_data_for_loading {
 # We're overriding the method in UR::Object because we support 2 more
 # event types: connect and query
 sub validate_subscription {
-    my ($self,$subscription_property) = @_;
+    my $self = shift;
+    my $subscription_property = shift;
 
-    my $retval = $self->SUPER::validate_subscription(@_);
+    my $retval = $self->SUPER::validate_subscription($subscription_property,@_);
     return $retval if $retval;
 
     unless ( defined($subscription_property)

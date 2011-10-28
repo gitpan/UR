@@ -2,7 +2,9 @@ package UR::Object::Join;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
+
+our @CARP_NOT = qw( UR::Object::Property );
 
 class UR::Object::Join {
     #is => 'UR::Value',
@@ -32,16 +34,18 @@ class UR::Object::Join {
 
 our %resolve_chain;
 sub resolve_chain {
-    my ($class, $class_name, $property_chain) = @_;
+    my ($class, $class_name, $property_chain, $join_label) = @_;
+
+    $join_label ||= $property_chain;
 
     my $join_chain = 
-        $resolve_chain{$class_name}{$property_chain}
+        $resolve_chain{$class_name}{$join_label}{$property_chain}
             ||= do {
                 my $class_meta = $class_name->__meta__;
                 my @pmeta = $class_meta->property_meta_for_name($property_chain);
                 my @joins;
                 for my $pmeta (@pmeta) {
-                    push @joins, $class->_resolve_chain_for_property_meta($pmeta);
+                    push @joins, $class->_resolve_chain_for_property_meta($pmeta,$join_label);
                 }
                 \@joins;
             };
@@ -50,9 +54,9 @@ sub resolve_chain {
 }
 
 sub _resolve_chain_for_property_meta {
-    my ($class, $pmeta) = @_;  
+    my ($class, $pmeta, $join_label) = @_;  
     if ($pmeta->via or $pmeta->to) {
-        return $class->_resolve_via_to($pmeta);
+        return $class->_resolve_via_to($pmeta,$join_label);
     }
     else {
         my $foreign_class = $pmeta->_data_type_as_class_name;
@@ -60,10 +64,10 @@ sub _resolve_chain_for_property_meta {
             return;
         }
         if ($pmeta->id_by or $foreign_class->isa("UR::Value")) {
-            return $class->_resolve_forward($pmeta);
+            return $class->_resolve_forward($pmeta, $join_label);
         }
         elsif (my $reverse_as = $pmeta->reverse_as) { 
-            return $class->_resolve_reverse($pmeta);
+            return $class->_resolve_reverse($pmeta,$join_label);
         }
         else {
             # TODO: handle hard-references to objects here maybe?
@@ -99,8 +103,10 @@ sub _get_or_define {
 }
 
 sub _resolve_via_to {
-    my ($class, $pmeta) = @_;
-    my $class_meta = UR::Object::Type->get(class_name => $pmeta->class_name);
+    my ($class, $pmeta,$join_label) = @_;
+
+    my $class_name = $pmeta->class_name;
+    my $class_meta = UR::Object::Type->get(class_name => $class_name);
 
     my @joins;
     my $via = $pmeta->via;
@@ -114,31 +120,35 @@ sub _resolve_via_to {
     if ($via) {
         $via_meta = $class_meta->property_meta_for_name($via);
         unless ($via_meta) {
+            return if $class_name->can($via);  # It's via a method, not an actual property
+
             my $property_name = $pmeta->property_name;
             my $class_name = $pmeta->class_name;
-            Carp::croak "Can't resolve property '$property_name' of $class_name: No via meta for '$via'?";
+            Carp::croak "Can't resolve joins for property '$property_name' of $class_name: No property metadata for via property '$via'";
         }
 
         if ($via_meta->to and ($via_meta->to eq '-filter')) {
-            return $via_meta->_resolve_join_chain;
+            return $via_meta->_resolve_join_chain($join_label);
         }
 
         unless ($via_meta->data_type) {
             my $property_name = $pmeta->property_name;
             my $class_name = $pmeta->class_name;
-            Carp::croak "Can't resolve property '$property_name' of $class_name: No data type for '$via'?";
+            Carp::croak "Can't resolve joins for property '$property_name' of $class_name: No data type for via property '$via'";
         }
-        push @joins, $via_meta->_resolve_join_chain();
+        push @joins, $via_meta->_resolve_join_chain($join_label);
         
         if (my $where = $pmeta->where) {
             my $join = pop @joins;
-            unless ($join->{foreign_class}) {
-                Carp::confess("No foreign class in " . Data::Dumper::Dumper($join, \@joins));
+            unless ($join and $join->{foreign_class}) {
+                my $property_name = $pmeta->property_name;
+                my $class_name = $pmeta->class_name;
+                Carp::croak("Can't resolve joins for property '$property_name' of $class_name: Couldn't determine foreign class for via property '$via'\n"
+                            . "join data so far: ".  Data::Dumper::Dumper($join, \@joins));
             }
             my $where_rule = UR::BoolExpr->resolve($join->{foreign_class}, @$where);                
             my $id = $join->{id};
-            $id .= ' ' . $where_rule->id;
-            
+            $id .= ' ' . $where_rule->id . ":$join_label";
             my %join_data = %$join;
             push @joins, $class->_get_or_define(%join_data, id => $id, where => $where, sub_group_label => $pmeta->property_name);
         }
@@ -163,7 +173,7 @@ sub _resolve_via_to {
             Carp::croak "Can't resolve property '$property_name' of $class_name: No '$to' property found on " . $via_meta->data_type;
         }
 
-        push @joins, $to_meta->_resolve_join_chain();
+        push @joins, $to_meta->_resolve_join_chain($join_label);
     }
     
     return @joins;
@@ -174,7 +184,7 @@ my @old = qw/source_class source_property_names foreign_class foreign_property_n
 my @new = qw/foreign_class foreign_property_names source_class source_property_names foreign_name_for_source source_name_for_foreign is_optional is_many sub_group_label/;
 
 sub _resolve_forward {
-    my ($class, $pmeta) = @_;
+    my ($class, $pmeta, $join_label) = @_;
 
     my $foreign_class = $pmeta->_data_type_as_class_name;
     unless (defined($foreign_class) and $foreign_class->can('get'))  {
@@ -219,7 +229,7 @@ sub _resolve_forward {
                 my $id_by_property = $class_meta->property_meta_for_name($id_by_property_name);
                 next unless ($id_by_property and $id_by_property->is_delegated);
             
-                push @joins, $id_by_property->_resolve_join_chain();
+                push @joins, $id_by_property->_resolve_join_chain($join_label);
                 $source_class = $joins[-1]->{'foreign_class'};
                 @source_property_names = @{$joins[-1]->{'foreign_property_names'}};
             }
@@ -247,7 +257,7 @@ sub _resolve_forward {
     # this records what to reverse in this case.
     $foreign_name_for_source ||= '<' . $source_class . '::' . $source_name_for_foreign;
 
-    #$DB::single = 1 if $where;
+    $id .= ":$join_label";
 
     push @joins, $class->_get_or_define( 
                     id => $id,
@@ -272,7 +282,7 @@ sub _resolve_forward {
 }
 
 sub _resolve_reverse {
-    my ($class, $pmeta) = @_;
+    my ($class, $pmeta,$join_label) = @_;
 
     my $foreign_class = $pmeta->_data_type_as_class_name;
 
@@ -304,7 +314,7 @@ sub _resolve_reverse {
                         $pmeta->property_name . "' of class " . $pmeta->class_name);
     }
 
-    my @join_data = map { { %$_ } } reverse $foreign_property_via->_resolve_join_chain();
+    my @join_data = map { { %$_ } } reverse $foreign_property_via->_resolve_join_chain($join_label);
     my $prev_where = $where;
     for (@join_data) { 
         @$_{@new} = @$_{@old};
@@ -318,6 +328,7 @@ sub _resolve_reverse {
             $id .= ' ' . $where_rule->id;
 
         }
+        $id .= ":$join_label";
         $_->{id} = $id; 
 
         $_->{is_optional} = ($pmeta->is_optional || $pmeta->is_many);

@@ -3,7 +3,7 @@ package UR::All;
 use strict;
 use warnings;
 
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 BEGIN { require above; };
 use UR;
@@ -166,7 +166,6 @@ use UR::Object::Property::View::DescriptionLineItem::Text;
 use UR::Object::Property::View::ReferenceDescription::Text;
 use UR::Object::Set;
 use UR::Object::Set::View::Default::Json;
-use UR::Object::Set::View::Default::Xml;
 use UR::Object::Tag;
 use UR::Object::Type;
 use UR::Object::Type::AccessorWriter;
@@ -176,7 +175,6 @@ use UR::Object::Type::Initializer;
 use UR::Object::Type::InternalAPI;
 use UR::Object::Type::ModuleWriter;
 use UR::Object::Type::View::Default::Text;
-use UR::Object::Type::View::Default::Xml;
 use UR::Object::Value;
 use UR::Object::View;
 use UR::Object::View::Aspect;
@@ -184,7 +182,6 @@ use UR::Object::View::Default::Gtk;
 use UR::Object::View::Default::Gtk2;
 use UR::Object::View::Default::Json;
 use UR::Object::View::Default::Text;
-use UR::Object::View::Default::Xml;
 use UR::Object::View::Lister::Text;
 use UR::Object::View::Toolkit;
 use UR::Object::View::Toolkit::Text;
@@ -192,7 +189,7 @@ use UR::ObjectDeprecated;
 use UR::ObjectV001removed;
 use UR::ObjectV04removed;
 use UR::Observer;
-use UR::Report;
+use UR::DBI::Report;
 use UR::Service::RPC::Executer;
 use UR::Service::RPC::Message;
 use UR::Service::RPC::Server;
@@ -235,10 +232,12 @@ if (eval "use Net::HTTPServer") {
 
 
 if (eval "use Xml::LibXSLT") {
-print STDERR "Yep!\n";
     my $rv = eval "use UR::Object::View::Default::Html;"
-             && eval "use UR::Object::View::Default::Xsl;";
-print STDERR "rv is $rv exception is $@\n";
+             && eval "use UR::Object::View::Default::Xsl;"
+             && eval "use UR::Object::Set::View::Default::Xml;"
+             && eval "use UR::Object::View::Default::Xml;"
+             && eval "use UR::Object::Type::View::Default::Xml;"
+             ;
     die $@ unless ($rv);
 }
  

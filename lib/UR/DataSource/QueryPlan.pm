@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -54,6 +54,7 @@ class UR::DataSource::QueryPlan {
         connect_by_clause                           => {},
         group_by_clause                             => {},
         order_by_columns                            => {},
+        order_by_non_column_data                    => {}, # flag that's true if asked to order_by something not in the data source
        
         sql_params                                  => {},
         filter_specs                                => {},
@@ -66,7 +67,9 @@ class UR::DataSource::QueryPlan {
 
         joins                                       => {},
         recursion_desc                              => {},
+        recurse_property_on_this_row                => {},
         recurse_property_referencing_other_rows     => {},
+        recurse_resolution_by_iteration             => {},  # For data sources that don't support recursive queries
         
         joins_across_data_sources                   => {}, # context _resolve_query_plan_for_ds_and_bxt
         loading_templates                           => {},
@@ -93,7 +96,6 @@ my @extra = qw(
     properties_meta_in_resultset_order
     all_properties
     rule_specifies_id
-    recurse_property_on_this_row
     all_id_property_names
     id_property_sorter
     properties_for_params
@@ -163,9 +165,9 @@ sub _init_rdbms {
 
     # individual template based
     my $hints    = $rule_template->hints;
+    my %hints    = map { $_ => 1 } @$hints;
     my $order_by = $rule_template->order_by;
     my $group_by = $rule_template->group_by;
-    my $page     = $rule_template->page;
     my $limit    = $rule_template->limit;
     my $aggregate = $rule_template->aggregate;
     my $recursion_desc = $rule_template->recursion_desc;
@@ -287,6 +289,15 @@ sub _init_rdbms {
                 next;
             }
 
+            # If the property is calculate and has a calculate_from list, add the
+            # calculate_from things to the internal hints list, but not the template
+            if ($property->is_calculated and $property->calculate_from) {
+                my $calculate_from = $property->calculate_from;
+                push @properties_involved, @$calculate_from;
+                push @$hints, @$calculate_from;
+                $hints{$_} = 1 foreach @$calculate_from;
+            }
+
             if (my $column_name = $property->column_name) {
                 # normal column: filter on it
                 unless ($table_name) {
@@ -300,14 +311,13 @@ sub _init_rdbms {
                         };
                 }
             }
-            elsif ($property->is_transient) {
-                push @errors, "Can't query by transient property '$property_name' on $class_name";
-                next;
-            }
             elsif ($property->is_delegated) {
                 push @delegated_properties, $property->property_name;
             }
-            elsif ($property->is_calculated || $property->is_constant) {
+            elsif (($property->is_calculated || $property->is_constant || $property->is_transient)
+                   and
+                   ( ! exists($hints{$property_name}) or exists($filters{$property_name}) )
+            ) {
                 $self->needs_further_boolexpr_evaluation_after_loading(1);
             }
             else {
@@ -338,8 +348,34 @@ sub _init_rdbms {
     DELEGATED_PROPERTY:
     for my $delegated_property (sort @delegated_properties) {
         my $property_name = $delegated_property;
+        my $delegation_chain_data           = $self->_delegation_chain_data || $self->_delegation_chain_data({});
+        $delegation_chain_data->{"__all__"}{table_alias} = {};
        
-        my ($final_accessor, $is_optional, @joins) = _resolve_object_join_data_for_property_chain($rule_template,$property_name);
+        my ($final_accessor, $is_optional, @joins) = _resolve_object_join_data_for_property_chain($rule_template,$property_name,$property_name);
+        unless ($final_accessor) {
+            $self->needs_further_boolexpr_evaluation_after_loading(1);
+            next;
+        }
+
+        # Splice out joins that go through a UR::Value class and back out to the DB, since UR::Value-types
+        # don't get stored in the DB
+        for (my $i = 0; $i < @joins; $i++) {
+            if ($joins[$i]->{'foreign_class'}->isa('UR::Value')
+                and $i < $#joins
+                and $joins[$i+1]->{'source_class'}->isa('UR::Value')
+                and $joins[$i]->{'foreign_class'}->isa($joins[$i+1]->{'source_class'}) )
+
+            {
+                my $fixed_join = UR::Object::Join->_get_or_define(
+                                      source_class => $joins[$i]->{'source_class'},
+                                      source_property_names => $joins[$i]->{'source_property_names'},
+                                      foreign_class => $joins[$i+1]->{'foreign_class'},
+                                      foreign_property_names => $joins[$i+1]->{'foreign_property_names'},
+                                      is_optional => $joins[$i]->{'is_optional'},
+                                      id => $joins[$i]->{id} . "->" . $joins[$i+1]->{id});
+                splice(@joins, $i, 2, $fixed_join);
+            }
+        }
 
         if ($joins[-1]{foreign_class}->isa("UR::Value")) {
             # the final join in a chain is often the link between a primitive value
@@ -350,15 +386,10 @@ sub _init_rdbms {
         my $last_class_object_excluding_inherited_joins;
         my $alias_for_property_value;
 
-        my $reverse_path = '';
-
         # one iteration per table between the start table and target
         while (my $object_join = shift @joins) { 
             $object_num++;
             my @joins_for_object = ($object_join);
-
-            $reverse_path .= '.' if $reverse_path;
-            $reverse_path .= $object_join->foreign_name_for_source;
 
             # one iteration per layer of inheritance for this object 
             # or per case of a join having additional filtering
@@ -366,12 +397,11 @@ sub _init_rdbms {
             while (my $join = shift @joins_for_object) { 
 
                 my $where = $join->{where};
-                
+
                 $current_inheritance_depth_for_this_target_join++;
 
                 my $foreign_class_name = $join->{foreign_class};
                 my $foreign_class_object = $join->{'foreign_class_meta'} || $foreign_class_name->__meta__;
-                
                 my $alias = $self->_add_join(
                         $delegated_property,
                         $join,
@@ -523,7 +553,7 @@ sub _init_rdbms {
             next if substr($column_name,0,1) eq '-';
 
             my $linkage_data = $condition->{$column_name};
-            my $expr_sql = (substr($column_name,0,1) eq " " ? $column_name : "${table_alias}.${column_name}");                                
+            my $expr_sql = (substr($column_name,0,1) eq " " ? $column_name : "${table_alias}.${column_name}");
             my @keys = qw/operator value_position value link_table_name link_column_name/;
             my ($operator, $value_position, $value, $link_table_name, $link_column_name) = @$linkage_data{@keys};
 
@@ -547,12 +577,12 @@ sub _init_rdbms {
                     return;
                 }
             }
-        } # next column                
+        } # next column
     } # next db join
 
     # build the WHERE clause by making a data structure which will be parsed outside of this module
     # special handling of different size lists, and NULLs, make a completely reusable SQL template very hard.
-    my @filter_specs;         
+    my @filter_specs;
     while (@sql_filters) {
         my $table_name = shift (@sql_filters);
         my $condition  = shift (@sql_filters);
@@ -580,22 +610,48 @@ sub _init_rdbms {
     } # next db filter
 
     $connect_by_clause = ''; 
+    my $recurse_resolution_by_iteration = 0;
     if ($recursion_desc) {
-        my ($this,$prior) = @{ $recursion_desc };
+        unless (ref($recursion_desc) eq 'ARRAY') {
+            Carp::croak("Recursion description must be an arrayref with exactly 2 items");
+        }
+        if (@$recursion_desc != 2) {
+            Carp::croak("Recursion description must contain exactly 2 items; got ".scalar(@$recursion_desc)
+                        . ': ' . join(', ',@$recursion_desc));
+        }
 
-        my $this_property_meta = $class_meta->property_meta_for_name($this);
-        my $prior_property_meta = $class_meta->property_meta_for_name($prior);
+        # Oracle supports "connect by" queries.
+        if ($ds->does_support_recursive_queries eq 'connect by') {
+            my ($this,$prior) = @{ $recursion_desc };
 
-        my $this_class_meta = $this_property_meta->class_meta;
-        my $prior_class_meta = $prior_property_meta->class_meta;
+            my $this_property_meta = $class_meta->property_meta_for_name($this);
+            unless ($this_property_meta) {
+                Carp::croak("Class ".$class_meta->class_name." has no property named '$this', named in the recursion description");
+            }
+            my $prior_property_meta = $class_meta->property_meta_for_name($prior);
+            unless ($prior_property_meta) {
+                Carp::croak("Class ".$class_meta->class_name." has no property named '$prior', named in the recursion description");
+            }
 
-        my $this_table_name = $this_class_meta->table_name;
-        my $prior_table_name = $prior_class_meta->table_name;
+            my $this_class_meta = $this_property_meta->class_meta;
+            my $prior_class_meta = $prior_property_meta->class_meta;
 
-        my $this_column_name = $this_property_meta->column_name || $this;
-        my $prior_column_name = $prior_property_meta->column_name || $prior;
+            my $this_table_name = $this_class_meta->table_name;
+            unless ($this_table_name) {
+                Carp::croak("Cannot resolve table name from class ".$class_meta->class_name." and property '$this', named in the recursion description");
+            }
+            my $prior_table_name = $prior_class_meta->table_name;
+            unless ($prior_table_name) {
+                Carp::croak("Cannot resolve table name from class ".$class_meta->class_name." and property '$prior', named in the recursion description");
+            }
 
-        $connect_by_clause = "connect by $this_table_name.$this_column_name = prior $prior_table_name.$prior_column_name\n";
+            my $this_column_name = $this_property_meta->column_name || $this;
+            my $prior_column_name = $prior_property_meta->column_name || $prior;
+
+            $connect_by_clause = "connect by $this_table_name.$this_column_name = prior $prior_table_name.$prior_column_name\n";
+        } else {
+            $recurse_resolution_by_iteration = 1;
+        }
     }    
 
     my @property_names_in_resultset_order;
@@ -617,7 +673,7 @@ sub _init_rdbms {
         # Q: - does it even make sense for the user to specify an order_by in the
         #    get() request for Set objects?  If so, then we need to concatonate these order_by_columns
         #    with the ones that already exist in $order_by_columns from the class data
-	# A: - yes, because group by means "return a list of subsets", and this lets you sort the subsets
+        # A: - yes, because group by means "return a list of subsets", and this lets you sort the subsets
         $order_by_columns = $ds->_select_clause_columns_for_table_property_data(@$db_property_data);
 
         $select_clause .= ', ' if $select_clause;
@@ -632,6 +688,7 @@ sub _init_rdbms {
         }
     }
 
+    my $order_by_non_column_data;
     if ($order_by = $rule_template->order_by) {
         # this is duplicated in _add_join
         my %order_by_property_names;
@@ -655,6 +712,7 @@ sub _init_rdbms {
         for my $name (@$order_by) {
             my $data = $order_by_property_names{$name};
             unless (ref($data)) {
+                $order_by_non_column_data = 1;
                 next;
             }
             push @data, $data;
@@ -681,8 +739,10 @@ sub _init_rdbms {
         connect_by_clause                           => $connect_by_clause,
         group_by_clause                             => $group_by_clause,
         order_by_columns                            => $order_by_columns,        
+        order_by_non_column_data                    => $order_by_non_column_data,
         filter_specs                                => \@filter_specs,
         sql_params                                  => \@sql_params,
+        recurse_resolution_by_iteration             => $recurse_resolution_by_iteration,
 
         # override defaults in the regular datasource $parent_template_data
         property_names_in_resultset_order           => \@property_names_in_resultset_order,
@@ -1128,7 +1188,7 @@ sub _resolve_db_joins_for_inheritance {
 }
 
 sub _resolve_object_join_data_for_property_chain {
-    my ($rule_template, $property_name) = @_;
+    my ($rule_template, $property_name,$join_label) = @_;
     my $class_meta = $rule_template->subject_class_name->__meta__;
     
     my @joins;
@@ -1137,6 +1197,26 @@ sub _resolve_object_join_data_for_property_chain {
 
     my @pmeta = $class_meta->property_meta_for_name($property_name);
 
+    my $last_class_meta = $class_meta;
+    for my $meta (@pmeta) {
+        #id is a special property that we want to look up, but isn't necessarily on a table
+        #so if it aliases another property, we look at that instead
+        if($meta->property_name eq 'id' and $meta->class_name eq 'UR::Object') {
+            my @id_properties = grep {$_->class_name ne 'UR::Object'} $last_class_meta->id_properties;
+            if(@id_properties == 1) {
+                $meta = $id_properties[0];
+                $last_class_meta = $meta->class_name->__meta__;
+                next;
+            }
+            Carp::croak "can't join to class " . $last_class_meta->class_name . " with multiple id properties";
+        }
+        if($meta->data_type and $meta->data_type =~ /::/) {
+            $last_class_meta = UR::Object::Type->get($meta->data_type);
+        } else {
+            $last_class_meta = UR::Object::Type->get($meta->class_name);
+        }
+        last unless $last_class_meta;
+    }
     # we can't actually get this from the joins because 
     # a bunch of optional things can be chained together to form
     # something non-optional
@@ -1145,10 +1225,11 @@ sub _resolve_object_join_data_for_property_chain {
         if (!$pmeta) {
             Carp::croak "Can't resolve joins for ".$rule_template->subject_class_name . " property '$property_name': No property metadata found for that class and property_name";
         }
-        push @joins, $pmeta->_resolve_join_chain();
+        push @joins, $pmeta->_resolve_join_chain($join_label);
         $is_optional = 1 if $pmeta->is_optional or $pmeta->is_many;
     }
 
+    return unless @joins;
     return ($joins[-1]->{source_name_for_foreign}, $is_optional, @joins)
 };
 
@@ -1175,8 +1256,10 @@ sub _init_light {
     my $recursion_desc = $rule_template->recursion_desc;
     my $recurse_property_on_this_row;
     my $recurse_property_referencing_other_rows;
+    my $recurse_resolution_by_iteration;
     if ($recursion_desc) {
         ($recurse_property_on_this_row,$recurse_property_referencing_other_rows) = @$recursion_desc;        
+        $recurse_resolution_by_iteration = ! $ds->does_support_recursive_queries;
     }        
     
     my $needs_further_boolexpr_evaluation_after_loading; 
@@ -1220,7 +1303,6 @@ sub _init_light {
     }
 
     for my $co ( $class_meta, @parent_class_objects ) {
-        my $type_name  = $co->type_name;
         my $class_name = $co->class_name;
         last if ( ($class_name eq 'UR::Object') or (not $class_name->isa("UR::Object")) );
         my @id_property_objects = $co->direct_id_property_metas;
@@ -1234,8 +1316,8 @@ sub _init_light {
         my @id_column_names =
             map { $_->column_name }
             @id_property_objects;
-        for my $property_name (sort keys %filters) {                
-            my $property = UR::Object::Property->get(type_name => $type_name, property_name => $property_name);                
+        for my $property_name (sort keys %filters) {
+            my $property = UR::Object::Property->get(class_name => $class_name, property_name => $property_name);
             next unless $property;
             my $operator       = $rule_template->operator_for($property_name);
             my $value_position = $rule_template->value_position_for_property_name($property_name);
@@ -1244,13 +1326,10 @@ sub _init_light {
             if ($property->is_legacy_eav) {
                 die "Old GSC EAV can be handled with a via/to/where/is_mutable=1";
             }
-            elsif ($property->is_transient) {
-                die "Query by transient property $property_name on $class_name cannot be done!";
-            }
             elsif ($property->is_delegated) {
                 push @delegated_properties, $property;
             }
-            elsif ($property->is_calculated) {
+            elsif ($property->is_calculated || $property->is_transient) {
                 $needs_further_boolexpr_evaluation_after_loading = 1;
             }
             else {
@@ -1280,7 +1359,7 @@ sub _init_light {
     for my $delegated_property (@delegated_properties) {
         my $last_alias_for_this_chain;
         my $property_name = $delegated_property->property_name;
-        my @joins = $delegated_property->_resolve_join_chain;
+        my @joins = $delegated_property->_resolve_join_chain($property_name);
         my $relationship_name = $delegated_property->via;
         unless ($relationship_name) {
            $relationship_name = $property_name;
@@ -1289,8 +1368,20 @@ sub _init_light {
 
         my $delegate_class_meta = $delegated_property->class_meta;
         my($via_accessor_meta) = $delegate_class_meta->_concrete_property_meta_for_class_and_name($relationship_name);
+        next unless $via_accessor_meta;
         my $final_accessor = $delegated_property->to;            
-        my($final_accessor_meta) = $via_accessor_meta->data_type->__meta__->_concrete_property_meta_for_class_and_name(
+
+        my $data_type = $via_accessor_meta->data_type;
+        unless ($data_type) {
+            Carp::croak "Can't resolve delegation for $property_name on class $class_name: via property $relationship_name has no data type";
+        }
+
+        my $data_type_meta = UR::Object::Type->get($via_accessor_meta->data_type);
+        unless ($data_type_meta) {
+            Carp::croak "No class meta data for " . $via_accessor_meta->data_type . 
+                " while resolving property $property_name on class $class_name";
+        }
+        my($final_accessor_meta) = $data_type_meta->_concrete_property_meta_for_class_and_name(
                                              $final_accessor
                                          );
         unless ($final_accessor_meta) {
@@ -1310,6 +1401,7 @@ sub _init_light {
             my $source_class_object = $join->{'source_class_meta'} || $source_class_name->__meta__;
 
             my $foreign_class_name = $join->{foreign_class};
+            next DELEGATED_PROPERTY if ($foreign_class_name->isa('UR::Value'));
             my $foreign_class_object = $join->{'foreign_class_meta'} || $foreign_class_name->__meta__;
             my($foreign_data_source) = $UR::Context::current->resolve_data_sources_for_class_meta_and_rule($foreign_class_object, $rule_template);
             if (! $foreign_data_source) {
@@ -1390,7 +1482,7 @@ sub _init_light {
                     map { [$foreign_class_object, $_, $alias, $object_num] }
                     sort { $a->property_name cmp $b->property_name }
                     grep { defined($_->column_name) && $_->column_name ne '' }
-                    UR::Object::Property->get( type_name => $foreign_class_object->type_name );
+                    UR::Object::Property->get( class_name => $foreign_class_name );
               
                 $joins_done{$join->{id}} = $alias;
                 
@@ -1451,6 +1543,7 @@ sub _init_light {
         recursion_desc                              => $rule_template->recursion_desc,
         recurse_property_on_this_row                => $recurse_property_on_this_row,
         recurse_property_referencing_other_rows     => $recurse_property_referencing_other_rows,
+        recurse_resolution_by_iteration             => $recurse_resolution_by_iteration,
         #loading_templates                           => $per_object_in_resultset_loading_detail,
         joins_across_data_sources                   => $joins_across_data_sources,
     );
@@ -1492,7 +1585,6 @@ sub _init_core {
 
     my $sub_typing_property                 = $class_data->{sub_typing_property};
     my $class_table_name                    = $class_data->{class_table_name};
-    #my @type_names_under_class_with_no_table= @{ $class_data->{type_names_under_class_with_no_table} };
     
     # individual query/boolexpr based
     
@@ -1555,7 +1647,6 @@ sub _init_core {
 
 #        $first_table_name ||= $table_name;
 
-        my $type_name  = $co->type_name;
         my $class_name = $co->class_name;
         
         last if ( ($class_name eq 'UR::Object') or (not $class_name->isa("UR::Object")) );
@@ -1590,16 +1681,16 @@ sub _init_core {
 #        }
 
         for my $property_name (sort keys %filters)
-        {                
-            my $property = UR::Object::Property->get(type_name => $type_name, property_name => $property_name);                
+        {
+            my $property = UR::Object::Property->get(class_name => $class_name, property_name => $property_name);
             next unless $property;
-            
+
             my $operator       = $rule_template->operator_for($property_name);
             my $value_position = $rule_template->value_position_for_property_name($property_name);
-            
+
             delete $filters{$property_name};
             $pk_used = 1 if $id_properties{ $property_name };
-            
+
 #            if ($property->can("expr_sql")) {
 #                my $expr_sql = $property->expr_sql;
 #                push @sql_filters, 
@@ -1611,7 +1702,7 @@ sub _init_core {
 #                        };
 #                next;
 #            }
-            
+
             if ($property->is_legacy_eav) {
                 die "Old GSC EAV can be handled with a via/to/where/is_mutable=1";
             }
@@ -1657,7 +1748,7 @@ sub _init_core {
         my $last_alias_for_this_chain;
     
         my $property_name = $delegated_property->property_name;
-        my @joins = $delegated_property->_resolve_join_chain;
+        my @joins = $delegated_property->_resolve_join_chain($property_name);
         #pop @joins if $joins[-1]->{foreign_class}->isa("UR::Value");
         my $relationship_name = $delegated_property->via;
         unless ($relationship_name) {
@@ -1774,7 +1865,7 @@ sub _init_core {
                     map { [$foreign_class_object, $_, $alias, $object_num] }
                     sort { $a->property_name cmp $b->property_name }
                     grep { defined($_->column_name) && $_->column_name ne '' }
-                    UR::Object::Property->get( type_name => $foreign_class_object->type_name );
+                    UR::Object::Property->get( class_name => $foreign_class_name );
               
                 $joins_done{$join->{id}} = $alias;
                 

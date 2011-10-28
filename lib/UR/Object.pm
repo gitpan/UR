@@ -8,7 +8,7 @@ require UR;
 use Scalar::Util;
 
 our @ISA = ('UR::ModuleBase');
-our $VERSION = "0.34"; # UR $VERSION;;
+our $VERSION = "0.35"; # UR $VERSION;;
 
 # Base object API 
 
@@ -135,7 +135,6 @@ sub __errors__ {
     my ($self,@property_names) = @_;
 
     my $class_object = $self->__meta__;
-    my $type_name = $class_object->type_name;
 
     unless (scalar @property_names) {
         @property_names = $class_object->all_property_names;    
@@ -617,8 +616,8 @@ sub DESTROY {
     # the cache_size_highwater mark is a valid value
     if ($UR::Context::destroy_should_clean_up_all_objects_loaded) {
         my $class = ref($obj);
-        if ($obj->__meta__->is_meta_meta or $obj->__changes__) {
-            my $obj_from_cache = delete $UR::Context::all_objects_loaded->{$class}{$obj->{id}};
+        my $obj_from_cache = delete $UR::Context::all_objects_loaded->{$class}{$obj->{id}};
+        if ($obj->__meta__->is_meta_meta or @{[$obj->__changes__]}) {
             die "Object found in all_objects_loaded does not match destroyed ref/id! $obj/$obj->{id}!" unless $obj eq $obj_from_cache;
             $UR::Context::all_objects_loaded->{$class}{$obj->{id}} = $obj;
             print "KEEPING $obj.  Found $obj .\n";

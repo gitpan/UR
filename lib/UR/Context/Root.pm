@@ -4,12 +4,11 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::Context::Root',
     is => ['UR::Singleton', 'UR::Context'],
-    english_name => 'ur context base',
     is_abstract => 1,
     is_transactional => 1,
     doc => 'A base level context, representing the committed state of datasources external to the application.',

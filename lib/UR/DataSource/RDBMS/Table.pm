@@ -4,12 +4,11 @@ use warnings;
 package UR::DataSource::RDBMS::Table;
 
 use UR;
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS::Table',
     is => ['UR::DataSource::RDBMS::Entity'],
-    english_name => 'dd table',
     dsmap => 'dd_table',
     id_properties => [qw/data_source owner table_name/],
     properties => [

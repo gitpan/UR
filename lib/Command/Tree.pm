@@ -5,7 +5,7 @@ use warnings;
 use UR;
 use File::Basename qw/basename/;
 
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 class Command::Tree {
     is => 'Command::V2',
@@ -23,6 +23,9 @@ sub resolve_class_and_params_for_argv {
         # delegate
         shift @argv;
         return $class_for_sub_command->resolve_class_and_params_for_argv(@argv);
+    }
+    elsif ( @argv == 1 and $argv[0] =~ /^(\-)?\-h(elp)?$/ ) { # HELP ME!
+        return ($self, { help => 1 });
     }
     else {
         # error

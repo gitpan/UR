@@ -7,7 +7,7 @@ require UR;
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.34"; # UR $VERSION;;
+our $VERSION = "0.35"; # UR $VERSION;;
 our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
 
 sub is_direct {
@@ -41,6 +41,7 @@ sub _data_type_as_class_name {
             if ($self->via or $self->to) {
                 my @joins = UR::Object::Join->resolve_chain(
                     $self->class_name,
+                    $self->property_name,
                     $self->property_name,
                 );
                 $foreign_class = $joins[-1]->foreign_class;
@@ -132,6 +133,48 @@ sub table_and_column_name_for_property {
 
     # This property has no column anywhere in the class' inheritance
     return;
+}
+
+
+# Return true if resolution of this property involves an ID property of
+# any class.
+sub _involves_id_property {
+    my $self = shift;
+
+    my $is_id = $self->is_id;
+    return 1 if defined($is_id);
+
+    if ($self->id_by) {
+        my $class_meta = $self->class_meta;
+        my $id_by_list = $self->id_by;
+        foreach my $id_by ( @$id_by_list ) {
+            my $id_by_meta = $class_meta->property_meta_for_name($id_by);
+            return 1 if ($id_by_meta and $id_by_meta->_involves_id_property);
+        }
+    }
+
+    if ($self->via) {
+        my $via_meta = $self->via_property_meta;
+        return 1 if ($via_meta and $via_meta->_involves_id_property);
+
+        if ($self->to) {
+            my $to_meta = $self->to_property_meta;
+            return 1 if ($to_meta and $to_meta->_involves_id_property);
+
+            if ($self->where) {
+                unless ($to_meta) {
+                    Carp::confess("No to_meta for $self->{id}");
+                }
+                my $other_class_meta = $to_meta->class_meta;
+                my $where = $self->where;
+                for (my $i = 0; $i < @$where; $i += 2) {
+                    my $where_meta = $other_class_meta->property_meta_for_name($where->[$i]);
+                    return 1 if ($where_meta and $where_meta->_involves_id_property);
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 
@@ -242,17 +285,22 @@ sub _get_direct_join_linkage {
 
 sub _resolve_join_chain {
     my $self = shift;
+    my $join_label = shift;
+
+    $join_label ||= $self->property_name;
+
     return UR::Object::Join->resolve_chain(
         $self->class_name,
         $self->property_name,
+        $join_label,
     );
 }
 
 sub label_text {
     # The name of the property in friendly terms.
     my ($self,$obj) = @_;
-    my $attribute_name = $self->attribute_name;
-    my @words = App::Vocabulary->filter_vocabulary(map { ucfirst(lc($_)) } split(/\s+/,$attribute_name));
+    my $property_name = $self->property_name;
+    my @words = App::Vocabulary->filter_vocabulary(map { ucfirst(lc($_)) } split(/\s+/,$property_name));
     my $label = join(" ", @words);
     return $label;
 }

@@ -11,7 +11,7 @@ use Getopt::Long;
 use Command::View::DocMethods;
 use Command::Dispatch::Shell;
 
-our $VERSION = "0.34"; # UR $VERSION;
+our $VERSION = "0.35"; # UR $VERSION;
 
 our $entry_point_class;
 our $entry_point_bin;
@@ -20,6 +20,7 @@ UR::Object::Type->define(
     class_name => __PACKAGE__,
     is => 'Command',
     is_abstract => 1,
+    subclass_description_preprocessor => 'Command::V2::_preprocess_subclass_description',
     attributes_have => [
         is_param            => { is => 'Boolean', is_optional => 1 },        
         is_input            => { is => 'Boolean', is_optional => 1 },
@@ -34,10 +35,33 @@ UR::Object::Type->define(
     has_optional => [
         is_executed => { is => 'Boolean' },
         result      => { is => 'Scalar', is_output => 1 },
+        _total_command_count => { is => 'Integer', default => 0, is_transient => 1 },
+        _command_errors => { 
+            is => 'HASH',
+            doc => 'Values can be an array ref is multiple errors occur during a command\'s execution',
+            default => {},
+            is_transient => 1,
+        },
     ],
 );
 
 sub _is_hidden_in_docs { return; }
+
+sub _preprocess_subclass_description {
+    my ($class, $desc) = @_;
+    while (my ($prop_name, $prop_desc) = each(%{ $desc->{has} })) {
+        unless (
+            $prop_desc->{'is_param'} 
+            or $prop_desc->{'is_input'} 
+            or $prop_desc->{'is_transient'}
+            or $prop_desc->{'is_calculated'},
+            or $prop_desc->{'is_output'} 
+        ) {
+            $prop_desc->{'is_param'} = 1;
+        }
+    }
+    return $desc;
+}
 
 sub _init_subclass {
     # Each Command subclass has an automatic wrapper around execute().
@@ -56,6 +80,33 @@ sub _init_subclass {
     else {
         #print "no execute in $subclass_name\n";
     }
+
+    if($subclass_name->can('shortcut')) {
+        my $new_symbol = "${subclass_name}::_shortcut_body";
+        my $old_symbol = "${subclass_name}::shortcut";
+        *$new_symbol = *$old_symbol;
+        undef *$old_symbol;
+    }
+
+    my @p = $subclass_name->__meta__->properties();
+    my @e;
+    for my $p (@p) {
+        next if $p->property_name eq 'id';
+        next if $p->class_name eq __PACKAGE__;
+        unless ($p->is_input or $p->is_output or $p->is_param or $p->is_transient or $p->is_calculated) {
+            my $modname = $subclass_name;
+            $modname =~ s|::|/|g;
+            $modname .= '.pm';
+            push @e, $modname . " property " . $p->property_name . " must be input, output, param, transient, or calculated!";  
+        }
+    }
+    if (@e) {
+        for (@e) {
+            $subclass_name->error_message($_); 
+        }
+        die "command classes like $subclass_name  have properties without is_input/output/param/transient/calculated set!";
+    }
+
     return 1;
 }
 
@@ -81,12 +132,44 @@ sub create {
 
 sub __errors__ {
     my ($self,@property_names) = @_;
-    return ($self->SUPER::__errors__);
+    my @errors1 =($self->SUPER::__errors__);
+
+    if ($self->is_executed) {
+        return @errors1;
+    }
+
+    # for Commands which have not yet been executed, 
+    # only consider errors on inputs or params
+
+    my $meta = $self->__meta__;
+    my @errors2;
+    ERROR:
+    for my $e (@errors1) {
+        for my $p ($e->properties) {
+            my $pm = $meta->property($p);
+            if ($pm->is_input or $pm->is_param) {
+                push @errors2, $e;
+                next ERROR;
+            }
+        }
+    }
+
+    return @errors2;
 }
 
 # For compatability with Command::V1 callers
 sub is_sub_command_delegator {
     return;
+}
+
+sub shortcut {
+    my $self = shift;
+    return unless $self->can('_shortcut_body');
+
+    my $result = $self->_shortcut_body;
+    $self->result($result);
+
+    return $result;
 }
 
 sub execute {
@@ -168,6 +251,59 @@ sub exit_code_for_return_value {
     return $return_value;
 }
 
+
+sub display_command_summary_report {
+    my $self = shift;
+    my $total_count = $self->_total_command_count;
+    my %command_errors = %{$self->_command_errors};
+
+    if (keys %command_errors) {
+        $self->status_message("\n\nErrors Summary:");
+        for my $key (keys %command_errors) {
+            my $errors = $command_errors{$key};
+            $errors = [$errors] unless (ref($errors) and ref($errors) eq 'ARRAY');
+            my @errors = @{$errors};
+            print "$key: \n";
+            for my $error (@errors) {
+                $error = $self->truncate_error_message($error);
+                print "\t- $error\n";
+            }
+        }
+    }
+
+    if ($total_count > 1) {
+        my $error_count = scalar(keys %command_errors);
+        $self->status_message("\n\nCommand Summary:");
+        $self->status_message(" Successful: " . ($total_count - $error_count));
+        $self->status_message("     Errors: " . $error_count);
+        $self->status_message("      Total: " . $total_count);
+    }
+}
+
+sub append_error {
+    my $self = shift;
+    my $key = shift || die;
+    my $error = shift || die;
+
+    my $command_errors = $self->_command_errors;
+    push @{$command_errors->{$key}}, $error;
+    $self->_command_errors($command_errors);
+
+    return 1;
+}
+
+sub truncate_error_message {
+    my $self = shift;
+    my $error = shift || die;
+
+    # truncate errors so they are actually a summary
+    ($error) = split("\n", $error);
+
+    # meant to truncate a callstack as this is meant for user/high-level
+    $error =~ s/\ at\ \/.*//;
+
+    return $error;
+}
 
 #
 # Implement error_mesage/warning_message/status_message in a way

@@ -4,7 +4,7 @@ use warnings;
 use strict;
 require UR;
 
-our $VERSION = "0.34"; # UR $VERSION;;
+our $VERSION = "0.35"; # UR $VERSION;;
 
 class UR::Object::View::Aspect {
     id_by => [
@@ -223,6 +223,7 @@ no warnings;
         my $aspect_param_name = (ref($aspect_params) ?  $aspect_params->{name} : $aspect_params);
         my $aspect_property_meta = $aspect_meta->property($aspect_param_name);
         no strict; no warnings;
+        next if (!$aspect_property_meta or !$property_meta);
         if ($aspect_property_meta->reverse_as() eq $name) {
             
         }
