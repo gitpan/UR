@@ -5,7 +5,7 @@ package UR::Object;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 use Data::Dumper;
 use Scalar::Util qw(blessed);
@@ -216,53 +216,33 @@ sub create_subscription  {
 
     # parse parameters
     my ($class,$id,$method,$callback,$note,$priority);
-    $class = $self->class;
-    $method = delete $params{method};
-    $callback = delete $params{callback};
-    $note = delete $params{note};
-    $priority = delete $params{priority};
-    unless (defined($priority)) {
-        $priority = 1;
-    }
-    if (exists $params{id}) {
-        $id = delete $params{id};
-    }
-    elsif (ref($self)) {
-        $id = $self->id;
+
+    my %observer_params;
+    @observer_params{'aspect','callback','note','priority','subject_id'} = delete @params{'method','callback','note','priority','id'};
+    $observer_params{'subject_class_name'} = $self->class;
+    $observer_params{'priority'} = 1 unless defined $observer_params{'priority'};
+    if (!defined $observer_params{'subject_id'} and ref($self)) {
+        $observer_params{'subject_id'} = $self->id;
     }
 
     if (my @unknown = keys %params) {
         Carp::croak "Unknown options @unknown passed to create_subscription!";
     }
 
-    # print STDOUT "Caught subscription class $class id $id property $property callback $callback $note\n";
-
     # validate
     if (my @bad_params = %params) {
         Carp::croak "Bad params passed to add_listener: @bad_params";
     }
 
-    # Allow the class to know that it is getting a subscription.
-    # It may choose to turn on/off optimizations depending on whether anyone is watching it.
-    # It may also reject all subscriptions because it knows it is too busy to signal changes.
-    unless($class->validate_subscription($method,$id,$callback)) {
-        #$DB::single = 1;
-        $class->validate_subscription($method,$id,$callback);
-        Carp::croak("Failed to validate requested subscription: @_\n");
-        return 0; # If/when the above is removed.
-    }
-
-    # Handle global subscriptions.
-    $class = undef if ($class eq __PACKAGE__);
-
-    # Record amd return the subscription.
-    no warnings;
-    push @{ $UR::Context::all_change_subscriptions->{$class}->{$method}->{$id} }, [$callback,$note,$priority];
-    return [$class,$id,$method,$callback,$note];
+    my $observer = UR::Observer->create(%observer_params);
+    return unless $observer;
+    return [@observer_params{'subject_class_name','subject_id','aspect','callback','note'}];
 }
 
 sub validate_subscription
 {
+    return 1;
+
     my ($self,$subscription_property) = @_;
 
     Carp::confess("The _create_object and _delete_object signals are no longer emitted!") 
@@ -281,6 +261,8 @@ sub validate_subscription
     {
         return 1 if $property eq $subscription_property;
     }
+
+    return 1 if ($class_object->_is_valid_signal($subscription_property));
 
     # Bad subscription request.
     return;
@@ -317,80 +299,30 @@ sub cancel_change_subscription ($@)
         die "Bad parameters.";
     }
 
-    # Handle global subscriptions.  Subscriptions to UR::Object affect all objects.
-    # This can be removed when the __signal_change__ method uses inheritance.
-
-    $class = undef if ($class eq __PACKAGE__);
-
-    # Look for the callback
-
-    $class = '' if not defined $class;
-    $property = '' if not defined $property;
-    $id = '' if not defined $id;
-
-    my $arrayref = $UR::Context::all_change_subscriptions->{$class}->{$property}->{$id};
-    return unless $arrayref;   # This thing didn't have a subscription in the first place
-    my $index = 0;
-
-    while ($index < @$arrayref)
-    {
-        my ($cancel_callback, $note) = @{ $arrayref->[$index] };
-
-        if
-        (
-            (not defined($callback))
-            or
-            ($callback eq $cancel_callback)
-            or
-            (defined $note && $note =~ $callback)
-        )
-        {
-            # Remove the callback from the subscription list.
-
-            my $found = splice(@$arrayref,$index,1);
-            #die "Bad splice $found $index @$arrayref!" unless $found eq $arrayref->[$index];
-
-            # Prune the $all_change_subscriptions hash tree.
-
-            #print STDOUT Dumper($UR::Context::all_change_subscriptions);
-
-            if (@$arrayref == 0)
-            {
-                $arrayref = undef;
-
-                delete $UR::Context::all_change_subscriptions->{$class}->{$property}->{$id};
-
-                if (keys(%{ $UR::Context::all_change_subscriptions->{$class}->{$property} }) == 0)
-                {
-                    delete $UR::Context::all_change_subscriptions->{$class}->{$property};
-                }
-            }
-
-            #print STDOUT Dumper($UR::Context::all_change_subscriptions);
-
-            # Tell the class that a subscription has been cancelled, if it cares
-            # (most classes do not impliment this, and the default UR::Object version is ignored.
-
-            unless($class eq '' || $class->inform_subscription_cancellation($property,$id,$callback))
-            {
-                Carp::confess("Failed to validate requested subscription cancellation: @_\n");
-                return 0; # If/when the above is removed.
-            }
-
-            # Return a ref to the callback removed.  This is "true", but better than true.
-
-            return $found;
-        }
-        else
-        {
-            # Increment only if we did not splice-out a value.
-            $index++;
-        }
+    my %params;
+    if (defined $class) {
+        $params{'subject_class_name'} = $class;
+    }
+    if (defined $id) {
+        $params{'subject_id'} = $id;
+    }
+    if (defined $property) {
+        $params{'aspect'} = $property;
+    }
+    if (defined $callback) {
+        $params{'callback'} = $callback;
+    }
+    if (defined $note) {
+        $params{'note'} = $note;
     }
 
-    # Return nothing if we found no subscription.
-
-    return;
+    my @observers = UR::Observer->get(%params);
+    return unless @observers;
+    if (@observers > 1) {
+        Carp::croak('Matched more than one observer within cancel_change_subscription().  Params were: '
+                    . join(', ', map { "$_ => " . $params{$_} } keys %params));
+    }
+    $observers[0]->delete();
 }
 
 # This should go away when we shift to fully to a transaction log for deletions.
@@ -400,6 +332,177 @@ sub ghost_class {
     $class = $class . '::Ghost';
     return $class;
 }
+
+
+package UR::ModuleBase;
+# Method for setting a callback using the old, non-command messaging API
+
+=pod
+
+=item message_callback
+
+  $sub_ref = UR::ModuleBase->message_callback($type);
+  UR::ModuleBase->message_callback($type, $sub_ref);
+
+This method returns and optionally sets the subroutine that handles
+messages of a specific type.
+
+=cut
+
+## set or return a callback that has been created for a message type
+sub message_callback
+{
+    my $self = shift;
+    my ($type, $callback) = @_;
+
+    my $methodname = $type . '_messages_callback';
+
+    if (!$callback) {
+        # to clear the old, deprecated non-command messaging API callback
+        return UR::Object->$methodname($callback);
+    }
+
+    my $wrapper_callback = sub {
+        my($obj,$msg) = @_;
+
+        my $obj_class = $obj->class;
+        my $obj_id = (ref($obj) ? ($obj->can("id") ? $obj->id : $obj) : $obj);
+
+        my $msgdata = $self->_get_msgdata();
+        my $message_object = UR::ModuleBase::Message->create
+            (
+                text         => $msg,
+                level        => 1,
+                package_name => $msgdata->{$type . '_package'},
+                call_stack   => ($type eq "error" ? _current_call_stack() : []),
+                time_stamp   => time,
+                type         => $type,
+                owner_class  => $obj_class,
+                owner_id     => $obj_id,
+            );
+        $callback->($message_object, $obj, $type);
+        $_[1] = $message_object->text;
+    };
+
+    # To support the old, deprecated, non-command messaging API
+    UR::Object->$methodname($wrapper_callback);
+}
+
+sub message_object
+{
+    my $self = shift;
+    # see how we were called
+    if (@_ < 2)
+    {
+        no strict 'refs';
+        # return the message object
+        my ($type) = @_;
+        my $method = $type . '_message';
+        my $msg_text = $self->method();
+        my $obj_class = $self->class;
+        my $obj_id = (ref($self) ? ($self->can("id") ? $self->id : $self) : $self);
+        my $msgdata = $self->_get_msgdata();
+        return UR::ModuleBase::Message->create
+            (
+                text         => $msg_text,
+                level        => 1,
+                package_name => $msgdata->{$type . '_package'},
+                call_stack   => ($type eq "error" ? _current_call_stack() : []),
+                time_stamp   => time,
+                type         => $type,
+                owner_class  => $obj_class,
+                owner_id     => $obj_id,
+            );
+    }
+}
+
+foreach my $type ( UR::ModuleBase->message_types ) {
+     my $retriever_name = $type . '_text';
+     my $compat_name = $type . '_message';
+     my $sub = sub {
+         my $self = shift;
+         return $self->$compat_name();
+     };
+
+     no strict 'refs';
+     *$retriever_name = $sub;
+}
+
+
+# class that stores and manages messages for the deprecated API
+package UR::ModuleBase::Message;
+
+use Scalar::Util qw(weaken);
+
+##- use UR::Util;
+UR::Util->generate_readonly_methods
+(
+    text         => undef,
+    level        => undef,
+    package_name => undef,
+    call_stack   => [],
+    time_stamp   => undef,
+    owner_class  => undef,
+    owner_id     => undef,
+    type         => undef,
+);
+
+sub create
+{
+    my $class = shift;
+    my $obj = {@_};
+    bless ($obj,$class);
+   weaken $obj->{'owner_id'} if (ref($obj->{'owner_id'}));
+
+    return $obj;
+}
+
+sub owner
+{
+    my $self = shift;
+    my ($owner_class,$owner_id) = ($self->owner_class, $self->owner_id);
+    if (not defined($owner_id))
+    {
+        return $owner_class;
+    }
+    elsif (ref($owner_id))
+    {
+        return $owner_id;
+    }
+    else
+    {
+        return $owner_class->get($owner_id);
+    }
+}
+
+sub string
+{
+    my $self = shift;
+    "$self->{time_stamp} $self->{type}: $self->{text}\n";
+}
+
+sub _stack_item_params
+{
+    my ($self, $stack_item) = @_;
+    my ($function, $parameters, @parameters);
+
+    return unless ($stack_item =~ s/\) called at [^\)]+ line [^\)]+\s*$/\)/);
+
+    if ($stack_item =~ /^\s*([^\(]*)(.*)$/)
+    {
+        $function = $1;
+        $parameters = $2;
+        @parameters = eval $parameters;
+        return ($function, @parameters);
+    }
+    else
+    {
+        return;
+    }
+}
+
+package UR::Object;
+
 
 1;
 

@@ -7,7 +7,7 @@ package UR::Object::Type;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 use Carp ();
 use Sub::Name ();
@@ -331,7 +331,12 @@ sub initialize_bootstrap_classes
     $bootstrapping = 0;
 
     # It should be safe to set up callbacks now.
-    UR::Object::Property->create_subscription(callback => \&UR::Object::Type::_property_change_callback);
+    # __define__ instead of create() so a subsequent rollback won't remove the observer
+    # and since we're in bootstrapping time, we have to supply an ID.  The UUID generator
+    # doesn't require any outside info, so it's safe to use
+    UR::Observer->__define__(id => UR::Object::Type->autogenerate_new_object_id_uuid,
+                             subject_class_name => 'UR::Object::Property',
+                             callback => \&UR::Object::Type::_property_change_callback);
 }
 
 sub _normalize_class_description {
@@ -418,6 +423,7 @@ sub _normalize_class_description_impl {
         [ id_generator           => qw/id_sequence_generator_name/],
         [ subclassify_by_version => qw//],        
         [ meta_class_name        => qw//],
+        [ valid_signals          => qw//],
     ) {        
         my ($primary_field_name, @alternate_field_names) = @$mapping;                
         my @all_fields = ($primary_field_name, @alternate_field_names);
@@ -489,6 +495,17 @@ sub _normalize_class_description_impl {
 
     unless ($new_class{'doc'}) {
         $new_class{'doc'} = undef;
+    }
+
+    if ($new_class{'valid_signals'}) {
+        if (!ref($new_class{'valid_signals'})) {
+            # If it's a plain string, wrap it into an arrayref
+            $new_class{'valid_signals'} = [ $new_class{'valid_signals'} ];
+        } elsif (ref($new_class{'valid_signals'}) ne 'ARRAY') {
+            Carp::confess("The 'valid_signals' metadata for class $class_name must be an arrayref");
+        }
+    } else {
+        $new_class{'valid_signals'} = [];
     }
   
     for my $field (qw/is id_by has relationships constraints/) {
@@ -752,8 +769,8 @@ sub _normalize_class_description_impl {
                     $inherited_copy = UR::Util::deep_copy($parent_property_data);
                 }
                 $inherited_copy->{class_name} = $class_name;
-                my $a = $inherited_copy->{overrides_class_names} ||= [];
-                push @$a, $parent_property_data->{class_name};
+                my $override = $inherited_copy->{overrides_class_names} ||= [];
+                push @$override, $parent_property_data->{class_name};
             }
         }
     }
@@ -1002,26 +1019,23 @@ sub _normalize_property_description1 {
         [ singular_name                   => qw//],
         [ plural_name                     => qw//],
     ) {
-        my ($primary_field_name, @alternate_field_names) = @$mapping;
-        my @all_fields = ($primary_field_name, @alternate_field_names);
+        my $primary_field_name = $mapping->[0];
 
-        my @keys = grep { exists $old_property{$_} } @all_fields;
-        if (@keys > 1) {
-            Carp::croak("Invalid class definition for $class_name in property '$property_name'.  The keys "
-                        . join(', ',@keys) . " are all synonyms for $primary_field_name");
-
+        my $found_key;
+        foreach my $key ( @$mapping ) {
+            if (exists $old_property{$key}) {
+                if ($found_key) {
+                    my @keys = grep { exists $old_property{$_} }  @$mapping;
+                    Carp::croak("Invalid class definition for $class_name in property '$property_name'.  The keys "
+                                . join(', ',$found_key,@keys) . " are all synonyms for $primary_field_name");
+                }
+                $found_key = $key;
+            }
         }
-        my @values = grep { defined } delete @old_property{@all_fields};
-        if (@keys == 1) {
-            $new_property{$primary_field_name} = $values[0];
-        }
 
-        # Fill in default values for metadata that is missing
-        if (
-            (not exists $new_property{$primary_field_name}) 
-            and 
-            (exists $UR::Object::Property::defaults{$primary_field_name}) 
-        ) {
+        if ($found_key) {
+            $new_property{$primary_field_name} = delete $old_property{$found_key};
+        } elsif (exists $UR::Object::Property::defaults{$primary_field_name}) {
             $new_property{$primary_field_name} = $UR::Object::Property::defaults{$primary_field_name};
         }
     }
@@ -1389,7 +1403,7 @@ sub _complete_class_meta_object_definitions {
     }
     
     # make old-style (bc4nf) property objects in the default way
-    my @property_objects;
+    my %property_objects;
     
     for my $pinfo (values %$properties) {                        
         my $property_name       = $pinfo->{property_name};
@@ -1443,7 +1457,7 @@ sub _complete_class_meta_object_definitions {
             return;
         }
         
-        push @property_objects, $property_object;
+        $property_objects{$property_name} =  $property_object;
         push @subordinate_objects, $property_object;
     }
 
@@ -1523,6 +1537,8 @@ sub _complete_class_meta_object_definitions {
     my $src2 = qq|sub ${class_name}::inheritance { $src1 }|;
     eval $src2  unless $class_name eq 'UR::Object';
     die $@ if $@;
+
+    $self->{'_property_meta_for_name'} = \%property_objects;
 
     # return the new class object
     return $self;
@@ -1638,7 +1654,10 @@ sub generate {
     if ($data_source_obj) {
         $columns_are_upper_case = $data_source_obj->table_and_column_names_are_upper_case;
     }
-    for my $property_object (sort { $a->property_name cmp $b->property_name } @property_objects) {
+
+    my @sort_list = map { [$_->property_name, $_] } @property_objects;
+    for my $sorted_item ( sort { $a->[0] cmp $b->[0] } @sort_list ) {
+        my $property_object = $sorted_item->[1];
         if ($property_object->column_name) {
             push @$props, $property_object->property_name;
             push @$cols, $columns_are_upper_case ? uc($property_object->column_name) : $property_object->column_name;

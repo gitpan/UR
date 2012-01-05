@@ -3,7 +3,7 @@ package UR::Object::Set;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 our @CARP_NOT = qw( UR::Object::Type );
 
@@ -18,7 +18,7 @@ class UR::Object::Set {
         rule                => { is => 'UR::BoolExpr', id_by => 'id' },
         rule_display        => { is => 'Text', via => 'rule', to => '__display_name__'},
         member_class_name   => { is => 'Text', via => 'rule', to => 'subject_class_name' },
-        members             => { is => 'UR::Object', is_many => 1 }
+        members             => { is => 'UR::Object', is_many => 1, is_calculated => 1 }
     ],
     doc => 'an unordered group of distinct UR::Objects'
 };

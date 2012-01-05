@@ -6,7 +6,7 @@ use Sub::Name;
 use Scalar::Util;
 
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 use UR::Context::ImportIterator;
 use UR::Context::ObjectFabricator;
@@ -294,10 +294,9 @@ sub infer_property_value_from_rule {
     }
 }
 
-our $sig_depth = 0;
-# These are things that use __signal_change__ to emit a message to callbacks, but aren't actually changes
+# These are things that are changes to the program state, but not changes to the object instance
+# so they shouldn't be counted in the object's change_count
 my %changes_not_counted = map { $_ => 1 } qw(load define unload query connect);
-my %subscription_classes;
 sub add_change_to_transaction_log {
     my ($self,$subject, $property, @data) = @_;
 
@@ -337,9 +336,22 @@ sub add_change_to_transaction_log {
             }
         }
     }
+}
 
-    # Before firing signals, we must update indexes to reflect the change.
-    # This is currently a standard callback.
+our $sig_depth = 0;
+my %subscription_classes;
+sub send_notification_to_observers {
+    my ($self,$subject, $property, @data) = @_;
+
+    my ($class,$id);
+    if (ref($subject)) {
+        $class = ref($subject);
+        $id = $subject->id;
+    } else {
+        $class = $subject;
+        $subject = undef;
+        $id = undef;
+    }
 
     my $check_classes = $subscription_classes{$class};
     unless ($check_classes) {
@@ -356,27 +368,13 @@ sub add_change_to_transaction_log {
     my @check_properties    = ($property    ? ($property, '')    : ('') );
     my @check_ids           = (defined($id) ? ($id, '')          : ('') );
 
-    #my @per_class  = grep { defined $_ } @$all_change_subscriptions{@check_classes};
-    #my @per_method = grep { defined $_ } map { @$_{@check_properties} } @per_class;
-    #my @per_id     = grep { defined $_ } map { @$_{@check_ids} } @per_method;
-    #my @matches = map { @$_ } @per_id;
-
     my @matches =
         map { @$_ }
-        grep { defined $_ } map { @$_{@check_ids} }
+        grep { defined $_ } map { defined($id) ? @$_{@check_ids} : values(%$_) }
         grep { defined $_ } map { @$_{@check_properties} }
         grep { defined $_ } @$UR::Context::all_change_subscriptions{@$check_classes};
 
     return unless @matches;
-
-    #Carp::cluck() unless UR::Object::Subscription->can("class");
-    #my @s = UR::Object::Subscription->get(
-    ##    monitor_class_name => \@check_classes,
-    #    monitor_method_name => \@check_properties,
-    #    monitor_id => \@check_ids,
-    #);
-
-    #print STDOUT "fire __signal_change__: class $class id $id method $property data @data -> \n" . join("\n", map { "@$_" } @matches) . "\n";
 
     $sig_depth++;
     if (@matches > 1) {
@@ -384,7 +382,6 @@ sub add_change_to_transaction_log {
         @matches = sort { $a->[2] <=> $b->[2] } @matches;
     };
     
-    #print scalar(@matches) . " index matches\n";
     foreach my $callback_info (@matches) {
         my ($callback, $note) = @$callback_info;
         $callback->($subject, $property, @data)
@@ -471,7 +468,10 @@ sub query {
 
     # This is here for bootstrapping reasons: we must be able to load class singletons
     # in order to have metadata for regular loading....
-    if (!$rule->has_meta_options and ($class->isa("UR::Object::Type") or $class->isa("UR::Singleton") or $class->isa("UR::Value"))) {
+    # UR::DataSource::QueryPlan isa UR::Value (which has custom loading logic), but we need to be able to generate
+    # a QueryPlan independant of the normal loading process, otherwise there'd be endless recursion (Can't generate a QueryPlan
+    # for a QueryPlan without generating a QueryPlan first....)
+    if (!$rule->has_meta_options and ($class->isa("UR::Object::Type") or $class->isa("UR::Singleton") or $class->isa("UR::DataSource::QueryPlan"))) {
         my $normalized_rule = $rule->normalize;
         my @objects = $class->_load($normalized_rule);
         
@@ -2812,11 +2812,20 @@ sub _reverse_all_changes {
                     }
                     delete $object->{'_change_count'};
                 }
+                elsif ($object->isa('UR::DeletedRef')) {
+                    # DeletedRefs can appear if un-doing some items causes others in @$objects_this_class
+                    # to get deleted because of observers of their own.  Skip these
+                    1;
+                }
                 else {
                     # Object not in database, get rid of it.
                     # Because we only go back to the last sync not (not last commit),
                     # this no longer has to worry about rolling back an uncommitted database save which may have happened.
-                    UR::Object::delete($object);
+                    if ($object->isa('UR::Observer')) {
+                        UR::Observer::delete($object);  # Observers have some state that needs to get cleaned up
+                    } else {
+                        UR::Object::delete($object);
+                    }
                 }
 
             } # next non-ghost object
@@ -3385,6 +3394,38 @@ to being off, and must be explicitly turned on with this method.
 
 =back
 
+=head1 Custom observer aspects
+
+UR::Context sends signals for observers watching for some non-standard aspects.
+
+=over 2
+
+=item precommit
+
+After C<commit()> has been called, but before any changes are saved to the
+data sources.  The only parameters to the Observer's callback are the Context
+object and the aspect ("precommit").
+
+=item commit
+
+After C<commit()> has been called, and after an attempt has been made to save
+the changes to the data sources.  The parameters to the callback are the
+Context object, the aspect ("commit"), and a boolean value indicating whether
+the commit succeeded or not.
+
+=item prerollback
+
+After C<rollback()> has been called, but before and object state is reverted.
+
+=item rollback
+
+After C<rollback()> has been called, and after an attempt has been made to
+revert the state of all the loaded objects.  The parameters to the callback
+are the Context object, the aspect ("rollback"), and a boolean value
+indicating whether the rollback succeeded or not.
+
+=back
+
 =head1 Data Concurrency
 
 Currently, the Context is optimistic about data concurrency, meaning that 
@@ -3807,7 +3848,7 @@ soon as possible by calling C<__weaken__>.
 =head1 SEE ALSO
 
 L<UR::Context::Root>, L<UR::Context::Process>, L<UR::Object>,
-L<UR::DataSource>, L<UR::Object::Ghost>
+L<UR::DataSource>, L<UR::Object::Ghost>, L<UR::Observer>
 
 =cut
 

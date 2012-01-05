@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 class UR::Object::Type::View::AvailableViews::Xml {
     is => 'UR::Object::View::Default::Xml',
@@ -23,6 +23,30 @@ sub _generate_content {
     $self->_xml_doc($xml_doc);
 
     my $target_class = $subject->class_name;
+
+    my %perspectives = $self->_find_perspectives($target_class);
+
+    my $perspectives = $xml_doc->createElement('perspectives');
+    $xml_doc->setDocumentElement($perspectives);
+
+    for my $key (sort keys %perspectives) {
+        my $perspective = $perspectives->addChild( $xml_doc->createElement('perspective') );
+        $perspective->addChild( $xml_doc->createAttribute('name', $key) );
+
+        for my $tool_key (sort keys %{$perspectives{$key}}) {
+            my $toolkit = $perspective->addChild( $xml_doc->createElement('toolkit'));
+            $toolkit->addChild( $xml_doc->createAttribute('name', $tool_key));
+        }
+    }
+
+    $perspectives->addChild( $xml_doc->createAttribute( 'type', $target_class ));
+
+    return $xml_doc->toString(1);
+}
+
+sub _find_perspectives {
+    my $self = shift;
+    my $target_class = shift;
 
     my %perspectives;
     for my $class ($target_class, $target_class->inheritance) {
@@ -55,20 +79,7 @@ sub _generate_content {
         }
     }
 
-    my $perspectives = $xml_doc->createElement('perspectives');
-    $xml_doc->setDocumentElement($perspectives);
-
-    for my $key (sort keys %perspectives) {
-        my $perspective = $perspectives->addChild( $xml_doc->createElement('perspective') );
-        $perspective->addChild( $xml_doc->createAttribute('name', $key) );
-
-        for my $tool_key (sort keys %{$perspectives{$key}}) {
-            my $toolkit = $perspective->addChild( $xml_doc->createElement('toolkit'));
-            $toolkit->addChild( $xml_doc->createAttribute('name', $tool_key));
-        }
-    }
-
-    return $xml_doc->toString(1);
+    return %perspectives;
 }
 
 1;

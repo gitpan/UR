@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Pg',
@@ -31,6 +31,14 @@ sub owner { shift->_singleton_object->login }
 #    undef
 #}
 
+sub _default_sql_like_escape_string { return '\\\\' };
+
+sub _format_sql_like_escape_string {
+    my $class = shift;
+    my $escape = shift;
+    return "E'$escape'";
+}
+
 sub can_savepoint { 1;}
 
 sub set_savepoint {
@@ -39,7 +47,6 @@ my($self,$sp_name) = @_;
     my $dbh = $self->get_default_handle;
     $dbh->pg_savepoint($sp_name);
 }
-
 
 sub rollback_to_savepoint {
 my($self,$sp_name) = @_;

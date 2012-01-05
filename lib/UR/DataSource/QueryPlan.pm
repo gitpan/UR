@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -83,6 +83,52 @@ class UR::DataSource::QueryPlan {
         sub_classification_meta_class_name          => {},
     ]
 };
+
+
+sub _load {
+        my $class = shift;
+    my $rule = shift;
+
+    # See if the requested object is loaded.
+    my @loaded = $UR::Context::current->get_objects_for_class_and_rule($class,$rule,0);
+    return $class->context_return(@loaded) if @loaded;
+
+    # Auto generate the object on the fly.
+    my $id = $rule->value_for_id;
+    unless (defined $id) {
+        #$DB::single = 1;
+        Carp::croak "No id specified for loading members of an infinite set ($class)!"
+    }
+    my $class_meta = $class->__meta__;
+    my @p = (id => $id);
+    if (my $alt_ids = $class_meta->{id_by}) {
+        if (@$alt_ids == 1) {
+            push @p, $alt_ids->[0] => $id;
+        }
+        else {
+            my ($rule, %extra) = UR::BoolExpr->resolve_normalized($class, $rule);
+            push @p, $rule->params_list;
+        }
+    }
+
+    my $obj = $UR::Context::current->_construct_object($class, @p);
+
+    if (my $method_name = $class_meta->sub_classification_method_name) {
+        my($rule, %extra) = UR::BoolExpr->resolve_normalized($class, $rule);
+        my $sub_class_name = $obj->$method_name;
+        if ($sub_class_name ne $class) {
+            # delegate to the sub-class to create the object
+            $UR::Context::current->_abandon_object($obj);
+            $obj = $UR::Context::current->_construct_object($sub_class_name,$rule);
+            $obj->__signal_change__("load");
+            return $obj;
+        }
+        # fall through if the class names match
+    }
+
+    $obj->__signal_change__("load");
+    return $obj;
+}
 
 # these hash keys are probably removable
 # because they are not above, they will be deleted if _init sets them
@@ -200,19 +246,43 @@ sub _init_rdbms {
     }
 
     my %order_by_property_names;
+    my $order_by_non_column_data;
     if ($order_by) {
+        my %db_property_data_map = map { $_->[1]->property_name => $_ } @db_property_data;
+
         # we only pull back columns we're ordering by if there is ordering happening
+        my %is_descending;
+        my @column_data;
         for my $name (@$order_by) {
-            unless ($class_name->can($name)) {
-                Carp::croak("Cannot order by '$name': Class $class_name has no property/method by that name");
+            my $order_by_prop = $name;
+            if ($order_by_prop =~ m/^(-|\+)(.*)$/) {
+                $order_by_prop = $2;
+                $is_descending{$order_by_prop} = $1 eq '-';
             }
-            $order_by_property_names{$name} = 1;
+
+            unless ($class_name->can($order_by_prop)) {
+                Carp::croak("Cannot order by '$name': Class $class_name has no property or method named '$order_by_prop'");
+            }
+            if ($order_by_property_names{$name} = $db_property_data_map{$order_by_prop}) {  # yes, single =
+                push @column_data, $order_by_property_names{$name};
+
+                my $table_column_names = $ds->_select_clause_columns_for_table_property_data($column_data[-1]);
+                $is_descending{$table_column_names->[0]} = $is_descending{$order_by_prop}; # copy for table.column designation
+                $order_by_property_names{$table_column_names->[0]} = $order_by_property_names{$name};
+            } else {
+                $order_by_non_column_data = 1;
+            }
         }
-        for my $data (@db_property_data) {
-            my $name = $data->[1]->property_name;
-            if ($order_by_property_names{$name}) {
-                $order_by_property_names{$name} = $data;
-            }
+
+        if (@column_data) {
+            my $additional_order_by_columns = $ds->_select_clause_columns_for_table_property_data(@column_data);
+
+            # Strip out columns named in the original $order_by_columns list that now appear in the
+            # additional order by list so we don't duplicate columns names, and the additional columns
+            # appear earlier in the list
+            my %additional_order_by_columns = map { $_ => 1 } @$additional_order_by_columns;
+            my @existing_order_by_columns = grep { ! $additional_order_by_columns{$_} } @$order_by_columns;
+            $order_by_columns = [ map { $is_descending{$_} ? '-'. $_  : $_ } ( @$additional_order_by_columns, @existing_order_by_columns ) ];
         }
     }
     
@@ -232,10 +302,14 @@ sub _init_rdbms {
             delete $filters{'id'};
         }
 
+        # Remove the flag for descending/ascending sort
+        my @order_by_properties = $order_by ? @$order_by : ();;
+        s/^-|\+//  foreach @order_by_properties;
+
         my %properties_involved = map { $_ => 1 }
                                     keys(%filters),
                                     ($hints ? @$hints : ()),
-                                    ($order_by ? @$order_by : ()),
+                                    @order_by_properties,
                                     ($group_by ? @$group_by : ());
         
         my @properties_involved = sort keys(%properties_involved);
@@ -685,47 +759,6 @@ sub _init_rdbms {
         }
         unless (@$group_by == @$db_property_data) {
             print "mismatch table properties vs group by!\n";
-        }
-    }
-
-    my $order_by_non_column_data;
-    if ($order_by = $rule_template->order_by) {
-        # this is duplicated in _add_join
-        my %order_by_property_names;
-        if ($order_by) {
-            # we only pull back columns we're ordering by if there is ordering happening
-            for my $name (@$order_by) {
-                unless ($class_name->can($name)) {
-                    Carp::croak("Cannot order by '$name': Class $class_name has no property/method by that name");
-                }
-                $order_by_property_names{$name} = 1;
-            }
-            for my $data (@$db_property_data) {
-                my $name = $data->[1]->property_name;
-                if ($order_by_property_names{$name}) {
-                    $order_by_property_names{$name} = $data;
-                }
-            }
-        }
-
-        my @data;
-        for my $name (@$order_by) {
-            my $data = $order_by_property_names{$name};
-            unless (ref($data)) {
-                $order_by_non_column_data = 1;
-                next;
-            }
-            push @data, $data;
-        }
-        if (@data) {
-            my $additional_order_by_columns = $ds->_select_clause_columns_for_table_property_data(@data);
-
-            # Strip out columns named in the original $order_by_columns list that now appear in the
-            # additional order by list so we don't duplicate columns names, and the additional columns
-            # appear earlier in the list
-            my %additional_order_by_columns = map { $_ => 1 } @$additional_order_by_columns;
-            my @existing_order_by_columns = grep { ! $additional_order_by_columns{$_} } @$order_by_columns;
-            $order_by_columns = [ @$additional_order_by_columns, @existing_order_by_columns ];
         }
     }
 
@@ -1923,9 +1956,13 @@ sub _init_core {
         $rule_template_specifies_value_for_subtype = $rule_template->specifies_value_for($sub_typing_property)
     }
 
-    my $per_object_in_resultset_loading_detail = $ds->_generate_loading_templates_arrayref(\@all_properties);
+    my @this_ds_properties = grep { ! $_->[1]->is_delegated
+                                    and (! $_->[1]->is_calculated or $_->[1]->calculate_sql)
+                                  }
+                             @all_properties;
 
-    
+    my $per_object_in_resultset_loading_detail = $ds->_generate_loading_templates_arrayref(\@this_ds_properties);
+
     %$self = (
         %$self,
 
@@ -1970,6 +2007,15 @@ sub _init_default {
         push @$expected_headers, $pname;
     }
     $self->{loading_templates}[0]{property_names} = $expected_headers;
+
+    if ($bx_template->subject_class_name->isa('UR::Value')) {
+        # Hack so the objects get blessed into the proper subclass in the Object Fabricator.
+        # This is necessary so every possible UR::Value subclass doesn't need its
+        # own "id" property defined.  Without it, the data shows that these objects get
+        # loaded as the base UR::Value class (since its "id" is defined on UR:Value)
+        # and then would get automagically subclassed.
+        $self->{'loading_templates'}->[0]->{'final_class_name'} = $bx_template->subject_class_name
+    }
 
     return $self;
 }

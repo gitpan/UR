@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 # Transient class that represents the file as a datasource
 our $TheFile = '/dev/null';  # This will be filled in during create() below
@@ -14,6 +14,7 @@ UR::DataSource::FileMux->create(
     delimiter => "\t",
     file_resolver => sub { return $TheFile },
     required_for_get => [],
+    constant_values => [],
 );
     
 #class Test::Callcount::List::DataSource {

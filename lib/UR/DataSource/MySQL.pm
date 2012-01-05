@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::MySQL',
@@ -32,7 +32,7 @@ sub owner { shift->_singleton_object->login }
 #}
 
  
-sub _sql_like_supports_escape { 0 };  # can't do an 'escape' clause with the 'like' operator
+sub _default_sql_like_escape_string { undef };  # can't do an 'escape' clause with the 'like' operator
 
 sub can_savepoint { 1;} 
 
@@ -121,6 +121,37 @@ my($self,$sp_name) = @_;
     my $sp = $dbh->quote($sp_name);
     $dbh->do("rollback to savepoint $sp_name");
 }
+
+
+sub resolve_order_by_clause {
+    my($self,$order_by_columns,$order_by_column_data) = @_;
+
+    my @cols = @$order_by_columns;
+    foreach my $col ( @cols) {
+        my $is_descending;
+        if ($col =~ m/^(-|\+)(.*)$/) {
+            $col = $2;
+            if ($1 eq '-') {
+                $is_descending = 1;
+            }
+        }
+
+        my $property_meta = $order_by_column_data->{$col} ? $order_by_column_data->{$col}->[1] : undef;
+        my $is_optional; $is_optional = $property_meta->is_optional if $property_meta;
+
+        if ($is_optional) {
+            if ($is_descending) {
+                $col = "CASE WHEN $col ISNULL THEN 0 ELSE 1 END, $col DESC";
+            } else {
+                $col = "CASE WHEN $col ISNULL THEN 1 ELSE 0 END, $col";
+            }
+        } elsif ($is_descending) {
+            $col = $col . ' DESC';
+        }
+    }
+    return  'order by ' . join(', ',@cols);
+}
+
 
 # FIXME This works on Mysql 4.x (and later?).  Mysql5 has a database called
 # IMFORMATION_SCHEMA that may be more useful for these kinds of queries

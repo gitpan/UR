@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = "0.35"; # UR $VERSION
+our $VERSION = "0.36"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -128,6 +128,7 @@ require UR::Object::Type;
 require UR::Object::Ghost;
 require UR::Object::Property;
 
+require UR::Observer;
 
 require UR::BoolExpr::Util;
 require UR::BoolExpr;                                  # has meta 
@@ -248,6 +249,8 @@ UR::Object::Type->define(
         composite_id_separator           => { is => 'Text', len => 2 , default_value => "\t", is_optional => 1,
                                                 doc => 'for classes whose objects have a multi-value "id", this overrides using a "\t" to compose/decompose' },        
         
+        valid_signals                    => { is => 'ARRAY', is_optional => 1,
+                                                doc => 'List of non-standard signal names observers can bind to ' },
         # details used by the managment of the "real" entity outside of the app (persistence) 
         table_name                       => { is => 'Text', len => undef, is_optional => 1, 
                                                 doc => 'for classes with a data source, this specifies the table or equivalent data structure which holds instances' },
@@ -465,7 +468,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.35
+This document describes UR version 0.36
 
 =head1 SYNOPSIS
 

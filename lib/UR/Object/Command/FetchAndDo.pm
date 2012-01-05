@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 use Data::Dumper;
 
 class UR::Object::Command::FetchAndDo {
@@ -222,7 +222,7 @@ sub _fetch
     $self->error_message( sprintf('Unrecognized field(s): %s', join(', ', keys %extra)) )
         and return if %extra;
     
-    if (my $i = $self->subject_class_name->create_iterator(where => $bool_expr)) {
+    if (my $i = $self->subject_class_name->create_iterator($bool_expr)) {
         return $i;
     }
     else {

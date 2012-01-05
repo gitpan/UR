@@ -3,7 +3,7 @@ package UR::Object::View::Default::Xsl;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 use IO::File;
 
 use XML::LibXML;
@@ -33,7 +33,6 @@ use Exporter 'import';
 our @EXPORT_OK = qw(type_to_url url_to_type);
 
 sub _generate_content {
-
     my ($self, %params) = @_;
 
     if (!$self->desired_perspective) {
@@ -153,10 +152,14 @@ sub _generate_xsl_doc {
     $set_var->('displayName',$display_name);
     $set_var->('labelName',$label_name);
     $set_var->('currentTime',$time);
+    $set_var->('username',$ENV{'REMOTE_USER'});
 
-    if ($self->subject->id) {
-        my $id = $self->subject->id;
-        $set_var->('objectId', $self->subject->id);
+    if (my $id = $self->subject->id) {
+        $set_var->('objectId', $id);
+    }
+
+    if (my $class_name = $self->subject->class) {
+        $set_var->('objectClassName', $class_name);
     }
 
     if (my $vars = $self->xsl_variables) {

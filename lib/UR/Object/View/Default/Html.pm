@@ -3,14 +3,15 @@ package UR::Object::View::Default::Html;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.35"; # UR $VERSION;
+our $VERSION = "0.36"; # UR $VERSION;
 use IO::File;
 
 class UR::Object::View::Default::Html {
     is => 'UR::Object::View::Default::Xsl',
     has => {
         output_format => { value => 'html' },
-        transform => { value => 1 }
+        transform => { value => 1 },
+        toolkit => { value => 'html' },
     }
 };
 
