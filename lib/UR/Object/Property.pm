@@ -7,7 +7,7 @@ require UR;
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.36"; # UR $VERSION;;
+our $VERSION = "0.37"; # UR $VERSION;;
 our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
 
 sub is_direct {
@@ -321,7 +321,10 @@ sub CAN {
         if (my $method = $self->{$accessor_key}) {
             return $method;
         }
-        if (exists $self->class_name->__meta__->{attributes_have}{$method}) {
+        if ($self->class_name->__meta__->{attributes_have}
+            and
+            exists $self->class_name->__meta__->{attributes_have}{$method}
+        ) {
             return $self->{$accessor_key} = sub {
                 return $_[0]->{$method};
             }

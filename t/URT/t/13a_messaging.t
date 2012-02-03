@@ -7,14 +7,11 @@ use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__).'/../..';
 
-use Test::More tests => 774;
+use Test::More tests => 801;
 
-use URT;
+use UR::Namespace::Command::Old::DiffRewrite;
 
-my $c = "UR::Namespace::Command::Foo";
-class UR::Namespace::Command::Foo {
-    is => 'Command::V2'
-};
+my $c = "UR::Namespace::Command::Old::DiffRewrite";
 
 # The messaging methods print to the filehandle $Command::stderr, which defaults
 # to STDERR.  Redefine it so the messages are printed to a filehandle we
@@ -32,6 +29,8 @@ for my $type (qw/error warning status/) {
 
     my $uc_type = uc($type);
     my $msg_prefix = ($type eq "status" ? "" : "$uc_type: ");
+
+    my $msg_source_sub = $accessor . '_source';
 
     for my $do_queue ([],[0],[1]) {
         for my $do_dump ([],[0],[1]) {
@@ -53,9 +52,19 @@ for my $type (qw/error warning status/) {
             my @cb_args;
             ok($c->$cb_register(sub { @cb_args = @_; $cb_msg_count++;}), "can set callback");
 
+            my $message_line = __LINE__ + 1;    # The messaging sub will be called on the next line
             is($c->$accessor("error1"), "error1",       "$type setting works");
             $buffer = $stderr_twin->getline;
             is($buffer, ($c->$dump_flag ? "${msg_prefix}error1\n" : undef), ($c->$dump_flag ?  "got message 1" : "no dump") );
+
+            my %source_info = $c->$msg_source_sub();
+            is_deeply(\%source_info,
+                      { $accessor => 'error1',
+                        $type.'_package' => 'main',
+                        $type.'_file' => __FILE__,
+                        $type.'_line' => $message_line,
+                        $type.'_subroutine' => undef },   # not called from within a sub
+                      "$msg_source_sub returns correct info");
 
             is($cb_msg_count, 1, "$type callback fired");
             is_deeply(
@@ -83,21 +92,21 @@ for my $type (qw/error warning status/) {
                 ($c->$queue_flag ? "$type list is correct" : "$type list is correctly empty")
             );
 
-            is($c->$accessor(undef),    undef ,         "$type message set to undef");
+            is($c->$accessor(undef),    undef ,         "undef message sent to $type");
 
             is($cb_msg_count, 3, "$type callback fired");
 
             $buffer = $stderr_twin->getline;
-            is($buffer, ($c->$dump_flag ? "${msg_prefix}\n" : undef), ($c->$dump_flag ?  "got empty message 2" : "no dump") );
+            is($buffer, undef, 'Setting undef message results in no output');
 
-            is($c->$accessor(),         undef ,         "$type still undef");
+            is($c->$accessor(),         undef ,         "$type still has the previous message");
             is_deeply(
                 \@cb_args,    [$c, undef],       "$type callback got correct args"
             );
 
             is_deeply(
                 [$c->$list_accessor],
-                ($c->$queue_flag ? ["error1","error2",undef] : []),
+                ($c->$queue_flag ? ["error1","error2"] : []),
                 ($c->$queue_flag ? "$type list is correct" : "$type list is correctly empty")
             );
 
@@ -105,7 +114,7 @@ for my $type (qw/error warning status/) {
             my $listref = $c->$listref_accessor();
             is_deeply(
     	        $listref,
-                ($c->$queue_flag ? ['error1','error2',undef] : undef),
+                ($c->$queue_flag ? ['error1','error2'] : []),
                 "$type listref is correct"
             );
 
@@ -115,19 +124,19 @@ for my $type (qw/error warning status/) {
             is($buffer, ($c->$dump_flag ? "${msg_prefix}alteredfoo\n" : undef), ($c->$dump_flag ?  "got altered message" : "no dump") );
             is_deeply(
                 [$c->$list_accessor],
-                ($c->$queue_flag ? ["error1","error2",undef,"alteredfoo"] : []),
+                ($c->$queue_flag ? ["error1","error2","alteredfoo"] : []),
                 ($c->$queue_flag ? "$type list is correct" : "$type list is correctly empty")
             );
 
             $c->$cb_register(undef);  # Unset the callback
 
-            is($c->$accessor(undef),    undef ,         "$type message set back to undef");
+            is($c->$accessor(undef),    undef ,         "undef message sent to $type message");
             is($cb_msg_count, 3, "$type callback correctly didn't get fired");
             $buffer = $stderr_twin->getline();
-            is($buffer, ($c->$dump_flag ? "${msg_prefix}\n" : undef), ($c->$dump_flag ?  "got empty message 2" : "no dump") );
+            is($buffer, undef, 'Setting undef message results in no output');
             is_deeply(
                 [$c->$list_accessor],
-                ($c->$queue_flag ? ["error1","error2",undef,"alteredfoo",undef] : []),
+                ($c->$queue_flag ? ["error1","error2","alteredfoo"] : []),
                 ($c->$queue_flag ? "$type list is correct" : "$type list is correctly empty")
             );
 
@@ -135,7 +144,7 @@ for my $type (qw/error warning status/) {
                 $listref->[2] = "something else";
                 is_deeply(
                     [$c->$list_accessor],
-                    ["error1","error2","something else","alteredfoo",undef],
+                    ["error1","error2","something else"],
                     "$type list is correct after changing via the listref"
                 );
 

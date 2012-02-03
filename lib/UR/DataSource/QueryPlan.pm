@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.36"; # UR $VERSION;
+our $VERSION = "0.37"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -260,10 +260,13 @@ sub _init_rdbms {
                 $is_descending{$order_by_prop} = $1 eq '-';
             }
 
-            unless ($class_name->can($order_by_prop)) {
-                Carp::croak("Cannot order by '$name': Class $class_name has no property or method named '$order_by_prop'");
+            my($order_by_prop_meta) = $class_meta->_concrete_property_meta_for_class_and_name($order_by_prop);
+            unless ($order_by_prop_meta) {
+                Carp::croak("Cannot order by '$name': Class $class_name has no property named '$order_by_prop'");
             }
-            if ($order_by_property_names{$name} = $db_property_data_map{$order_by_prop}) {  # yes, single =
+
+            $name = ( $is_descending{$order_by_prop} ? '-' : '' ) . $order_by_prop_meta->property_name;
+            if ($order_by_property_names{$name} = $db_property_data_map{$order_by_prop_meta->property_name}) {  # yes, single =
                 push @column_data, $order_by_property_names{$name};
 
                 my $table_column_names = $ds->_select_clause_columns_for_table_property_data($column_data[-1]);
@@ -317,8 +320,14 @@ sub _init_rdbms {
         while (my $property_name = shift @properties_involved) {
             my (@pmeta) = $class_meta->property_meta_for_name($property_name);
             unless (@pmeta) {
-                push @errors, "Class ".$class_meta->id." has no property named '$property_name'";
-                next;
+                if ($class_name->can($property_name)) {
+                    # method, not property
+                    next;
+                }
+                else {
+                    push @errors, "Class ".$class_meta->id." has no property or method named '$property_name'";
+                    next;
+                }
             }
             
             if (index($property_name,'.') != -1) {
@@ -455,6 +464,7 @@ sub _init_rdbms {
             # the final join in a chain is often the link between a primitive value
             # and the UR::Value subclass into which it falls ...irrelevent for db joins
             pop @joins;
+            next DELEGATED_PROPERTY unless @joins;
         }
 
         my $last_class_object_excluding_inherited_joins;

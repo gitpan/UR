@@ -3,7 +3,7 @@ package UR::Object::Set;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.36"; # UR $VERSION;
+our $VERSION = "0.37"; # UR $VERSION;
 
 our @CARP_NOT = qw( UR::Object::Type );
 
@@ -253,10 +253,23 @@ sub CAN {
         return;
     }
 
+
     my $member_class_name = $class;
     $member_class_name =~ s/::Set$//g; 
     return unless $member_class_name; 
-    if ($member_class_name->can($method)) {
+
+    my $is_class_method = !ref($self);
+    my $member_method_closure = $member_class_name->can($method);
+    if ($is_class_method && $member_method_closure) {
+        # We should only get here if the Set class has not implemented the method.
+        # In which case we will delegate to the member class.
+        return sub {
+            my $self = shift;
+            return $member_method_closure->($member_class_name, @_);
+        };
+    }
+
+    if ($member_method_closure) {
         my $member_class_meta = $member_class_name->__meta__;
         my $member_property_meta = $member_class_meta->property_meta_for_name($method);
         

@@ -15,7 +15,7 @@ package UR::DataSource::File;
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.36"; # UR $VERSION;
+our $VERSION = "0.37"; # UR $VERSION;
 
 use Fcntl qw(:DEFAULT :flock);
 use Errno qw(EINTR EAGAIN EOPNOTSUPP);
@@ -1054,7 +1054,7 @@ sub _sync_database {
 
     }
 
-    unless (flock($read_fh,LOCK_EX)) {
+    unless (flock($read_fh,LOCK_SH)) {
         unless ($! == EOPNOTSUPP ) {
             Carp::croak($self->class(). ": Can't get exclusive lock for file ".$self->server.": $!");
         }
@@ -1192,8 +1192,8 @@ sub _sync_database {
         Carp::croak("Error setting objects to a saved state after sync_database.  Exiting.");
         return;
     }
-    $self->_set_object_saved_committed($_) foreach @$changed_objects;
 
+    $self->_set_all_specified_objects_saved_committed(@$changed_objects);
     return 1;
 }
 

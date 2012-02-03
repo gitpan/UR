@@ -8,7 +8,7 @@ require UR;
 use Carp;
 our @CARP_NOT = ('UR::Context');
 
-our $VERSION = "0.36"; # UR $VERSION;;
+our $VERSION = "0.37"; # UR $VERSION;;
 
 # readable stringification
 use overload ('""' => '__display_name__');
@@ -342,6 +342,18 @@ sub resolve {
             $subject_class,
             @sub_queries,
         );
+        # FIXME a hack to support order-by.  To make it more general to work for -group, -recurse, etc
+        # support needs to go into UR::BoolExpr::Template::Or::_compose()
+        for (my $i = 0; $i < @in_params; $i+=2 ) {
+            if ($in_params[$i] eq '-order' or $in_params[$i] eq '-order_by') {
+                my $order_by = $in_params[$i+1];
+                $bx->template->order_by($order_by);
+                foreach ( $bx->underlying_rules ) {
+                    $_->template->order_by($order_by);
+                }
+            }
+        }
+        $resolve_depth--;
         return $bx;
     }
 
@@ -836,20 +848,53 @@ sub legacy_params_hash {
     return $params;
 }
 
+
+my $LOADED_BXPARSE = 0;
+sub resolve_for_string {
+    my ($class, $subject_class_name, $filter_string, $usage_hints_string, $order_string, $page_string) = @_;
+
+    unless ($LOADED_BXPARSE) {
+        eval { require UR::BoolExpr::BxParser };
+        if ($@) {
+            Carp::croak("resolve_for_string() can't load UR::BoolExpr::BxParser: $@");
+        }
+        $LOADED_BXPARSE=1;
+    }
+
+    #$DB::single=1;
+    #my $tree = UR::BoolExpr::BxParser::parse($filter_string, tokdebug => 1, yydebug => 7);
+    my $tree = UR::BoolExpr::BxParser::parse($filter_string);
+    unless ($tree) {
+        Carp::croak("resolve_for_string() couldn't parse string \"$filter_string\"");
+    }
+
+    push @$tree, '-hints',    [split(',',$usage_hints_string) ] if ($usage_hints_string);
+    push @$tree, '-order_by', [split(',',$order_string) ] if ($order_string);
+    push @$tree, '-page',     [split(',',$page_string) ] if ($page_string);
+
+    my $bx = UR::BoolExpr->resolve($subject_class_name, @$tree);
+    unless ($bx) {
+        Carp::croak("Can't create BoolExpr on $subject_class_name from params generated from string "
+                    . $filter_string . " which parsed as:\n"
+                    . Data::Dumper::Dumper($tree));
+    }
+    return $bx;
+}
+
 # TODO: these methods need a better home, since they are a cmdline/UI standard
-sub filter_regex_for_string {
+sub _old_filter_regex_for_string {
     return '^\s*([\w\.\-]+)\s*(\@|\=|!=|=|\>|\<|~|!~|!\:|\:|\blike\b|\bbetween\b|\bin\b)\s*[\'"]?([^\'"]*)[\'"]?\s*$';
 }
 
 # TODO: these methods need a better home, since they are a cmdline/UI standard
-sub resolve_for_string {
+sub _old_resolve_for_string {
     my ($self, $subject_class_name, $filter_string, $usage_hints_string, $order_string, $page_string) = @_;
 
     my ($property, $op, $value);
 
     no warnings;
 
-    my $filter_regex = $self->filter_regex_for_string();
+    my $filter_regex = $self->_old_filter_regex_for_string();
     my @filters = map {
         unless (($property, $op, $value) = ($_ =~ /$filter_regex/)) {
             Carp::croak "Unable to process filter $_\n";
@@ -1119,12 +1164,52 @@ simplify to this level.  See L<UR::BoolExpr::Template> for details.
   my $bx = UR::BoolExpr->resolve('Some::Class', property_1 => 'value_1', ... property_n => 'value_n');
   my $bx1 = Some::Class->define_boolexpr(property_1 => value_1, ... property_n => 'value_n');
   my $bx2 = Some::Class->define_boolexpr('property_1 >' => 12345);
+  my $bx3 = UR::BoolExpr->resolve_for_string(
+                'Some::Class',
+                'property_1 = value_1 and ( property_2 < value_2 or property_3 = value_3 )',
+            );
 
 Returns a UR::BoolExpr object that can be used to perform tests on the given class and
-properties.  The default comparison for each property is equality.  The last example shows
-using greater-than operator for property_1.
+properties.  The default comparison for each property is equality.  The third example shows
+using greater-than operator for property_1.  The last example shows constructing a
+UR::BoolExpr from a string containing properties, operators and values joined with
+'and' and 'or', with parentheses indicating precedence.
 
 =back
+
+C<resolve_for_string()> can parse simple and complicated expressions.  A simple expression
+is a property name followed by an operator followed by a value.  The property name can be
+a series of properties joined by dots (.) to indicate traversal of multiple layers of
+indirect properties.  Values that include spaces, characters that look like operators,
+commas, or other special characters should be enclosed in quotes.
+
+The parser understands all the same operators the underlying C<resolve()> method understands:
+=, <, >, <=, >=, "like", "between" and "in".  Operators may be prefixed by a bang (!) or the
+word "not" to negate the operator.  The "like" operator understands the SQL wildcards % and _.
+Values for the "between" operator should be separated by a minus (-).  Values for the "in"
+operator should begin with a left bracket, end with a right bracket, and have commas between
+them.  For example:
+    name_property in [Bob,Fred,Joe]
+
+Simple expressions may be joined together with the words "and" and "or" to form a more
+complicated expression.  "and" has higher precedence than "or", and parentheses can 
+surround sub-expressions to indicate the requested precedence.  For example:
+    ((prop1 = foo or prop2 = 1) and (prop2 > 10 or prop3 like 'Yo%')) or prop4 in [1,2,3]
+
+In general, whitespace is insignificant.  The strings "prop1 = 1" is parsed the same as
+"prop1=1".  Spaces inside quoted value strings are preserved.  For backward compatibility
+with the deprecated string parser, bare words that appear after the operators =,<,>,<=
+and >= which are separated by one or more spaces is treated as if it had quotes around
+the list of words starting with the first character of the first word and ending with
+the last character of the last word, meaning that spaces at the start and end of the
+list are trimmed.
+
+Specific ordering may be requested by putting an "order by" clause at the end, and is the
+same as using a -order argument to resolve():
+    score > 10 order by name,score.
+
+Likewise, grouping and Set construction is indicated with a "group by" clause:
+    score > 10 group by color
 
 =head1 METHODS
 
@@ -1307,6 +1392,11 @@ my $rt = $r->template();
 my @rt = $rt->get_underlying_rule_templates();
 
 $r = $rt->get_rule_for_values(@v);
+
+$r = UR::BoolExpr->resolve_for_string(
+       'My::Class',
+       'name=Bob and (score=10 or score < 5)',
+     );
 
 =head1 SEE ALSO
 

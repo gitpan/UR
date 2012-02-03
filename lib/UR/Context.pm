@@ -6,7 +6,7 @@ use Sub::Name;
 use Scalar::Util;
 
 require UR;
-our $VERSION = "0.36"; # UR $VERSION;
+our $VERSION = "0.37"; # UR $VERSION;
 
 use UR::Context::ImportIterator;
 use UR::Context::ObjectFabricator;
@@ -125,6 +125,14 @@ sub monitor_query {
 }
 
 my %_query_log_times;
+my $query_logging_fh = IO::Handle->new();
+$query_logging_fh->fdopen(fileno(STDERR), 'w');
+$query_logging_fh->autoflush(1);
+sub query_logging_fh {
+    $query_logging_fh = $_[1] if @_ > 1;
+    return $query_logging_fh;
+}
+
 sub _log_query_for_rule {
     return if $UR::Object::Type::bootstrapping;
     my $self = shift;
@@ -147,7 +155,7 @@ sub _log_query_for_rule {
     if ($elapsed_time) {
         $message .= sprintf("  Elapsed %.4f s", $elapsed_time);
     }
-    $self->status_message($message);
+    $query_logging_fh->print($message."\n");
 }
 
 sub _log_done_elapsed_time_for_rule {
@@ -501,7 +509,7 @@ sub _resolve_id_for_class_and_rule {
     if ( @id_property_names == 1 ) { # only 1 - try to auto generate
         $id = $class_meta->autogenerate_new_object_id($rule);
         unless ( defined $id ) {
-            $self->error_message("Failed to auto-generate an ID for single ID property class ($class)");
+            $class->error_message("Failed to auto-generate an ID for single ID property class ($class)");
             return;
         }
     }
@@ -512,7 +520,7 @@ sub _resolve_id_for_class_and_rule {
             push @missed_names, $name unless $rule->specifies_value_for($name);
         }
         if ( @missed_names ) { # Ok - prob w/ class def, list the ones we missed
-            $self->error_message("Attempt to create $class with multiple ids without these properties: ".join(', ', @missed_names));
+            $class->error_message("Attempt to create $class with multiple ids without these properties: ".join(', ', @missed_names));
             return;
         }
         else { # Bad - something is really wrong... 
@@ -1497,7 +1505,74 @@ sub object_exists_in_underlying_context {
     return (exists($obj->{'db_committed'}) || exists($obj->{'db_saved_uncommitted'}));
 }
 
-   
+
+# Holds the logic for handling OR-type rules passed to get_objects_for_class_and_rule()
+sub _get_objects_for_class_and_or_rule {
+    my ($self, $class, $rule, $load, $return_closure) = @_;
+
+    $rule = $rule->normalize;
+    my @u = $rule->underlying_rules;
+    my @results;
+    for my $u (@u) {
+        if (wantarray or not defined wantarray) {
+            push @results, $self->get_objects_for_class_and_rule($class,$u,$load,$return_closure);
+        }
+        else {
+            my $result = $self->get_objects_for_class_and_rule($class,$u,$load,$return_closure);
+            push @results, $result;
+        }
+    }
+    if ($return_closure) {
+        my $object_sorter = $rule->template->sorter();
+
+        my @next;
+        return sub {
+            # fill in missing slots in @next
+            for(my $i = 0; $i < @results; $i++) {
+                unless (defined $next[$i]) {
+                    # This slot got used last time through
+                    $next[$i] = $results[$i]->();
+                    unless (defined $next[$i]) {
+                        # That iterator is exhausted, splice it out
+                        splice(@results, $i, 1);
+                        splice(@next, $i, 1);
+                        redo if $i < @results; #the next iterator is now at $i, not $i++
+                    }
+                }
+            }
+
+            my $lowest_slot = 0;
+            for(my $i = 1; $i < @results; $i++) {
+                my $cmp = $object_sorter->($next[$lowest_slot], $next[$i]);
+                if ($cmp > 0) {
+                    $lowest_slot = $i;
+                } elsif ($cmp == 0) {
+                    # duplicate object, mark this slot to fill in next time around
+                    $next[$i] = undef;
+                }
+            }
+
+            my $retval = $next[$lowest_slot];
+            $next[$lowest_slot] = undef;
+            return $retval;
+        };
+    }
+
+    # remove duplicates
+    my $last = 0;
+    my $plast = 0;
+    my $next = 0;
+    @results = grep { $plast = $last; $last = $_; $plast == $_ ? () : ($_) } sort @results;
+
+    return unless defined wantarray;
+    return @results if wantarray;
+    if (@results > 1) {
+        $self->_exception_for_multi_objects_in_scalar_context($rule,\@results);
+    }
+    return $results[0];
+}
+
+
 # this is the underlying method for get/load/is_loaded in ::Object
 
 sub get_objects_for_class_and_rule {
@@ -1532,34 +1607,7 @@ sub get_objects_for_class_and_rule {
     }
 
     if ($rule_template->isa("UR::BoolExpr::Template::Or")) {
-        $rule = $rule->normalize;
-        my @u = $rule->underlying_rules;
-        my @results;
-        for my $u (@u) {
-            if (wantarray) {
-                push @results, $self->get_objects_for_class_and_rule($class,$u,$load,$return_closure);
-            }
-            else {
-                my $result = $self->get_objects_for_class_and_rule($class,$u,$load,$return_closure);
-                push @results, $result;
-            }
-        }
-        if ($return_closure) {
-            Carp::confess("TOOD: implement iterator closures for OR rules");
-        }
-
-        # remove duplicates
-        my $last = 0;
-        my $plast = 0;
-        my $next = 0;
-        @results = grep { $plast = $last; $last = $_; $plast == $_ ? () : ($_) } sort @results;
-    
-        return unless defined wantarray;
-        return @results if wantarray;
-        if (@results > 1) {
-            $self->_exception_for_multi_objects_in_scalar_context($rule,\@results);
-        }
-        return $results[0];
+        return $self->_get_objects_for_class_and_or_rule($class,$rule,$load,$return_closure);
     }
 
     # an identifier for all objects gotten in this request will be set/updated on each of them for pruning later
