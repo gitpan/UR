@@ -6,7 +6,7 @@ use Sub::Name;
 use Scalar::Util;
 
 require UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 use UR::Context::ImportIterator;
 use UR::Context::ObjectFabricator;
@@ -143,12 +143,12 @@ sub _log_query_for_rule {
     return if (substr($subject_class, 0,4) eq 'UR::' and $monitor_level < 2);   # Don't log queries for internal classes
 
     my $elapsed_time = 0;
-    if ($rule) {
+    if (defined($rule)) {
         my $time_now = Time::HiRes::time();
-        if (! exists $_query_log_times{$rule}) {
-            $_query_log_times{$rule} = $time_now;
+        if (! exists $_query_log_times{$rule->id}) {
+            $_query_log_times{$rule->id} = $time_now;
         } else {
-            $elapsed_time = $time_now - $_query_log_times{$rule};
+            $elapsed_time = $time_now - $_query_log_times{$rule->id};
         }
     }
 
@@ -161,7 +161,7 @@ sub _log_query_for_rule {
 sub _log_done_elapsed_time_for_rule {
     my($self, $rule) = @_;
 
-    delete $_query_log_times{$rule};
+    delete $_query_log_times{$rule->id};
 }
 
 
@@ -256,6 +256,9 @@ sub resolve_data_source_for_object {
     if ($class_name->isa('UR::DataSource::RDBMS::Entity') || $class_name->isa('UR::DataSource::RDBMS::Entity::Ghost')) {
         my $data_source = $object->data_source;
         my($namespace) = ($data_source =~ m/(^\w+?)::DataSource/);
+        unless ($namespace) {
+            Carp::croak("Can't resolve data source for object of type $class_name: The object's namespace could not be inferred from its data_source $data_source");
+        }
         my $ds_name = $namespace . '::DataSource::Meta';
         return $ds_name->get();
     }
@@ -782,8 +785,9 @@ sub create_entity {
     # normal case: make a rule out of the passed-in params
     # rather than normalizing the rule, we just do the extension part which is fast
     my $rule = UR::BoolExpr->resolve($class, @_); 
-    my $template = $rule->{template};
-    my $params = { @{$rule->{_params_list}}, $template->extend_params_list_for_values(@{$rule->{values}}) };
+    my $template = $rule->template;
+
+    my $params = { $rule->_params_list, $template->extend_params_list_for_values(@{$rule->{values}}) };
     if (my $a = $template->{_ambiguous_keys}) {
         my $p = $template->{_ambiguous_property_names};
         @$params{@$p} = delete @$params{@$a};
@@ -2200,7 +2204,7 @@ sub _get_objects_for_class_and_rule_from_cache {
             # FIXME - optimize by using the rule (template?)'s param names directly to get the
             # index id instead of re-figuring it out each time
 
-            my $class_meta = UR::Object::Type->get($rule->subject_class_name);
+            my $class_meta = $rule->subject_class_name->__meta__;
             my %params = $rule->params_list;
             my $should_evaluate_later;
             for my $key (keys %params) {
@@ -2679,13 +2683,19 @@ sub _sync_databases {
         push @{ $ds_objects{$data_source_id}->{'changed_objects'} }, $obj;
     }
 
-    my @ds_in_order = 
+    my @ds_with_can_savepoint_and_class = map { [ $ds_objects{$_}->{'ds_obj'}->can_savepoint,
+                                                  $ds_objects{$_}->{'ds_obj'}->class,
+                                                  $_
+                                                ] }
+                                          keys %ds_objects;
+    my @ds_in_order =
+        map { $_->[2] }
         sort {
-            ($ds_objects{$a}->{'ds_obj'}->can_savepoint <=> $ds_objects{$b}->{'ds_obj'}->can_savepoint)
-            || 
-            ($ds_objects{$a}->{'ds_obj'}->class cmp $ds_objects{$b}->{'ds_obj'}->class)
+            ( $a->[0] <=> $b->[0] )
+            ||
+            ( $a->[1] cmp $b->[1] )
         }
-        keys %ds_objects;
+        @ds_with_can_savepoint_and_class;
 
     # save on each in succession
     my @done;

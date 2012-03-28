@@ -7,8 +7,19 @@ require UR;
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.37"; # UR $VERSION;;
+our $VERSION = "0.38"; # UR $VERSION;;
 our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
+
+# class_meta and r_class_meta duplicate the functionality if two properties of the same name,
+# but these are faster
+sub class_meta {
+    return shift->{'class_name'}->class->__meta__;
+}
+
+sub r_class_meta {
+    return shift->{'data_type'}->class->__meta__;
+}
+
 
 sub is_direct {
     my $self = shift;
@@ -30,6 +41,90 @@ sub is_numeric {
     return $self->{'_is_numeric'};
 }
 
+sub is_valid_storage_for_value {
+    my($self, $value) = @_;
+
+    my $data_class_name = $self->_data_type_as_class_name;
+    return 1 if ($value->isa($data_class_name));
+
+    if ($data_class_name->isa('UR::Value') ) {
+        my @underlying_types = $data_class_name->underlying_data_types;
+        foreach my $underlying_type ( @underlying_types ) {
+            return 1 if ($value->isa($underlying_type));
+        }
+    }
+    return 0;
+}
+
+sub _convert_data_type_for_source_class_to_final_class {
+    my ($class, $foreign_class, $source_class) = @_;
+
+    $foreign_class ||= '';
+
+    # TODO: allowing "is => 'Text'" instead of is => 'UR::Value::Text' is syntactic sugar
+    # We should have an is_primitive flag set on these so we do efficient work.
+
+    my ($ns) = ($source_class =~ /^([^:]+)::/);
+    if ($ns and not $ns->isa("UR::Namespace")) {
+        $ns = undef;
+    }
+
+    my $final_class;
+    if ($foreign_class) {
+        if ($foreign_class->can('__meta__')) {
+            $final_class = $foreign_class;
+        }
+        else {
+            my ($ns_value_class, $ur_value_class);
+
+            if ($ns and $ns->can("get")) {
+                $ns_value_class = $ns . '::Value::' . $foreign_class;
+                if ($ns_value_class->can('__meta__')) {
+                    $final_class = $ns_value_class;
+                }
+            }
+
+            if (!$final_class) {
+                $ur_value_class = 'UR::Value::' . $foreign_class;
+                if ($ur_value_class->can('__meta__')) {
+                    $final_class = $ur_value_class;
+                }
+            }
+            if (!$final_class) {
+                $ur_value_class = 'UR::Value::' . ucfirst(lc($foreign_class));
+                if ($ur_value_class->can('__meta__')) {
+                    $final_class = $ur_value_class;
+                }
+            }
+        }
+    }
+
+    if (!$final_class) {
+        if (Class::Autouse->class_exists($foreign_class)) {
+            return $foreign_class;
+        }
+        elsif ($foreign_class =~ /::/) {
+            return $foreign_class;
+        }
+        else {
+            eval "use $foreign_class;";
+            if (!$@) {
+                return $foreign_class;
+            }
+            
+            if (!$ns or $ns->get()->allow_sloppy_primitives) {
+                # no colons, and no namespace: no choice but to assume it's a sloppy primitive
+                return 'UR::Value::SloppyPrimitive';      
+            }
+            else {
+                Carp::confess("Failed to find a ${ns}::Value::* or UR::Value::* module for primitive type $foreign_class!");
+            }
+        }
+    }
+
+    return $final_class;
+}
+
 sub _data_type_as_class_name {
     my $self = $_[0];
     return $self->{_data_type_as_class_name} ||= do {
@@ -37,6 +132,7 @@ sub _data_type_as_class_name {
         #this is so NUMBER -> Number
         my $foreign_class = $self->data_type;
 
+        
         if (not $foreign_class) {
             if ($self->via or $self->to) {
                 my @joins = UR::Object::Join->resolve_chain(
@@ -48,54 +144,7 @@ sub _data_type_as_class_name {
             }
         }
 
-        # TODO: allowing "is => 'Text'" instead of is => 'UR::Value::Text' is syntactic sugar
-        # We should have an is_primitive flag set on these so we do efficient work.
-
-        my ($ns) = ($source_class =~ /^([^:]+)::/);
-        if ($ns and not $ns->isa("UR::Namespace")) {
-            $ns = undef;
-        }
-
-        my $final_class;
-        if ($foreign_class) {
-            if ($foreign_class->can('__meta__')) {
-                $final_class = $foreign_class;
-            }
-            else {
-                my ($ns_value_class, $ur_value_class);
-
-                if ($ns and $ns->can("get")) {
-                    $ns_value_class = $ns . '::Value::' . $foreign_class;
-                    if ($ns_value_class->can('__meta__')) {
-                        $final_class = $ns_value_class;
-                    }
-                }
-
-                if (!$final_class) {
-                    $ur_value_class = 'UR::Value::' . $foreign_class;
-                    if ($ur_value_class->can('__meta__')) {
-                        $final_class = $ur_value_class;
-                    }
-                }
-                if (!$final_class) {
-                    $ur_value_class = 'UR::Value::' . ucfirst(lc($foreign_class));
-                    if ($ur_value_class->can('__meta__')) {
-                        $final_class = $ur_value_class;
-                    }
-                }
-            }
-        }
-
-        if (!$final_class) {
-            if (!$ns or $ns->get()->allow_sloppy_primitives) {
-                $final_class = 'UR::Value::SloppyPrimitive';
-            }
-            else {
-                Carp::confess("Failed to find a ${ns}::Value::* or UR::Value::* module for primitive type $foreign_class!");
-            }
-        }
-
-        $final_class;
+        __PACKAGE__->_convert_data_type_for_source_class_to_final_class($foreign_class, $source_class);
     };
 }
 
@@ -163,7 +212,8 @@ sub _involves_id_property {
 
             if ($self->where) {
                 unless ($to_meta) {
-                    Carp::confess("No to_meta for $self->{id}");
+                    Carp::confess("Property '" . $self->property_name . "' of class " . $self->class_name
+                                . " has 'to' metadata that does not resolve to a known property.");
                 }
                 my $other_class_meta = $to_meta->class_meta;
                 my $where = $self->where;
@@ -238,15 +288,20 @@ sub to_property_meta {
 
 sub get_property_name_pairs_for_join {
     my ($self) = @_;
-    my @linkage = $self->_get_direct_join_linkage();
-    unless (@linkage) {
-        Carp::croak("Cannot resolve underlying property joins for property ".$self->id);
+    unless ($self->{'_get_property_name_pairs_for_join'}) {
+        my @linkage = $self->_get_direct_join_linkage();
+        unless (@linkage) {
+            Carp::croak("Cannot resolve underlying property joins for property ".$self->id);
+        }
+        my @results;
+        if ($self->reverse_as) {
+            @results = map { [ $_->[1] => $_->[0] ] } @linkage;
+        } else {
+            @results = map { [ $_->[0] => $_->[1] ] } @linkage;
+        }
+        $self->{'_get_property_name_pairs_for_join'} = \@results;
     }
-    if ($self->reverse_as) {
-        return map { [ $_->[1] => $_->[0] ] } @linkage;
-    } else {
-        return map { [ $_->[0] => $_->[1] ] } @linkage;
-    }
+    return @{$self->{'_get_property_name_pairs_for_join'}};
 }
 
 sub _get_direct_join_linkage {

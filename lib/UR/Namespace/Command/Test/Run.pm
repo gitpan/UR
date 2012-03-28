@@ -12,7 +12,7 @@ use Path::Class; # qw(file dir);
 use DBI;
 use Cwd;
 use UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 use File::Find;
 
 use TAP::Harness;
@@ -289,7 +289,7 @@ sub _run_tests {
 
     if($self->long) {
         # Make sure long tests run
-        $ENV{GSCAPP_RUN_LONG_TESTS}=1;
+        $ENV{UR_RUN_LONG_TESTS}=1;
     }
 
     my @cover_specific_modules;

@@ -11,7 +11,7 @@ use Getopt::Long;
 use Command::View::DocMethods;
 use Command::Dispatch::Shell;
 
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 our $entry_point_class;
 our $entry_point_bin;
@@ -35,6 +35,7 @@ UR::Object::Type->define(
     has_optional => [
         is_executed => { is => 'Boolean' },
         result      => { is => 'Scalar', is_output => 1 },
+        original_command_line => { is => 'String', doc => 'null-byte separated list of command and arguments when run via execute_with_shell_params_and_exit'},
         _total_command_count => { is => 'Integer', default => 0, is_transient => 1 },
         _command_errors => { 
             is => 'HASH',

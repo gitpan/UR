@@ -5,7 +5,8 @@ use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use UR;
-use Test::More tests => 39;
+use Test::More tests => 82;
+require File::Temp;
 
 my $s1 = UR::Value::Text->get('hi there');
 ok($s1, 'Got an object for string "hi there"');
@@ -19,7 +20,36 @@ my $s3 = UR::Value::Text->get('something else');
 ok($s3, 'Got an object for a different string');
 isnt($s1,$s3, 'They are different objects');
 
-my $s1ref = "$s1";
+my $text = UR::Value::Text->get('metagenomic composition 16s is awesome');
+ok($text, 'Got an object for string "metagenomic composition 16s is awesome"');
+is($text->id, 'metagenomic composition 16s is awesome', 'Id is correct');
+
+my $capitalized = $text->capitalize;
+isa_ok($capitalized, 'UR::Value::Text');
+is($capitalized->id, 'Metagenomic Composition 16s Is Awesome', 'Capitalized for is "Metagenomic Composition 16s Is Awesome"');
+
+my $camel = $text->to_camel;
+isa_ok($camel, 'UR::Value::Text');
+is($camel->id, 'MetagenomicComposition16sIsAwesome', 'Text To camel case for is "MetagenomicComposition16sIsAwesome"');
+
+my $lemac = $camel->to_lemac;
+isa_ok($lemac, 'UR::Value::Text');
+is($lemac->id, 'metagenomic composition 16s is awesome', 'Camel case to text for is "MetagenomicComposition16sIsAwesome"');
+is($lemac, $text, 'Got the same UR::Value::Text object back for camel case to text');
+
+ok(!$text->to_hash, 'Failed to convert text object "' . $text->id . '"to a hash when does not start with a dash (-)');
+my $text_for_text_to_hash = '-aa foo -b1b -1 bar --c22 baz baz -ddd -11 -eee -f -g22g text -1111 --h_h 44 --i-i -5 -j-----j -5 -6 hello     -k    -l_l-l g  a   p   -m';
+my $text_to_hash = UR::Value::Text->get($text_for_text_to_hash);
+ok($text_to_hash, 'Got object for param text');
+my $hash = $text_to_hash->to_hash;
+ok($hash, 'Got hash for text');
+is_deeply($hash->id, { aa => 'foo', b1b => '-1 bar', c22 => 'baz baz', ddd => -11, eee => '', f => '', g22g => 'text -1111', h_h => 44, 'i-i' => -5, 'j-----j' => '-5 -6 hello', k => '', 'l_l-l' => 'g  a   p', m => '', }, 'Text to hash id is correct'); 
+is($hash->__display_name__, "aa => 'foo',b1b => '-1 bar',c22 => 'baz baz',ddd => '-11',eee => '',f => '',g22g => 'text -1111',h_h => '44',i-i => '-5',j-----j => '-5 -6 hello',k => '',l_l-l => 'g  a   p',m => ''", 'Hash display name');
+my $hash_to_text = $hash->to_text;
+ok($hash_to_text, 'Got hash to text');
+is($hash_to_text, '-aa foo -b1b -1 bar -c22 baz baz -ddd -11 -eee -f -g22g text -1111 -h_h 44 -i-i -5 -j-----j -5 -6 hello -k -l_l-l g  a   p -m', 'Hash to text is correct');
+
+my $s1_refaddr = Scalar::Util::refaddr($s1);
 ok($s1->unload(), 'Unload the original string object');
 
 isa_ok($s1, 'UR::DeletedRef');
@@ -28,7 +58,7 @@ isa_ok($s2, 'UR::DeletedRef');
 $s1 = UR::Value::Text->get('hi there');
 ok($s1, 're-get the original string object');
 is($s1->id, 'hi there', 'It has the right id');
-isnt($s1, $s1ref, 'It is not the original object reference');
+isnt(Scalar::Util::refaddr($s1), $s1_refaddr, 'It is not the original object reference');
 
 UR::Object::Type->define(
     class_name => 'Test::Value',
@@ -129,3 +159,80 @@ TODO: {
      'Getting with multiple IDs and including non-id properites threw an exception');
 }
 
+do {
+    do {
+        my $pathname = 'foo';
+        my $path = UR::Value::FilesystemPath->get($pathname);
+        isa_ok($path, 'UR::Value::FilesystemPath', 'path');
+        is($path, $pathname, 'comparing path object to string works');
+    };
+
+    do {
+        my $pathname = 'foo';
+        my $path = UR::Value::FilesystemPath->get($pathname);
+        $path .= 'a';
+        $pathname .= 'a';
+        isa_ok($path, 'UR::Value::FilesystemPath', 'after concatenation path still');
+        is($path, $pathname, 'string concatenation works');
+    };
+
+    do {
+        my $pathname = 'foo';
+        my $path = UR::Value::FilesystemPath->get($pathname);
+        like($path, qr/foo/, 'matching works');
+    };
+};
+
+do { # file test "operators"
+    my $temp_file = File::Temp->new();
+    ok(-f $temp_file, 'created temp_file');
+
+    my $temp_dir  = File::Temp->newdir();
+    ok(-d $temp_dir, 'created temp_dir');
+
+    my $temp_filename      = $temp_file->filename;
+    my $temp_dirname       = $temp_dir->dirname;
+    my $symlink_filename_a = $temp_dirname . '/symlink_a';
+
+    symlink($temp_filename, $symlink_filename_a);
+    ok(-l $symlink_filename_a, 'created symlink');
+
+    do { # file
+        my $path = UR::Value::FilePath->get($temp_filename);
+        isa_ok($path, 'UR::Value::FilesystemPath', 'file path');
+
+        is($path->exists, 1, 'file path exists');
+        is($path->is_dir, '', 'file path is not a dir');
+        is($path->is_file, 1, 'file path is a file');
+        is($path->is_symlink, '', 'file path is not a symlink');
+
+        is($path->size, 0, 'file path size is zero');
+        system("echo hello > $path");
+        isnt($path->size, 0, "file path size isn't zero");
+        is($path->line_count, 1, 'file path has one line');
+    };
+
+    do { # dir
+        my $path = UR::Value::FilesystemPath->get($temp_dirname);
+        isa_ok($path, 'UR::Value::FilesystemPath', 'dir path');
+
+        is($path->exists, 1, 'dir path exists');
+        is($path->is_dir, 1, 'dir path is a dir');
+        is($path->is_file, '', 'dir path is not a file');
+        is($path->is_symlink, '', 'dir path is not a symlink');
+    };
+
+    do { # symlink
+        my $path = UR::Value::FilesystemPath->get($symlink_filename_a);
+        isa_ok($path, 'UR::Value::FilesystemPath', 'symlink path');
+
+        is($path->exists, 1, ' symlink path exists');
+        is($path->is_dir, '', ' symlink path is not a dir');
+        is($path->is_file, 1, ' symlink path is a file');
+        is($path->is_symlink, 1, ' symlink path is a symlink');
+
+        my $symlink_filename_b = "$temp_dirname/symlink_b";
+        symlink($path, $symlink_filename_b);
+        ok(-l $symlink_filename_b, 'created symlink_b (from an object)');
+    };
+};

@@ -4,7 +4,7 @@ package UR::Singleton;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::Singleton',
@@ -136,6 +136,7 @@ sub delete {
     $self->SUPER::delete();
     no strict 'refs';
     ${ $class . "::singleton" } = undef if ${ $class . "::singleton" } eq $self;
+    return $self;
 }
 
 # In most cases, the id is the class name itself, but this is not necessary.

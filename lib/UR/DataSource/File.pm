@@ -15,7 +15,7 @@ package UR::DataSource::File;
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 use Fcntl qw(:DEFAULT :flock);
 use Errno qw(EINTR EAGAIN EOPNOTSUPP);
@@ -93,6 +93,27 @@ sub disconnect_default_handle {
         $fh->close();
         $self->{'_fh'} = undef;
         $self->is_connected(0);
+    }
+}
+
+sub prepare_for_fork {
+    my $self = shift;
+
+    # make sure this is clear before we fork
+    $self->{'_fh_position'} = undef;
+    if (defined $self->{'_fh'}) {
+        $self->{'_fh_position'} = $self->{'_fh'}->tell();
+        UR::DBI->sql_fh->printf("FILE: preparing to fork; closing file %s and noting position at %s\n",$self->server, $self->{'_fh_position'});
+    }
+    $self->disconnect_default_handle;
+}
+
+sub finish_up_after_fork {
+    my $self = shift;
+    if (defined $self->{'_fh_position'}) {
+        UR::DBI->sql_fh->printf("FILE: resetting after fork; reopening file %s and fast-forwarding to %s\n",$self->server, $self->{'_fh_position'});
+        my $fh = $self->get_default_handle; 
+        $fh->seek($self->{'_fh_position'},0);
     }
 }
 
@@ -248,7 +269,14 @@ sub _generate_loading_templates_arrayref {
     }
 
     # reorder the requested columns to be in the same order as the file
-    @$sql_cols = sort { $column_to_position_map{$a->[1]->column_name} <=> $column_to_position_map{$b->[1]->column_name}} @$sql_cols;
+    my @sql_cols_with_column_name =
+           map{ [ $column_to_position_map{ $_->[1]->column_name }, $_ ] }
+           @$sql_cols;
+    my @sorted_sql_cols =
+           map { $_->[1] }
+           sort { $a->[0] <=> $b->[0] }
+               @sql_cols_with_column_name;
+    $sql_cols = \@sorted_sql_cols;
     my $templates = $self->SUPER::_generate_loading_templates_arrayref($sql_cols);
 
     if (my $constant_values = $self->constant_values) {

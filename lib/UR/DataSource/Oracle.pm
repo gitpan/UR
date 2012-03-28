@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Oracle',
@@ -261,6 +261,18 @@ sub ur_data_type_for_data_source_data_type {
     }
     return $urtype;
 }
+
+sub _alter_sth_for_selecting_blob_columns {
+    my($self, $sth, $column_objects) = @_;
+
+    for (my $n = 0; $n < @$column_objects; $n++) {
+        next unless defined ($column_objects->[$n]);  # No metaDB info for this one
+        if ($column_objects->[$n]->data_type eq 'BLOB') {
+            $sth->bind_param($n+1, undef, { ora_type => 23 });
+        }
+    }
+}
+
 
 1;
 

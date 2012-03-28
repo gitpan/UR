@@ -6,7 +6,7 @@ use warnings;
 use Scalar::Util;
 use UR::Context;
 
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 # A helper package for UR::Context to keep track of the subrefs used
 # to create objects from database data
@@ -132,6 +132,7 @@ sub create_for_loading_template {
              $rule_template_without_recursion_desc->_property_names;
 
     my($rule_template_without_in_clause,$rule_template_id_without_in_clause,%in_clause_values,@all_rule_property_names);
+    my $do_record_in_all_params_loaded = 1;
     if (@rule_properties_with_in_clauses) {
         $rule_template_id_without_in_clause = $rule_template_without_recursion_desc->id;
         foreach my $property_name ( @rule_properties_with_in_clauses ) {
@@ -149,13 +150,22 @@ sub create_for_loading_template {
         my %rule_properties_with_in_clauses = map { $_ => 1 } @rule_properties_with_in_clauses;
         @all_rule_property_names = $rule_template_without_in_clause->_property_names;
         foreach my $property ( @rule_properties_with_in_clauses ) {
+            my $values_for_in_clause = $rule_without_recursion_desc->value_for($property);
+            if (@$values_for_in_clause > 100) {
+                $do_record_in_all_params_loaded = 0;
+                next;
+            }
+
             my @other_values = map { exists $rule_properties_with_in_clauses{$_}
                                      ? undef   # placeholder filled in below
                                      : $rule_without_recursion_desc->value_for($_) }
                                $rule_template_without_in_clause->_property_names;
             my $position_for_this_property = $rule_template_without_in_clause->value_position_for_property_name($property);
 
-            my $values_for_in_clause = $rule_without_recursion_desc->value_for($property);
+
+            # If the number of items in the in-clause is over this number, then don't bother recording
+            # the template-id/rule-id, since searching the list to see if this query has been done before
+            # is going to take longer than just re-doing the query
             foreach my $value ( @$values_for_in_clause ) {
                 $value = '' if (!defined $value);
                 $other_values[$position_for_this_property] = $value;
@@ -183,14 +193,16 @@ sub create_for_loading_template {
         # Make a note in all_params_loaded (essentially, the query cache) that we've made a
         # match on this rule, and some equivalent rules
         if ($loading_base_object and not $rule_specifies_id) {
-            if ($rule_class_name ne $load_class_name and scalar(@extra_params) == 0) {
-                $pending_db_object->{__load}->{$load_template_id}{$load_rule_id}++;
-                $UR::Context::all_params_loaded->{$load_template_id}{$load_rule_id} = undef;
-                $local_all_params_loaded->{$load_template_id}{$load_rule_id}++;
+            if ($do_record_in_all_params_loaded) {
+                if ($rule_class_name ne $load_class_name and scalar(@extra_params) == 0) {
+                    $pending_db_object->{__load}->{$load_template_id}{$load_rule_id}++;
+                    $UR::Context::all_params_loaded->{$load_template_id}{$load_rule_id} = undef;
+                    $local_all_params_loaded->{$load_template_id}{$load_rule_id}++;
+                }
+                $pending_db_object->{__load}->{$template_id}{$rule_id}++;
+                $UR::Context::all_params_loaded->{$template_id}{$rule_id} = undef;
+                $local_all_params_loaded->{$template_id}{$rule_id}++;
             }
-            $pending_db_object->{__load}->{$template_id}{$rule_id}++;
-            $UR::Context::all_params_loaded->{$template_id}{$rule_id} = undef;
-            $local_all_params_loaded->{$template_id}{$rule_id}++;
 
             if (@rule_properties_with_in_clauses) {
                 # FIXME - confirm that all the object properties are filled in at this point, right?

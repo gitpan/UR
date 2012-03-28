@@ -2,7 +2,7 @@ package UR::Test;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 use Test::More;
 
 sub check_properties {
@@ -26,7 +26,9 @@ sub check_properties {
     ok($c, "got class meta for $cn");
 
     my @pm = 
-        sort { $a->property_name cmp $b->property_name } 
+        map { $_->[1] }
+        sort { $a->[0] cmp $b->[0] }
+        map { [ $_->property_name, $_ ] }
         $c->all_property_metas;
         
     ok(scalar(@pm), "got " . scalar(@pm) . " properties");

@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -318,6 +318,11 @@ sub _init_rdbms {
         my @properties_involved = sort keys(%properties_involved);
         my @errors;
         while (my $property_name = shift @properties_involved) {
+            if (index($property_name,'.') != -1) {
+                push @delegated_properties, $property_name;
+                next;
+            }
+
             my (@pmeta) = $class_meta->property_meta_for_name($property_name);
             unless (@pmeta) {
                 if ($class_name->can($property_name)) {
@@ -330,11 +335,6 @@ sub _init_rdbms {
                 }
             }
             
-            if (index($property_name,'.') != -1) {
-                push @delegated_properties, $property_name;
-                next;
-            }
-
             # For each property in this list, go up the inheritance and find the right property
             # to query on.  Give priority to properties that actually have columns
             FIND_PROPERTY_WITH_COLUMN:
@@ -1431,11 +1431,21 @@ sub _init_light {
             Carp::croak("No property '$final_accessor' on class " . $via_accessor_meta->data_type .
                           " while resolving property $property_name on class $class_name");
         }
+
+        # Follow the chain of via/to delegation down to where the data ultimately lives
         while($final_accessor_meta->is_delegated) {
+            # May have been 'to' an id_by/id_class_by property.  Stop chaining and do two queries
+            # If we had access to the value at this point, we could continue joining through that
+            # value's class and id
+            next DELEGATED_PROPERTY if ($final_accessor_meta->id_by or $final_accessor_meta->id_class_by);
+
+            my $prev_accessor_meta = $final_accessor_meta;
             $final_accessor_meta = $final_accessor_meta->to_property_meta();
             unless ($final_accessor_meta) {
-                Carp::croak("No property '$final_accessor' on class " . $via_accessor_meta->data_type .
-                              " while resolving property $property_name on class $class_name");
+                Carp::croak("Can't resolve property '$final_accessor' of class " . $via_accessor_meta->data_type
+                            . ": Resolution involved property '" . $prev_accessor_meta->property_name . "' of class "
+                            . $prev_accessor_meta->class_name
+                            . " which is delegated, but its via/to metadata does not resolve to a known class and property");
             }
         }
         $final_accessor = $final_accessor_meta->property_name;
@@ -1523,7 +1533,9 @@ sub _init_light {
                 # Add all of the columns in the join table to the return list.                
                 push @all_properties, 
                     map { [$foreign_class_object, $_, $alias, $object_num] }
-                    sort { $a->property_name cmp $b->property_name }
+                    map { $_->[1] }                    # These three lines are to get around a bug in perl
+                    sort { $a->[0] cmp $b->[0] }       # 5.8's sort involving method calls within the sort
+                    map { [ $_->property_name, $_ ] }  # sub that do sorts of their own
                     grep { defined($_->column_name) && $_->column_name ne '' }
                     UR::Object::Property->get( class_name => $foreign_class_name );
               
@@ -1906,7 +1918,9 @@ sub _init_core {
                 # Add all of the columns in the join table to the return list.                
                 push @all_properties, 
                     map { [$foreign_class_object, $_, $alias, $object_num] }
-                    sort { $a->property_name cmp $b->property_name }
+                    map { $_->[1] }                    # These three lines are to get around a bug in perl
+                    sort { $a->[0] cmp $b->[0] }       # 5.8's sort involving method calls within the sort
+                    map  { [ $_->property_name, $_ ] } # sub that do sorts of their own
                     grep { defined($_->column_name) && $_->column_name ne '' }
                     UR::Object::Property->get( class_name => $foreign_class_name );
               

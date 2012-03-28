@@ -10,7 +10,7 @@ use Getopt::Long;
 use Term::ANSIColor;
 require Text::Wrap;
 
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -26,6 +26,7 @@ UR::Object::Type->define(
     has_optional => [
         is_executed => { is => 'Boolean' },
         result      => { is => 'Scalar', is_output => 1 },
+        original_command_line => { is => 'String', doc => 'null-byte separated list of command and arguments when run via execute_with_shell_params_and_exit'},
     ],
 );
 
@@ -214,6 +215,8 @@ sub _execute_with_shell_params_and_return_exit_code {
     my $class = shift;
     my @argv = @_;
 
+    my $original_cmdline = join("\0",$0,@argv);
+
     # make --foo=bar equivalent to --foo bar
     @argv = map { ($_ =~ /^(--\w+?)\=(.*)/) ? ($1,$2) : ($_) } @argv;
     my ($delegate_class, $params,$error_tag_list) = $class->resolve_class_and_params_for_argv(@argv);
@@ -225,7 +228,7 @@ sub _execute_with_shell_params_and_return_exit_code {
                                           "Property '" . join("','",@$props) . "' ($type): $desc" }
                                     @$error_tag_list));
     } else {
-        $rv = $class->_execute_delegate_class_with_params($delegate_class,$params);
+        $rv = $class->_execute_delegate_class_with_params($delegate_class,$params,$original_cmdline);
     }
 
     my $exit_code = $delegate_class->exit_code_for_return_value($rv);
@@ -234,7 +237,7 @@ sub _execute_with_shell_params_and_return_exit_code {
 
 # this is called by both the shell dispatcher and http dispatcher for now
 sub _execute_delegate_class_with_params {
-    my ($class, $delegate_class, $params) = @_;
+    my ($class, $delegate_class, $params, $original_cmdline) = @_;
 
     unless ($delegate_class) {
         $class->usage_message($class->help_usage_complete_text);
@@ -258,6 +261,7 @@ sub _execute_delegate_class_with_params {
         return 1;
     }
 
+    $params->{'original_command_line'} = $original_cmdline if (defined $original_cmdline);
     my $command_object = $delegate_class->create(%$params);
 
     unless ($command_object) {
@@ -988,12 +992,14 @@ sub help_options {
 sub sorted_sub_command_classes {
     no warnings;
     my @c = shift->sub_command_classes;
-    return sort {
-            ($a->sub_command_sort_position <=> $b->sub_command_sort_position)
-            ||
-            ($a->sub_command_sort_position cmp $b->sub_command_sort_position)
-        }
-        @c;
+
+    my @commands_with_position = map { [ $_->sub_command_sort_position, $_ ] } @c;
+    my @sorted = sort { $a->[0] <=> $b->[0]
+                         ||
+                        $a->[0] cmp $b->[0]
+                 }
+                 @commands_with_position;
+    return map { $_->[1] } @sorted;
 }
 
 sub sorted_sub_command_names {
@@ -1155,6 +1161,7 @@ sub _shell_args_property_meta {
         next if $property_name eq 'id';
         next if $property_name eq 'result';
         next if $property_name eq 'is_executed';
+        next if $property_name eq 'original_command_line';
         next if $property_name =~ /^_/;
         next if defined($property_meta->data_type) and $property_meta->data_type =~ /::/;
         next if not $property_meta->is_mutable;
@@ -1175,13 +1182,17 @@ sub _shell_args_property_meta {
     }
 
     my @result;
+    @required   = map { [ $_->property_name, $_ ] } @required;
+    @optional   = map { [ $_->property_name, $_ ] } @optional;
+    @positional = map { [ $_->{shell_args_position}, $_ ] } @positional;
+
     @result = (
-        (sort { $a->property_name cmp $b->property_name } @required),
-        (sort { $a->property_name cmp $b->property_name } @optional),
-        (sort { $a->{shell_args_position} <=> $b->{shell_args_position} } @positional),
+        (sort { $a->[0] cmp $b->[0] } @required),
+        (sort { $a->[0] cmp $b->[0] } @optional),
+        (sort { $a->[0] <=> $b->[0] } @positional),
     );
 
-    return @result;
+    return map { $_->[1] } @result;
 }
 
 sub _shell_arg_name_from_property_meta {

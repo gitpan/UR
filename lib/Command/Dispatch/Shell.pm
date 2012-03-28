@@ -41,12 +41,14 @@ sub _execute_with_shell_params_and_return_exit_code {
     my $class = shift;
     my @argv = @_;
 
+    my $original_cmdline = join("\0",$0,@argv);
+
     # make --foo=bar equivalent to --foo bar
     @argv = map { ($_ =~ /^(--\w+?)\=(.*)/) ? ($1,$2) : ($_) } @argv;
     my ($delegate_class, $params, $errors) = $class->resolve_class_and_params_for_argv(@argv);
 
     my $exit_code;
-    if ($errors and @$errors and not $params) {
+    if ($errors and @$errors) {
         $delegate_class->dump_status_messages(1);
         $delegate_class->dump_warning_messages(1);
         $delegate_class->dump_error_messages(1);
@@ -56,7 +58,7 @@ sub _execute_with_shell_params_and_return_exit_code {
         $exit_code = 1;
     }
     else {
-        my $rv = $class->_execute_delegate_class_with_params($delegate_class,$params);
+        my $rv = $class->_execute_delegate_class_with_params($delegate_class,$params,$original_cmdline);
         $exit_code = $delegate_class->exit_code_for_return_value($rv);
     }
 
@@ -66,7 +68,7 @@ sub _execute_with_shell_params_and_return_exit_code {
 
 sub _execute_delegate_class_with_params {
     # this is called by both the shell dispatcher and http dispatcher for now
-    my ($class, $delegate_class, $params) = @_;
+    my ($class, $delegate_class, $params, $original_cmdline) = @_;
 
     unless ($delegate_class) {
         $class->dump_status_messages(1);
@@ -84,6 +86,10 @@ sub _execute_delegate_class_with_params {
     $delegate_class->dump_usage_messages(1);
     $delegate_class->dump_debug_messages(0);
 
+    # FIXME There should be a better check for params that are there because they came from the
+    # command line, and params that exist for infrastructural purposes.  'original_command_line'
+    # won't ever be given on the command line and shouldn't count toward the next test.
+    # maybe check the is_input properties...
     if ( !defined($params) ) {
         my $command_name = $delegate_class->command_name;
         $delegate_class->status_message($delegate_class->help_usage_complete_text);
@@ -96,6 +102,7 @@ sub _execute_delegate_class_with_params {
         return 1;
     }
 
+    $params->{'original_command_line'} = $original_cmdline if (defined $original_cmdline);
     my $command_object = $delegate_class->create(%$params);
 
     unless ($command_object) {
@@ -439,11 +446,15 @@ sub _shell_args_property_meta {
     my $rule = UR::Object::Property->define_boolexpr(@_);
     my %seen;
     my (@positional,@required,@optional);
-    my @property_meta = 
+
+    my @properties_with_position = map { [ $_->position_in_module_header, $_ ] }
+                                   $class_meta->properties();
+    my @sorted =
         sort { 
-            $a->position_in_module_header <=> $b->position_in_module_header
+            $a->[0] <=> $b->[0]
         } 
-        $class_meta->properties();
+        @properties_with_position;
+    my @property_meta = map { $_->[1] } @sorted;
     foreach my $property_meta (@property_meta) {
         my $property_name = $property_meta->property_name;
 
@@ -455,6 +466,7 @@ sub _shell_args_property_meta {
         next if $property_name eq 'id';
         next if $property_name eq 'result';
         next if $property_name eq 'is_executed';
+        next if $property_name eq 'original_command_line';
         next if $property_name =~ /^_/;
 
         next if $property_meta->implied_by;
@@ -481,14 +493,18 @@ sub _shell_args_property_meta {
         }
     }
 
+    @required   = map { [ $_->position_in_module_header, $_ ] } @required;
+    @optional   = map { [ $_->position_in_module_header, $_ ] } @optional;
+    @positional = map { [ $_->{shell_args_position}, $_ ] } @positional;
+
     my @result;
     @result = ( 
-        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @required),
-        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @optional),
-        (sort { $a->{shell_args_position} <=> $b->{shell_args_position} } @positional),
+        (sort { $a->[0] cmp $b->[0] } @required),
+        (sort { $a->[0] cmp $b->[0] } @optional),
+        (sort { $a->[0] <=> $b->[0] } @positional),
     );
 
-    return @result;
+    return map { $_->[1] } @result;
 }
 
 
@@ -552,7 +568,8 @@ sub _shell_arg_getopt_specification_from_property_meta {
     my $arg_name = $self->_shell_arg_name_from_property_meta($property_meta);
     return (
         $arg_name .  $self->_shell_arg_getopt_qualifier_from_property_meta($property_meta),
-        ($property_meta->is_many ? ($arg_name => []) : ())
+        #this prevents defaults from being used for is_many properties
+        #($property_meta->is_many ? ($arg_name => []) : ())
     );
 }
 
@@ -934,8 +951,13 @@ sub _get_user_verification_for_param_value_drilldown {
     my $max_dname_length = @dnames ? length((sort { length($b) <=> length($a) } @dnames)[0]) : 0;
     my @statuses = map {$_->status} grep { $_->can('status') } @results;
     my $max_status_length = @statuses ? length((sort { length($b) <=> length($a) } @statuses)[0]) : 0;
-    @results = sort {$a->__display_name__ cmp $b->__display_name__} @results;
-    @results = sort {$a->class cmp $b->class} @results;
+
+    my @results_with_display_name_and_class = map { [ $_->__display_name__, $_->class, $_ ] } @results;
+    @results = map { $_->[2] }
+               sort { $a->[1] cmp $b->[1] }
+               sort { $a->[0] cmp $b->[0] }
+               @results_with_display_name_and_class;
+
     my @classes = $self->_unique_elements(map {$_->class} @results);
 
     my $response;

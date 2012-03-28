@@ -8,7 +8,7 @@ require UR;
 use Carp;
 our @CARP_NOT = ('UR::Context');
 
-our $VERSION = "0.37"; # UR $VERSION;;
+our $VERSION = "0.38"; # UR $VERSION;;
 
 # readable stringification
 use overload ('""' => '__display_name__');
@@ -148,14 +148,11 @@ sub values {
     my $value_id = $self->value_id;
     return unless defined($value_id) and length($value_id);
     my @values;
+    @values = UR::BoolExpr::Util->value_id_to_values($value_id);
     if (my $hard_refs = $self->{hard_refs}) {
-        @values = UR::BoolExpr::Util->value_id_to_values($value_id);
         for my $n (keys %$hard_refs) {
             $values[$n] = $hard_refs->{$n};
         }
-    }
-    else {
-        @values = UR::BoolExpr::Util->value_id_to_values($value_id);
     }
     $self->{values} = \@values;
     return @values;
@@ -180,10 +177,19 @@ sub value_for {
     my $property_name = shift;
 
     # TODO: refactor to be more efficient
+    my $template = $self->template;
     my $h = $self->legacy_params_hash;
     my $v;
     if (exists $h->{$property_name}) {
+        # normal case
         $v = $h->{$property_name};
+        my $tmpl_pos = $template->value_position_for_property_name($property_name);
+        if (exists $self->{'hard_refs'}->{$tmpl_pos}) {
+            $v = $self->{'hard_refs'}->{$tmpl_pos};  # It was stored during resolve() as a hard ref
+        }
+        elsif ($self->_value_is_old_style_operator_and_value($v)) {
+            $v = $v->{'value'};   # It was old style operator/value hash
+        }
     } else {
         # No value found under that name... try decomposing the id
         return if $property_name eq 'id';
@@ -199,8 +205,6 @@ sub value_for {
             }
         }
     }
-    return $v unless ref($v);
-    return $v->{value} if ref($v) eq "HASH";
     return $v;
 }
 
@@ -308,6 +312,28 @@ sub resolve_for_template_id_and_values {
     $class->get($rule_id);
 }
 
+
+# Return true if it's a hashref that specifies the old-style operator/value
+# like property => { operator => '=', value => 1 }
+# FYI, the new way to do this is:
+# 'property =' => 1
+sub _value_is_old_style_operator_and_value {
+    my($class,$value) = @_;
+
+    return (ref($value) eq 'HASH')
+            &&
+           (exists($value->{'operator'}))
+           &&
+           (exists($value->{'value'}))
+           &&
+           ( (keys(%$value) == 2)
+              ||
+             ((keys(%$value) == 3)
+                && exists($value->{'escape'}))
+          );
+}
+
+
 my $resolve_depth;
 sub resolve {
     $resolve_depth++;
@@ -405,10 +431,7 @@ sub resolve {
 
         if (my $ref = ref($value)) {
             if ( (not $operator) and ($ref eq "HASH")) {
-                if (
-                    exists $value->{operator}
-                    and exists $value->{value}
-                ) {
+                if ( $class->_value_is_old_style_operator_and_value($value)) {
                     # the key => { operator => $o, value => $v } syntax
                     # cannot be used with a value type of HASH
                     $operator = lc($value->{operator});
@@ -626,7 +649,7 @@ sub resolve {
                     push @xremove_keys, $kn-1;
                     push @xremove_values, $vn-1;
                 }
-                elsif ($value->isa($property_meta->data_type)) {
+                elsif ($property_meta->is_valid_storage_for_value($value)) {
                     push @hard_refs, $vn-1, $value;
                 }
                 elsif ($value->can($property_name)) {
@@ -637,6 +660,9 @@ sub resolve {
                 }
                 else {
                     $operator = 'eq' unless $operator;
+                    $DB::single = 1;
+                    print $value->isa($property_meta->_data_type_as_class_name),"\n";
+                    print $value->isa($property_meta->_data_type_as_class_name),"\n";
                     Carp::croak("Invalid data type in rule.  A value of type " . ref($value) . " cannot be used in class $subject_class property '$property_name' with operator $operator!");
                 }
                 # end of handling a value which is an arrayref

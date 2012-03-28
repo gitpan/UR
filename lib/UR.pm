@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = "0.37"; # UR $VERSION
+our $VERSION = "0.38"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -378,6 +378,7 @@ UR::Object::Type->define(
         is_numeric                      => { calculate_from => ['data_type'], },
         id_by                           => { is => 'ARRAY', is_optional => 1},
         id_class_by                     => { is => 'Text', is_optional => 1},
+        access_as                       => { is => 'Text', is_optional => 1, doc => 'when id_class_by is set, and this is set to "auto", primitives will return as their ID instead of boxed' },
         order_by                        => { is => 'ARRAY', is_optional => 1},
         specify_by                      => { is => 'Text', is_optional => 1},
         reverse_as                      => { is => 'ARRAY', is_optional => 1 },
@@ -468,7 +469,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.37
+This document describes UR version 0.38
 
 =head1 SYNOPSIS
 

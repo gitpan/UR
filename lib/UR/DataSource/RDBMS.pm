@@ -9,7 +9,7 @@ use Scalar::Util;
 use File::Basename;
 
 require UR;
-our $VERSION = "0.37"; # UR $VERSION;
+our $VERSION = "0.38"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS',
@@ -1288,7 +1288,11 @@ sub refresh_database_metadata_for_table_name {
 sub _make_foreign_key_fingerprint {
     my($self,$fk) = @_;
 
-    my @fk_cols = sort {$a->column_name cmp $b->column_name} $fk->get_related_column_objects();
+    my @column_objects_with_name = map { [ $_->column_name, $_ ] }
+                                       $fk->get_related_column_objects();
+    my @fk_cols = map { $_->[1] }
+                  sort {$a->[0] cmp $b->[0]}
+                  @column_objects_with_name;
     my $fingerprint =
         join(':',
             $fk->table_name,
@@ -1555,7 +1559,7 @@ sub create_iterator_closure_for_rule {
             return;
         } 
 
-        # this handles things lik BLOBS, which have a special interface to get the 'real' data
+        # this handles things like BLOBS, which have a special interface to get the 'real' data
         if ($post_process_results_callback) {
             $next_db_row = $post_process_results_callback->($next_db_row);
         }
@@ -2250,7 +2254,6 @@ sub _sync_database {
             foreach my $column_name ( @{ $cmd->{column_names} } ) {
                 my $column = $column_objects_by_class_and_column_name{$class_name}->{$column_name};
                 unless ($column) {
-                    #print "looking at parent classes for $class_name\n";
                     FIND_IN_ANCESTRY:
                     for my $ancestor_class_name ($class_object->ancestry_class_names) {
                         $column = $column_objects_by_class_and_column_name{$ancestor_class_name}->{$column_name};
@@ -2258,22 +2261,16 @@ sub _sync_database {
                             $column_objects_by_class_and_column_name{$class_name}->{$column_name} = $column;
                             last FIND_IN_ANCESTRY;
                         }
-                        unless ($column) {
-                            Carp::croak("Failed to find column metadata for column named '$column_name' for class $class_name");
-                        }
                     }
                 }
+                # If we didn't find a column object, then $column will be undef
+                # and we'll have to guess what it looks like
                 push @column_objects, $column;
             }
 
             # print "Column Types: @column_types\n";
 
-            for my $n (0 .. $#column_objects) {
-                if ($column_objects[$n]->data_type eq 'BLOB')
-                {
-                    $sth->bind_param($n+1, undef, { ora_type => 23 });
-                }
-            }
+            $self->_alter_sth_for_selecting_blob_columns($sth,\@column_objects);
         }
     }
 
@@ -2467,6 +2464,14 @@ sub _sync_database {
 
     return 1;
 }
+
+
+sub _alter_sth_for_selecting_blob_columns {
+    my($self, $sth, $column_objects) = @_;
+
+    return;
+}
+
 
 sub _reverse_sync_database {
     my $self = shift;
@@ -2707,8 +2712,6 @@ sub _default_save_sql_for_object {
 
         # Determine the $sql and @values needed to save this object.
 
-        my ($sql, @changed_cols, @values, @value_properties, %value_properties);
-
         if ($table_action eq 'delete')
         {
             # A row loaded from the database with its object deleted.
@@ -2717,7 +2720,7 @@ sub _default_save_sql_for_object {
             #grab fk_constraints so we can undef non primary-key nullable fks before delete
             my @non_pk_nullable_fk_columns = $self->get_non_primary_key_nullable_foreign_key_columns_for_table($table);
 
-            @values = $self->_id_values_for_primary_key($table,$object_to_save);
+            my @values = $self->_id_values_for_primary_key($table,$object_to_save);
             my $where = $self->_matching_where_clause($table, \@values);
 
             if (@non_pk_nullable_fk_columns) {
@@ -2744,7 +2747,7 @@ sub _default_save_sql_for_object {
             }
 
 
-            $sql = " DELETE FROM ";
+            my $sql = " DELETE FROM ";
             $sql .= "${db_owner}." if ($db_owner);
             $sql .= "$table_name_to_update WHERE $where";
 
@@ -2772,7 +2775,7 @@ sub _default_save_sql_for_object {
                     map { $_ => $change_summary->{$_} }
                     grep { $class_object->table_for_property($_) eq $table_name }
                     keys %$change_summary;
-                    $changes_for_this_table = {@changes};
+                $changes_for_this_table = {@changes};
             }
             else
             {
@@ -2781,6 +2784,7 @@ sub _default_save_sql_for_object {
                 $changes_for_this_table = $change_summary;
             }
 
+            my(@changed_cols,@values);
             for my $property (keys %$changes_for_this_table)
             {
                 my $column_name = $class_object->column_for_property($property); 
@@ -2788,8 +2792,6 @@ sub _default_save_sql_for_object {
                 push @changed_cols, $column_name;
                 push @values, $changes_for_this_table->{$property};
             }
-
-            #$object_to_save->debug_message("Changed cols: @changed_cols", 4);
 
             if (@changed_cols)
             {
@@ -2815,7 +2817,7 @@ sub _default_save_sql_for_object {
                 my @all_values = ( @changed_values, @id_values );
                 my $where = $self->_matching_where_clause($table, \@all_values);
 
-                $sql = " UPDATE ";
+                my $sql = " UPDATE ";
                 $sql .= "${db_owner}." if ($db_owner);
                 $sql .= "$table_name_to_update SET " . join(",", map { "$_ = ?" } @changed_cols) . " WHERE $where";
 
@@ -2835,16 +2837,21 @@ sub _default_save_sql_for_object {
             # An object without a row in the database.
             # Insert into the database.
 
-            my @changed_cols = reverse sort $table->column_names; 
+            my @changed_cols = reverse sort
+                               map { $class_object->column_for_property($_->property_name) }
+                               grep { ! $_->is_transient }
+                               grep { ($class_object->table_for_property($_->property_name) || '') eq $table_name }
+                               grep { $_->column_name }
+                                    $class_object->all_property_metas();
 
-            $sql = " INSERT INTO ";
+            my $sql = " INSERT INTO ";
             $sql .= "${db_owner}." if ($db_owner);
             $sql .= "$table_name_to_update (" 
                     . join(",", @changed_cols) 
                     . ") VALUES (" 
                     . join(',', split(//,'?' x scalar(@changed_cols))) . ")";
 
-            @values = map { 
+            my @values = map {
                            # when there is a column but no property, use NULL as the value
                            defined($_) && $object_to_save->can($_)
                            ? $object_to_save->$_
@@ -2865,14 +2872,15 @@ sub _default_save_sql_for_object {
             }
 
             #grab fk_constraints so we can undef non primary-key nullable fks before delete
-            my @non_pk_nullable_fk_columns = $self->get_non_primary_key_nullable_foreign_key_columns_for_table($table);
+            my %non_pk_nullable_fk_columns = map { $_ => 1 }
+                                                 $self->get_non_primary_key_nullable_foreign_key_columns_for_table($table);
 
-            if (@non_pk_nullable_fk_columns){
+            if (%non_pk_nullable_fk_columns){
                 my @insert_values;
                 my %update_values;
                 for (my $i = 0; $i < @changed_cols; $i++){
                     my $col = $changed_cols[$i];
-                    if (grep {$col eq $_} @non_pk_nullable_fk_columns){
+                    if ($non_pk_nullable_fk_columns{$col}) {
                         push @insert_values, undef;
                         $update_values{$col} = $values[$i];
                     }else{
@@ -2891,27 +2899,31 @@ sub _default_save_sql_for_object {
                                 };
 
                 ##$DB::single = 1;
-                my @pk_values = $self->_id_values_for_primary_key($table, $object_to_save);
-                my $where = $self->_matching_where_clause($table, \@pk_values);
+                # %update_values can be empty if the Metadb is out of date, and has a fk constraint column
+                # that no longer exists in the class metadata
+                if (%update_values) {
+                    my @pk_values = $self->_id_values_for_primary_key($table, $object_to_save);
+                    my $where = $self->_matching_where_clause($table, \@pk_values);
                 
-                my @update_cols = keys %update_values;
-                my @update_values = ((map {$update_values{$_}} @update_cols), @pk_values);
+                    my @update_cols = keys %update_values;
+                    my @update_values = ((map {$update_values{$_}} @update_cols), @pk_values);
                 
                 
 
-                my $update_sql = " UPDATE ";
-                $update_sql .= "${db_owner}." if ($db_owner);
-                $update_sql .= "$table_name_to_update SET ". join(",", map { "$_ = ?" } @update_cols) . " WHERE $where";
+                    my $update_sql = " UPDATE ";
+                    $update_sql .= "${db_owner}." if ($db_owner);
+                    $update_sql .= "$table_name_to_update SET ". join(",", map { "$_ = ?" } @update_cols) . " WHERE $where";
 
-                push @commands, { type         => 'update',
-                                  table_name   => $table_name,
-                                  column_names => \@update_cols,
-                                  sql          => $update_sql,
-                                  params       => \@update_values,
-                                  class        => $table_class,
-                                  id           => $id,
-                                  dbh          => $data_source->get_default_handle
-                                };
+                    push @commands, { type         => 'update',
+                                      table_name   => $table_name,
+                                      column_names => \@update_cols,
+                                      sql          => $update_sql,
+                                      params       => \@update_values,
+                                      class        => $table_class,
+                                      id           => $id,
+                                      dbh          => $data_source->get_default_handle
+                                    };
+                }
             }
             else 
             {
@@ -3189,6 +3201,14 @@ sub ur_data_type_for_data_source_data_type {
         $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
     }
     return $urtype;
+}
+
+sub prepare_for_fork {
+    my $self = shift;
+   
+    $self->set_all_dbh_to_inactive_destroy();
+    
+    return 1;
 }
 
 
