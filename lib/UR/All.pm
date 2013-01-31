@@ -3,7 +3,7 @@ package UR::All;
 use strict;
 use warnings;
 
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 BEGIN { require above; };
 use UR;
@@ -54,9 +54,18 @@ use UR::DataSource::Default;
 use UR::DataSource::File;
 use UR::DataSource::FileMux;
 use UR::DataSource::Meta;
-use UR::DataSource::MySQL;
-use UR::DataSource::Oracle;
-use UR::DataSource::Pg;
+BEGIN {
+    eval { require DBD::mysql };
+    require UR::DataSource::MySQL unless $@;
+}
+BEGIN {
+    eval { require DBD::Oracle };
+    require UR::DataSource::Oracle unless $@;
+}
+BEGIN {
+    eval { require DBD::Pg };
+    require UR::DataSource::Pg unless $@;
+}
 use UR::DataSource::RDBMS;
 use UR::DataSource::RDBMS::BitmapIndex;
 use UR::DataSource::RDBMS::Entity;
@@ -120,7 +129,8 @@ use UR::Namespace::Command::Define::Datasource::RdbmsWithAuth;
 use UR::Namespace::Command::Define::Datasource::Sqlite;
 use UR::Namespace::Command::Define::Db;
 use UR::Namespace::Command::Define::Namespace;
-use UR::Namespace::Command::Describe;
+use UR::Namespace::Command::Show::Properties;
+use UR::Namespace::Command::Show::Schema;
 use UR::Namespace::Command::Init;
 use UR::Namespace::Command::List;
 use UR::Namespace::Command::List::Classes;

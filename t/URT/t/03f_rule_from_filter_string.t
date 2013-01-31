@@ -8,7 +8,7 @@ use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
-use Test::More tests => 618;
+use Test::More tests => 710;
 
 class URT::RelatedItem {
     id_by => 'ritem_id',
@@ -104,6 +104,14 @@ foreach my $test (
     { string => 'name=fred and score>2,foo=bar',
       values => { name => 'fred', score => 2, foo => 'bar' },
       operators => { name => '=', score => '>', foo => '='}
+    },
+    { string => 'name=fred and score>=2',
+      operators => { name => '=', score => '>=' },
+      values => { name => 'fred', score => 2},
+    },
+    { string => 'name=fred and score<=2',
+      operators => { name => '=', score => '<=' },
+      values => { name => 'fred', score => 2},
     },
     { string => 'score!:-100--10.2',
       values => { score => [-100, -10.2] },
@@ -206,6 +214,28 @@ foreach my $test (
       values => { name => 'foo', foo => 'bar', score => 2 },
       operators => { name => '=', foo => '=', score => '=' },
     },
+    { string => 'name=foo limit 10',
+      values => { name => 'foo' },
+      operators => {name => '='},
+      limit => 10,
+    },
+    { string => 'name=foo offset 10',
+      values => { name => 'foo' },
+      operators => {name => '='},
+      offset => 10,
+    },
+    { string => 'name=foo limit 10 offset 20',
+      values => { name => 'foo' },
+      operators => {name => '='},
+      limit => 10,
+      offset => 20,
+    },
+    { string => 'name=foo and score=2 limit 10 offset 20',
+      values => { name => 'foo', score => 2 },
+      operators => {name => '=', score => '='},
+      limit => 10,
+      offset => 20,
+    },
     { string => 'name=foo order by score' ,
       values => { name => 'foo' },
       operators => { name => '=' },
@@ -294,6 +324,14 @@ foreach my $test (
       order_by => ['-score','-foo'],
       group_by => ['ritem_id','parent_name'],
     },
+    { string => 'name=foo order by -score,-foo group by ritem_id, parent_name limit 10 offset 20',
+      values => { name => 'foo' },
+      operators => { name => '=' },
+      order_by => ['-score','-foo'],
+      group_by => ['ritem_id','parent_name'],
+      limit => 10,
+      offset => 20,
+    },
     { string => '',
       values => {},
       operators => {},
@@ -319,6 +357,50 @@ foreach my $test (
       values => { name => 'a   string   with multiple spaces', score => 2},
       operators => { name => '=', score => '=' },
     },
+    { string => 'name true',
+      operators => { name => 'true' },
+      values => { name => 1 },
+    },
+    { string => 'name false',
+      operators => { name => 'false' },
+      values => { name => 1 },
+    },
+    { string => 'name true and score=2',
+      operators => { name => 'true', score => '=' },
+      values => { name => 1, score => 2 },
+    },
+    { string => 'name is null',
+      operators => { name => '=' },
+      values => { name => undef },
+    },
+    { string => 'name is not null',
+      operators => { name => '!=' },
+      values => { name => undef },
+    },
+    { string => 'name is undef',
+      operators => { name => '=' },
+      values => { name => undef },
+    },
+    { string => 'name is not undef',
+      operators => { name => '!=' },
+      values => { name => undef },
+    },
+    { string => 'name not is undef',
+      operators => { name => '!=' },
+      values => { name => undef },
+    },
+    { string => 'name not is null',
+      operators => { name => '!=' },
+      values => { name => undef },
+    },
+    { string => 'name is not undef and score=2',
+      operators => { name => '!=', score => '=' },
+      values => { name => undef, score => 2 },
+    },
+    { string => 'name=this that + the other thing',
+      operators => { name => '=' },
+      values => { name => 'this that + the other thing' },
+    },
 ) {
 
     my $string = $test->{'string'};
@@ -339,7 +421,7 @@ foreach my $test (
         is($r->operator_for($property), $operators->{$property}, "Operator for $property is correct");
     }
 
-    foreach my $meta ( 'order_by', 'group_by' ) {
+    foreach my $meta ( 'order_by', 'group_by', 'limit', 'offset' ) {
         if ($test->{$meta}) {
             my $got = $r->template->$meta;
             is_deeply($got, $test->{$meta}, "$meta is correct");

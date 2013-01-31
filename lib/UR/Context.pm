@@ -6,7 +6,7 @@ use Sub::Name;
 use Scalar::Util;
 
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 use UR::Context::ImportIterator;
 use UR::Context::ObjectFabricator;
@@ -50,7 +50,7 @@ our $GET_COUNTER = 1;                         # This is where the serial number 
 $UR::Context::current = __PACKAGE__;
 
 # called by UR.pm during bootstraping
-my $initialized = 0;
+our $initialized = 0;
 sub _initialize_for_current_process {
     my $class = shift;
     if ($initialized) {
@@ -89,6 +89,7 @@ sub _initialize_for_current_process {
         $UR::Context::current->monitor_query($ENV{'UR_CONTEXT_MONITOR_QUERY'});
     }
 
+    $initialized = 1;
     return $UR::Context::current;
 }
 
@@ -103,8 +104,12 @@ sub process {
     return $UR::Context::process;
 }
 
+sub date_template {
+    return q|%Y-%m-%d %H:%M:%S|;
+}
+
 sub now {
-    return Date::Format::time2str(q|%Y-%m-%d %H:%M:%S|,time());
+    return Date::Format::time2str(date_template(), time());
 }
 
 my $master_monitor_query = 0;
@@ -360,8 +365,6 @@ sub send_notification_to_observers {
         $id = $subject->id;
     } else {
         $class = $subject;
-        $subject = undef;
-        $id = undef;
     }
 
     my $check_classes = $subscription_classes{$class};
@@ -395,7 +398,7 @@ sub send_notification_to_observers {
     
     foreach my $callback_info (@matches) {
         my ($callback, $note) = @$callback_info;
-        $callback->($subject, $property, @data)
+        $callback->($subject, $property, @data);
     }
     $sig_depth--;
 
@@ -423,7 +426,7 @@ sub query {
                 $obj->{'__get_serial'} = $UR::Context::GET_COUNTER++;
                 return $obj;
 
-            } elsif (my $subclasses = $UR::Object::_init_subclasses_loaded{$_[0]}) {
+            } elsif (my $subclasses = $UR::Object::Type::_init_subclasses_loaded{$_[0]}) {
                 # Check subclasses of the requested class, along with the ID
                 # yes, it only goes one level deep.  This should catch enough cases to be worth it.
                 # Deeper searches will be covered by get_objects_for_class_and_rule()
@@ -469,7 +472,7 @@ sub query {
     
     if (@extra) {
         # remove this and have the developer go to the datasource 
-        if (scalar @extra == 2 and $extra[0] eq "sql") {
+        if (scalar @extra == 2 and ($extra[0] eq "sql" or $extra[0] eq 'sql in')) {
             return $UR::Context::current->_get_objects_for_class_and_sql($class,$extra[1]);
         }
         
@@ -1649,12 +1652,15 @@ sub get_objects_for_class_and_rule {
     # this is an arrayref of all of the cached data
     # it is set in one of two places below
     my $cached;
+   
+    # this will turn foo=>$foo into foo.id=>$foo->id where possible
+    my $no_hard_refs_rule = $rule->flatten_hard_refs;
+    
+    # we do not currently fully "flatten" b/c the bx constant_values do not flatten/reframe
+    #my $flat_rule = ( (1 or $no_hard_refs_rule->subject_class_name eq 'UR::Object::Property') ? $no_hard_refs_rule : $no_hard_refs_rule->flatten);
     
     # this is a no-op if the rule is already normalized
-    # we do not currently flatten b/c the bx constant_values do not flatten/reframe
-    #my $flat_rule = ( (1 or $rule->subject_class_name eq 'UR::Object::Property') ? $rule : $rule->flatten);
-    #my $normalized_rule = $flat_rule->normalize;
-    my $normalized_rule = $rule->normalize;
+    my $normalized_rule = $no_hard_refs_rule->normalize;
 
     my $is_monitor_query = $self->monitor_query;
     $self->_log_query_for_rule($class,$normalized_rule,Carp::shortmess("QUERY: Query start for rule $normalized_rule")) if ($is_monitor_query);
@@ -1764,7 +1770,7 @@ sub get_objects_for_class_and_rule {
         if ($loading_iterator) {
             # use the iterator made above
             my $found;
-            while ($found = $loading_iterator->(1)) {        
+            while (defined($found = $loading_iterator->(1))) {
                 push @results, $found;
             }
         }
@@ -1935,10 +1941,10 @@ sub _get_objects_for_class_and_sql {
     my $meta = $class->__meta__;        
     #my $ds = $self->resolve_data_sources_for_class_meta_and_rule($meta,$class->define_boolexpr());    
     my $ds = $self->resolve_data_sources_for_class_meta_and_rule($meta,UR::BoolExpr->resolve($class));
-    my @ids = $ds->_resolve_ids_from_class_name_and_sql($class,$sql);
-    return unless @ids;
+    my $id_list = $ds->_resolve_ids_from_class_name_and_sql($class,$sql);
+    return unless (defined($id_list) and @$id_list);
 
-    my $rule = UR::BoolExpr->resolve_normalized($class,id => \@ids);    
+    my $rule = UR::BoolExpr->resolve_normalized($class, id => $id_list);
     
     return $self->get_objects_for_class_and_rule($class,$rule);
 }
@@ -1973,7 +1979,7 @@ sub _cache_is_complete_for_class_and_normalized_rule {
                 grep { $_ }
                 map { @$_{@$id} }
                 map { $all_objects_loaded->{$_} }
-                ($class, $class->subclasses_loaded);
+                ($class, $class->__meta__->subclasses_loaded);
 
             # see if we found all of the requested objects
             if (@objects == @$id) {
@@ -2005,7 +2011,7 @@ sub _cache_is_complete_for_class_and_normalized_rule {
                 @objects =
                     grep { $_ }
                     map { $all_objects_loaded->{$_}->{$id} }
-                    $class->subclasses_loaded;
+                    $class->__meta__->subclasses_loaded;
                 if (@objects) {
                     $cache_is_complete = 1;
                 }
@@ -2082,7 +2088,7 @@ sub all_objects_loaded  {
     return(
         grep {$_}
         map { values %{ $UR::Context::all_objects_loaded->{$_} } } 
-        $class, $class->subclasses_loaded
+        $class, $class->__meta__->subclasses_loaded
     );  
 }
 
@@ -2147,7 +2153,8 @@ sub _get_objects_for_class_and_rule_from_cache {
             else {
                 # The $id is a normal scalar.
                 if (not defined $id) {
-                    Carp::carp("Undefined id passed as params for query on $class");
+                    #Carp::carp("Undefined id passed as params for query on $class");
+                    Carp::cluck("\n\n****  Undefined id passed as params for query on $class");
                     $id ||= '';
                 }
                 my $match;
@@ -2176,7 +2183,7 @@ sub _get_objects_for_class_and_rule_from_cache {
             # We may be adding to matches made above is we used an arrayref
             # and the results are incomplete.
     
-            my @subclasses_loaded = $class->subclasses_loaded;
+            my @subclasses_loaded = $class->__meta__->subclasses_loaded;
             return @matches unless @subclasses_loaded;
     
             if (ref($id) eq 'ARRAY') {
@@ -2510,7 +2517,6 @@ sub commit {
 
 sub rollback {
     my $self = shift;
-
     unless ($self) {
         warn 'UR::Context::rollback() called as a function, not a method.  Assumming rollback on current context';
         $self = UR::Context->current();
@@ -2549,13 +2555,13 @@ sub clear_cache {
     if ($args{'dont_unload'}) {
         for my $class_name (@{$args{'dont_unload'}}) {
             $local_dont_unload{$class_name} = 1;
-            for my $subclass_name ($class_name->subclasses_loaded) {
+            for my $subclass_name ($class_name->__meta__->subclasses_loaded) {
                 $local_dont_unload{$subclass_name} = 1;
             }
         }
     }
 
-    for my $class_name (UR::Object->subclasses_loaded) {
+    for my $class_name (UR::Object->__meta__->subclasses_loaded) {
 
         # Once transactions are fully implemented, the command params will sit
         # beneath the regular transaction, so we won't need this.  For now,
@@ -2787,7 +2793,7 @@ sub _reverse_all_changes {
     # this prevents cirucularity, since some objects 
     # can seem re-reversible (like ghosts)
     my %_delete_objects;
-    my @all_subclasses_loaded = sort UR::Object->subclasses_loaded;
+    my @all_subclasses_loaded = sort UR::Object->__meta__->subclasses_loaded;
     for my $class_name (@all_subclasses_loaded) { 
         next unless $class_name->can('__meta__');
         next if $class_name->isa("UR::Value");
@@ -3026,7 +3032,7 @@ sub reload {
     my ($rule, @extra) = UR::BoolExpr->resolve_normalized($class,@_);
     
     if (@extra) {
-        if (scalar @extra == 2 and $extra[0] eq "sql") {
+        if (scalar @extra == 2 and ($extra[0] eq "sql" or $extra[0] eq 'sql in')) {
            return $UR::Context::current->_get_objects_for_class_and_sql($class,$extra[1]);
         }
         else {

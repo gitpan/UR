@@ -16,7 +16,7 @@ BEGIN {
     }
 };
 
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 use Carp ();
 use Sub::Name ();
@@ -420,7 +420,8 @@ sub _normalize_class_description_impl {
         [ schema_name           => qw//],
         [ data_source_id        => qw/data_source instance/],
         [ table_name            => qw/sql dsmap/],
-        [ query_hint            => qw/query_hint/],
+        [ select_hint            => qw/query_hint/],
+        [ join_hint             => qw//],
         [ subclassify_by        => qw/sub_classification_property_name/],
         [ sub_classification_meta_class_name    => qw//],
         [ sub_classification_method_name        => qw//],
@@ -540,7 +541,6 @@ sub _normalize_class_description_impl {
     # These may have been found and moved over.  Restore.
     $old_class{has}             = delete $new_class{has};
     $old_class{attributes_have} = delete $new_class{attributes_have};
-
 
     # Install structures to track fully formatted property data.
     my $instance_properties = $new_class{has} = {};
@@ -1213,7 +1213,7 @@ sub _initialize_accessors_and_inheritance {
         @is = ('UR::ModuleBase')
     }
     eval "\@${class_name}::ISA = (" . join(',', map { "'$_'" } @is) . ")\n";
-    Carp::confess($@) if $@;
+    Carp::croak("Can't initialize \@ISA for class_name '$class_name': $@\nMaybe the class_name or one of the parent classes are not valid class names") if $@;
 
     my $namespace_mro;
     my $namespace_name = $self->{namespace};
@@ -1241,6 +1241,11 @@ sub _initialize_accessors_and_inheritance {
     return $self;
 }
 
+our %_init_subclasses_loaded;
+sub subclasses_loaded {
+    return @{ $_init_subclasses_loaded{shift->class_name}};
+}
+
 our %_inform_all_parent_classes_of_newly_loaded_subclass;
 sub _inform_all_parent_classes_of_newly_loaded_subclass {
     my $self = shift;
@@ -1262,13 +1267,13 @@ sub _inform_all_parent_classes_of_newly_loaded_subclass {
     }
 
     my @i = sort $class_name->inheritance;
-    $UR::Object::_init_subclasses_loaded{$class_name} ||= [];
+    $_init_subclasses_loaded{$class_name} ||= [];
     my $last_parent_class = "";
     for my $parent_class (@i) {
         next if $parent_class eq $last_parent_class;
         $last_parent_class = $parent_class;
-        $UR::Object::_init_subclasses_loaded{$parent_class} ||= [];
-        push @{ $UR::Object::_init_subclasses_loaded{$parent_class} }, $class_name;
+        $_init_subclasses_loaded{$parent_class} ||= [];
+        push @{ $_init_subclasses_loaded{$parent_class} }, $class_name;
         push @{ $parent_class . "::_init_subclasses_loaded" }, $class_name;
 
         # any index on a parent class must move to the child class
@@ -1342,6 +1347,14 @@ sub _complete_class_meta_object_definitions {
         my $ds_class = $data_source->{'is'};
         my $inline_ds = $ds_class->create_from_inline_class_data($self, $data_source);
         $self->{'data_source_id'} = $self->{'db_committed'}->{'data_source_id'} = $inline_ds->id;
+    }
+
+    
+    if ($self->{'data_source_id'} and !defined($self->{table_name})) {
+        my $data_source_obj = UR::DataSource->get($self->{'data_source_id'}) || eval { $self->{'data_source_id'}->get() };
+        if ($data_source_obj and $data_source_obj->initializer_should_create_column_name_for_class_properties() ) {
+            $self->{table_name} = '__default__';
+        }
     }
 
     for my $parent_class_name (@$inheritance) {

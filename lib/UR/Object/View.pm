@@ -2,7 +2,7 @@ package UR::Object::View;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;;
+our $VERSION = "0.39"; # UR $VERSION;;
 
 class UR::Object::View {
     has_abstract_constant => [
@@ -178,8 +178,12 @@ sub _resolve_view_class_for_params {
             )
         );
 
-        my $subclass_meta = UR::Object::Type->get($subclass_name);
-        unless ($subclass_meta) {
+        my $subclass_meta;
+        eval {
+            $subclass_meta = $subclass_name->__meta__;
+        };
+        if ($@ or not $subclass_meta) {
+            #not a class... keep looking
             next;
         }
 
@@ -271,8 +275,10 @@ sub _subject_is_used_in_an_encompassing_view {
 sub all_subject_classes {
     my $self = shift;
     my @classes = ();
+
+    # suppress error callbacks inside this method
     my $old_cb = UR::ModuleBase->message_callback('error');
-    UR::ModuleBase->message_callback('error', sub {});
+    UR::ModuleBase->message_callback('error', sub {}) if ($old_cb);
 
     for my $aspect ($self->aspects) {
         unless ($aspect->delegate_view) {
@@ -284,7 +290,7 @@ sub all_subject_classes {
             push @classes, $aspect->delegate_view->all_subject_classes
         }
     }
-    UR::ModuleBase->message_callback('error', $old_cb);
+    UR::ModuleBase->message_callback('error', $old_cb) if ($old_cb);
 
     push @classes, $self->subject_class_name;
 
@@ -301,8 +307,9 @@ sub all_subject_classes_ancestry {
 
     my @aclasses;
     for my $class (@classes) {
-        my $m = UR::Object::Type->get($class);
-        next unless $m;
+        my $m;
+        eval { $m = $class->__meta__ };
+        next if $@ or not $m;
 
         push @aclasses, reverse($class, $m->ancestry_class_names);
     }

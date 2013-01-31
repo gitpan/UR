@@ -4,7 +4,7 @@ use warnings;
 package UR::DataSource::RDBMS::Table;
 
 use UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS::Table',
@@ -18,7 +18,7 @@ UR::Object::Type->define(
                                               calculate => q( (split(/::/,$data_source))[0] ) },
         owner                            => { type => 'varchar', len => undef, is_optional => 1, sql => 'owner' },
         table_name                       => { type => 'varchar', len => undef, sql => 'table_name' },
-        er_type                          => { type => 'varchar', len => undef, sql => 'er_type' },
+        er_type                          => { type => 'varchar', len => undef, sql => 'er_type', is_optional => 1 },
         last_ddl_time                    => { type => 'timestamp', len => undef, sql => 'last_ddl_time', is_optional => 1 },
         last_object_revision             => { type => 'timestamp', len => undef, sql => 'last_object_revision' },
         remarks                          => { type => 'varchar', len => undef, is_optional => 1, sql => 'remarks' },

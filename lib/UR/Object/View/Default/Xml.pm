@@ -3,7 +3,7 @@ package UR::Object::View::Default::Xml;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 use IO::File;
 use XML::Dumper;
 use XML::LibXML;
@@ -159,6 +159,16 @@ sub _generate_content_for_aspect {
         $exception->addChild( $xml_doc->createAttribute('line', $line) );
         $exception->addChild( $xml_doc->createCDATASection($@) );
 
+        return $aspect_node;
+    }
+
+    if (not Scalar::Util::blessed($value[0])) {
+        # shortcut to optimize for simple scalar values without delegate views
+        for my $value ( @value ) {
+            my $value_node = $aspect_node->addChild( $xml_doc->createElement('value') );
+            $value = '' if not defined $value;
+            $value_node->addChild( $xml_doc->createTextNode($value) );
+        }
         return $aspect_node;
     }
 

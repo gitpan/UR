@@ -1,9 +1,11 @@
 package UR::DataSource::FileMux;
 
+# NOTE! This module is deprecated.  Use UR::DataSource::Filesystem instead.
+
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 class UR::DataSource::FileMux {
     is => ['UR::DataSource'],
@@ -618,6 +620,10 @@ sub _sync_database {
 =head1 NAME
 
 UR::DataSource::FileMux - Parent class for datasources which can multiplex many files together
+
+=head1 DEPRECATED
+
+This module is deprecated.  Use UR::DataSource::Filesystem instead.
 
 =head1 SYNOPSIS
 

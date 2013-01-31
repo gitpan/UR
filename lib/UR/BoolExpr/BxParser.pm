@@ -11,7 +11,7 @@ package UR::BoolExpr::BxParser;
 use vars qw ( @ISA );
 use strict;
 
-@ISA= qw ( UR::BoolExpr::Parser::ParseYappDriver );
+@ISA= qw ( Parse::Yapp::Driver );
 #Included Parse/Yapp/Driver.pm file----------------------------------------
 {
 #
@@ -29,7 +29,7 @@ use strict;
 # (see the pod text in Parse::Yapp module for use and distribution rights)
 #
 
-package UR::BoolExpr::Parser::ParseYappDriver;
+package Parse::Yapp::Driver;
 
 require 5.004;
 
@@ -501,32 +501,34 @@ sub new {
 [
 	{#State 0
 		ACTIONS => {
-			'ASC_WORD' => 1,
 			'LEFT_PAREN' => 4,
-			'IDENTIFIER' => 3,
+			'BETWEEN_WORD' => 11,
+			'ASC_WORD' => 1,
 			'DESC_WORD' => 2,
+			'IDENTIFIER' => 3,
 			'NOT_WORD' => 6,
 			'LIKE_WORD' => 8,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
 		},
 		DEFAULT => -1,
 		GOTOS => {
 			'boolexpr' => 5,
-			'expr' => 9,
+			'expr' => 10,
 			'keyword_as_value' => 7,
-			'property' => 13,
-			'condition' => 12
+			'property' => 15,
+			'condition' => 14
 		}
 	},
 	{#State 1
-		DEFAULT => -57
+		DEFAULT => -66
 	},
 	{#State 2
-		DEFAULT => -56
+		DEFAULT => -65
 	},
 	{#State 3
-		DEFAULT => -20
+		DEFAULT => -29
 	},
 	{#State 4
 		ACTIONS => {
@@ -534,132 +536,101 @@ sub new {
 			'LEFT_PAREN' => 4,
 			'IDENTIFIER' => 3,
 			'DESC_WORD' => 2,
-			'BETWEEN_WORD' => 10,
 			'NOT_WORD' => 6,
 			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
 		},
 		GOTOS => {
-			'expr' => 14,
+			'expr' => 16,
 			'keyword_as_value' => 7,
-			'condition' => 12,
-			'property' => 13
+			'condition' => 14,
+			'property' => 15
 		}
 	},
 	{#State 5
 		ACTIONS => {
-			'' => 15,
-			'ORDER_BY' => 17,
-			'GROUP_BY' => 16
+			'' => 17,
+			'OFFSET' => 18,
+			'ORDER_BY' => 20,
+			'GROUP_BY' => 19,
+			'LIMIT' => 21
 		}
 	},
 	{#State 6
-		DEFAULT => -55
+		DEFAULT => -64
 	},
 	{#State 7
-		DEFAULT => -21
+		DEFAULT => -30
 	},
 	{#State 8
-		DEFAULT => -53
+		DEFAULT => -62
 	},
 	{#State 9
+		DEFAULT => -68
+	},
+	{#State 10
 		ACTIONS => {
-			'AND' => 18,
-			'OR' => 19
+			'AND' => 22,
+			'OR' => 23
 		},
 		DEFAULT => -2
 	},
-	{#State 10
-		DEFAULT => -54
-	},
 	{#State 11
-		DEFAULT => -52
+		DEFAULT => -63
 	},
 	{#State 12
-		DEFAULT => -5
+		DEFAULT => -67
 	},
 	{#State 13
-		ACTIONS => {
-			'DOUBLEEQUAL_SIGN' => 20,
-			'NOT_BANG' => 27,
-			'NOT_WORD' => 28,
-			'COLON' => 21,
-			'LIKE_WORD' => 29,
-			'OPERATORS' => 22,
-			'EQUAL_SIGN' => 30,
-			'BETWEEN_WORD' => 24,
-			'TILDE' => 31,
-			'IN_WORD' => 33
-		},
-		GOTOS => {
-			'operator' => 23,
-			'like_operator' => 25,
-			'an_operator' => 26,
-			'in_operator' => 32,
-			'between_operator' => 34,
-			'negation' => 35
-		}
+		DEFAULT => -61
 	},
 	{#State 14
-		ACTIONS => {
-			'AND' => 18,
-			'OR' => 19,
-			'RIGHT_PAREN' => 36
-		}
+		DEFAULT => -7
 	},
 	{#State 15
-		DEFAULT => 0
+		ACTIONS => {
+			'DOUBLEEQUAL_SIGN' => 24,
+			'NOT_BANG' => 33,
+			'NOT_WORD' => 34,
+			'COLON' => 25,
+			'LIKE_WORD' => 35,
+			'OPERATORS' => 26,
+			'EQUAL_SIGN' => 36,
+			'FALSE_WORD' => 37,
+			'BETWEEN_WORD' => 29,
+			'TILDE' => 38,
+			'TRUE_WORD' => 40,
+			'IN_WORD' => 41,
+			'IS_NOT_NULL' => 44,
+			'IS_NULL' => 32
+		},
+		GOTOS => {
+			'operator' => 28,
+			'like_operator' => 30,
+			'an_operator' => 31,
+			'in_operator' => 39,
+			'null_op_word' => 27,
+			'boolean_op_word' => 43,
+			'between_operator' => 42,
+			'negation' => 45
+		}
 	},
 	{#State 16
 		ACTIONS => {
-			'ASC_WORD' => 1,
-			'IDENTIFIER' => 3,
-			'DESC_WORD' => 2,
-			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
-			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
-		},
-		GOTOS => {
-			'keyword_as_value' => 7,
-			'group_by_list' => 37,
-			'property' => 38
+			'AND' => 22,
+			'OR' => 23,
+			'RIGHT_PAREN' => 46
 		}
 	},
 	{#State 17
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'IDENTIFIER' => 3,
-			'DESC_WORD' => 2,
-			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
-			'MINUS' => 39,
-			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
-		},
-		GOTOS => {
-			'order_by_list' => 42,
-			'order_by_property' => 40,
-			'keyword_as_value' => 7,
-			'property' => 41
-		}
+		DEFAULT => 0
 	},
 	{#State 18
 		ACTIONS => {
-			'ASC_WORD' => 1,
-			'IDENTIFIER' => 3,
-			'DESC_WORD' => 2,
-			'LEFT_PAREN' => 4,
-			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
-			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
-		},
-		GOTOS => {
-			'expr' => 43,
-			'keyword_as_value' => 7,
-			'condition' => 12,
-			'property' => 13
+			'INTEGER' => 47
 		}
 	},
 	{#State 19
@@ -667,664 +638,787 @@ sub new {
 			'ASC_WORD' => 1,
 			'IDENTIFIER' => 3,
 			'DESC_WORD' => 2,
-			'LEFT_PAREN' => 4,
 			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
 			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
 		},
 		GOTOS => {
-			'expr' => 44,
 			'keyword_as_value' => 7,
-			'condition' => 12,
-			'property' => 13
+			'group_by_list' => 48,
+			'property' => 49
 		}
 	},
 	{#State 20
-		DEFAULT => -36
+		ACTIONS => {
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 3,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'MINUS' => 50,
+			'LIKE_WORD' => 8,
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
+		},
+		GOTOS => {
+			'order_by_list' => 53,
+			'order_by_property' => 51,
+			'keyword_as_value' => 7,
+			'property' => 52
+		}
 	},
 	{#State 21
 		ACTIONS => {
-			'WHITESPACE' => 46
-		},
-		DEFAULT => -18,
-		GOTOS => {
-			'optional_spaces' => 47,
-			'spaces' => 45
+			'INTEGER' => 54
 		}
 	},
 	{#State 22
-		DEFAULT => -34
+		ACTIONS => {
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 3,
+			'DESC_WORD' => 2,
+			'LEFT_PAREN' => 4,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
+		},
+		GOTOS => {
+			'expr' => 55,
+			'keyword_as_value' => 7,
+			'condition' => 14,
+			'property' => 15
+		}
 	},
 	{#State 23
 		ACTIONS => {
-			'WHITESPACE' => 46
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 3,
+			'DESC_WORD' => 2,
+			'LEFT_PAREN' => 4,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
 		},
-		DEFAULT => -18,
 		GOTOS => {
-			'optional_spaces' => 48,
-			'spaces' => 45
+			'expr' => 56,
+			'keyword_as_value' => 7,
+			'condition' => 14,
+			'property' => 15
 		}
 	},
 	{#State 24
-		DEFAULT => -49
+		DEFAULT => -45
 	},
 	{#State 25
 		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
+			'WHITESPACE' => 58
 		},
+		DEFAULT => -27,
 		GOTOS => {
-			'number' => 52,
-			'value' => 59,
-			'keyword_as_value' => 58,
-			'single_value' => 60,
-			'like_value' => 54,
-			'subsequent_value_part' => 53
+			'optional_spaces' => 59,
+			'spaces' => 57
 		}
 	},
 	{#State 26
-		DEFAULT => -30
+		DEFAULT => -43
 	},
 	{#State 27
-		DEFAULT => -33
+		DEFAULT => -20
 	},
 	{#State 28
-		DEFAULT => -32
+		ACTIONS => {
+			'WHITESPACE' => 58
+		},
+		DEFAULT => -27,
+		GOTOS => {
+			'optional_spaces' => 60,
+			'spaces' => 57
+		}
 	},
 	{#State 29
-		DEFAULT => -37
+		DEFAULT => -58
 	},
 	{#State 30
-		DEFAULT => -35
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'number' => 64,
+			'value' => 71,
+			'keyword_as_value' => 70,
+			'single_value' => 72,
+			'like_value' => 66,
+			'subsequent_value_part' => 65
+		}
 	},
 	{#State 31
 		DEFAULT => -39
 	},
 	{#State 32
-		ACTIONS => {
-			'LEFT_BRACKET' => 64
-		},
-		GOTOS => {
-			'set' => 65
-		}
+		DEFAULT => -23
 	},
 	{#State 33
 		DEFAULT => -42
 	},
 	{#State 34
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'between_value' => 66,
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'single_value' => 67,
-			'subsequent_value_part' => 53
-		}
+		DEFAULT => -41
 	},
 	{#State 35
-		ACTIONS => {
-			'DOUBLEEQUAL_SIGN' => 20,
-			'BETWEEN_WORD' => 69,
-			'TILDE' => 72,
-			'COLON' => 68,
-			'LIKE_WORD' => 71,
-			'OPERATORS' => 22,
-			'IN_WORD' => 73,
-			'EQUAL_SIGN' => 30
-		},
-		GOTOS => {
-			'an_operator' => 70
-		}
+		DEFAULT => -46
 	},
 	{#State 36
-		DEFAULT => -8
+		DEFAULT => -44
 	},
 	{#State 37
-		DEFAULT => -4
+		DEFAULT => -22
 	},
 	{#State 38
-		ACTIONS => {
-			'AND' => 74
-		},
-		DEFAULT => -28
+		DEFAULT => -48
 	},
 	{#State 39
 		ACTIONS => {
-			'ASC_WORD' => 1,
-			'IDENTIFIER' => 3,
-			'DESC_WORD' => 2,
-			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
-			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
+			'LEFT_BRACKET' => 76
 		},
 		GOTOS => {
-			'keyword_as_value' => 7,
-			'property' => 75
+			'set' => 77
 		}
 	},
 	{#State 40
-		ACTIONS => {
-			'AND' => 76
-		},
-		DEFAULT => -26
+		DEFAULT => -21
 	},
 	{#State 41
-		ACTIONS => {
-			'ASC_WORD' => 77,
-			'DESC_WORD' => 78
-		},
-		DEFAULT => -22
+		DEFAULT => -51
 	},
 	{#State 42
-		DEFAULT => -3
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'between_value' => 78,
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'single_value' => 79,
+			'subsequent_value_part' => 65
+		}
 	},
 	{#State 43
-		ACTIONS => {
-			'AND' => 18
-		},
-		DEFAULT => -6
-	},
-	{#State 44
-		ACTIONS => {
-			'AND' => 18,
-			'OR' => 19
-		},
-		DEFAULT => -7
-	},
-	{#State 45
 		DEFAULT => -19
 	},
+	{#State 44
+		DEFAULT => -25
+	},
+	{#State 45
+		ACTIONS => {
+			'DOUBLEEQUAL_SIGN' => 24,
+			'COLON' => 80,
+			'LIKE_WORD' => 84,
+			'OPERATORS' => 26,
+			'EQUAL_SIGN' => 36,
+			'BETWEEN_WORD' => 81,
+			'TILDE' => 85,
+			'IN_WORD' => 86,
+			'IS_NULL' => 83
+		},
+		GOTOS => {
+			'an_operator' => 82
+		}
+	},
 	{#State 46
-		DEFAULT => -17
+		DEFAULT => -10
 	},
 	{#State 47
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'between_value' => 80,
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'old_syntax_in_value' => 79,
-			'single_value' => 81,
-			'subsequent_value_part' => 53
-		}
+		DEFAULT => -6
 	},
 	{#State 48
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'number' => 52,
-			'value' => 82,
-			'keyword_as_value' => 58,
-			'single_value' => 60,
-			'subsequent_value_part' => 53
-		}
+		DEFAULT => -4
 	},
 	{#State 49
-		DEFAULT => -62
+		ACTIONS => {
+			'AND' => 87
+		},
+		DEFAULT => -37
 	},
 	{#State 50
-		DEFAULT => -63
+		ACTIONS => {
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 3,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
+		},
+		GOTOS => {
+			'keyword_as_value' => 7,
+			'property' => 88
+		}
 	},
 	{#State 51
 		ACTIONS => {
-			'INTEGER' => 84,
-			'REAL' => 83
-		}
+			'AND' => 89
+		},
+		DEFAULT => -35
 	},
 	{#State 52
-		DEFAULT => -61
+		ACTIONS => {
+			'ASC_WORD' => 90,
+			'DESC_WORD' => 91
+		},
+		DEFAULT => -31
 	},
 	{#State 53
-		DEFAULT => -70
+		DEFAULT => -3
 	},
 	{#State 54
-		DEFAULT => -10
+		DEFAULT => -5
 	},
 	{#State 55
-		DEFAULT => -74
+		ACTIONS => {
+			'AND' => 22
+		},
+		DEFAULT => -8
 	},
 	{#State 56
-		DEFAULT => -73
+		ACTIONS => {
+			'AND' => 22,
+			'OR' => 23
+		},
+		DEFAULT => -9
 	},
 	{#State 57
-		DEFAULT => -60
+		DEFAULT => -28
 	},
 	{#State 58
-		DEFAULT => -65
+		DEFAULT => -26
 	},
 	{#State 59
-		DEFAULT => -41
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'between_value' => 93,
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'old_syntax_in_value' => 92,
+			'single_value' => 94,
+			'subsequent_value_part' => 65
+		}
 	},
 	{#State 60
 		ACTIONS => {
-			'WORD' => 49,
-			'DOUBLEQUOTE_STRING' => 50,
-			'MINUS' => 51,
-			'BETWEEN_WORD' => 10,
-			'REAL' => 55,
-			'INTEGER' => 56,
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
 			'ASC_WORD' => 1,
-			'IDENTIFIER' => 57,
+			'IDENTIFIER' => 69,
 			'DESC_WORD' => 2,
 			'NOT_WORD' => 6,
 			'LIKE_WORD' => 8,
-			'WHITESPACE' => 46,
-			'IN_WORD' => 11,
-			'SINGLEQUOTE_STRING' => 63
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
 		},
-		DEFAULT => -59,
 		GOTOS => {
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'subsequent_values_list' => 87,
-			'spaces' => 86,
-			'subsequent_value_part' => 85
+			'number' => 64,
+			'value' => 95,
+			'keyword_as_value' => 70,
+			'single_value' => 72,
+			'subsequent_value_part' => 65
 		}
 	},
 	{#State 61
-		DEFAULT => -71
+		DEFAULT => -73
 	},
 	{#State 62
-		DEFAULT => -72
+		DEFAULT => -74
 	},
 	{#State 63
-		DEFAULT => -64
+		ACTIONS => {
+			'INTEGER' => 97,
+			'REAL' => 96
+		}
 	},
 	{#State 64
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'set_body' => 88,
-			'number' => 52,
-			'value' => 89,
-			'keyword_as_value' => 58,
-			'single_value' => 60,
-			'subsequent_value_part' => 53
-		}
+		DEFAULT => -72
 	},
 	{#State 65
-		DEFAULT => -11
+		DEFAULT => -81
 	},
 	{#State 66
-		DEFAULT => -14
+		DEFAULT => -12
 	},
 	{#State 67
-		ACTIONS => {
-			'MINUS' => 90
-		}
+		DEFAULT => -85
 	},
 	{#State 68
-		ACTIONS => {
-			'WHITESPACE' => 46
-		},
-		DEFAULT => -18,
-		GOTOS => {
-			'optional_spaces' => 91,
-			'spaces' => 45
-		}
+		DEFAULT => -84
 	},
 	{#State 69
-		DEFAULT => -50
+		DEFAULT => -71
 	},
 	{#State 70
-		DEFAULT => -31
+		DEFAULT => -76
 	},
 	{#State 71
-		DEFAULT => -38
+		DEFAULT => -50
 	},
 	{#State 72
-		DEFAULT => -40
-	},
-	{#State 73
-		DEFAULT => -43
-	},
-	{#State 74
 		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
 			'ASC_WORD' => 1,
-			'IDENTIFIER' => 3,
+			'IDENTIFIER' => 69,
 			'DESC_WORD' => 2,
 			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
 			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
+			'WHITESPACE' => 58,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'SINGLEQUOTE_STRING' => 75
 		},
+		DEFAULT => -70,
 		GOTOS => {
-			'keyword_as_value' => 7,
-			'group_by_list' => 92,
-			'property' => 38
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'subsequent_values_list' => 100,
+			'spaces' => 99,
+			'subsequent_value_part' => 98
 		}
 	},
+	{#State 73
+		DEFAULT => -82
+	},
+	{#State 74
+		DEFAULT => -83
+	},
 	{#State 75
-		DEFAULT => -23
+		DEFAULT => -75
 	},
 	{#State 76
 		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'set_body' => 101,
+			'number' => 64,
+			'value' => 102,
+			'keyword_as_value' => 70,
+			'single_value' => 72,
+			'subsequent_value_part' => 65
+		}
+	},
+	{#State 77
+		DEFAULT => -13
+	},
+	{#State 78
+		DEFAULT => -16
+	},
+	{#State 79
+		ACTIONS => {
+			'MINUS' => 103
+		}
+	},
+	{#State 80
+		ACTIONS => {
+			'WHITESPACE' => 58
+		},
+		DEFAULT => -27,
+		GOTOS => {
+			'optional_spaces' => 104,
+			'spaces' => 57
+		}
+	},
+	{#State 81
+		DEFAULT => -59
+	},
+	{#State 82
+		DEFAULT => -40
+	},
+	{#State 83
+		DEFAULT => -24
+	},
+	{#State 84
+		DEFAULT => -47
+	},
+	{#State 85
+		DEFAULT => -49
+	},
+	{#State 86
+		DEFAULT => -52
+	},
+	{#State 87
+		ACTIONS => {
 			'ASC_WORD' => 1,
 			'IDENTIFIER' => 3,
 			'DESC_WORD' => 2,
 			'NOT_WORD' => 6,
-			'BETWEEN_WORD' => 10,
-			'MINUS' => 39,
 			'LIKE_WORD' => 8,
-			'IN_WORD' => 11
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
 		},
 		GOTOS => {
-			'order_by_list' => 93,
-			'order_by_property' => 40,
 			'keyword_as_value' => 7,
-			'property' => 41
+			'group_by_list' => 105,
+			'property' => 49
 		}
-	},
-	{#State 77
-		DEFAULT => -25
-	},
-	{#State 78
-		DEFAULT => -24
-	},
-	{#State 79
-		DEFAULT => -12
-	},
-	{#State 80
-		DEFAULT => -15
-	},
-	{#State 81
-		ACTIONS => {
-			'IN_DIVIDER' => 94,
-			'MINUS' => 90
-		}
-	},
-	{#State 82
-		DEFAULT => -9
-	},
-	{#State 83
-		DEFAULT => -76
-	},
-	{#State 84
-		DEFAULT => -75
-	},
-	{#State 85
-		ACTIONS => {
-			'WORD' => 49,
-			'DOUBLEQUOTE_STRING' => 50,
-			'MINUS' => 51,
-			'BETWEEN_WORD' => 10,
-			'REAL' => 55,
-			'INTEGER' => 56,
-			'ASC_WORD' => 1,
-			'IDENTIFIER' => 57,
-			'DESC_WORD' => 2,
-			'NOT_WORD' => 6,
-			'LIKE_WORD' => 8,
-			'WHITESPACE' => 46,
-			'IN_WORD' => 11,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		DEFAULT => -66,
-		GOTOS => {
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'subsequent_values_list' => 95,
-			'spaces' => 86,
-			'subsequent_value_part' => 85
-		}
-	},
-	{#State 86
-		ACTIONS => {
-			'WORD' => 49,
-			'DOUBLEQUOTE_STRING' => 50,
-			'MINUS' => 51,
-			'BETWEEN_WORD' => 10,
-			'REAL' => 55,
-			'INTEGER' => 56,
-			'ASC_WORD' => 1,
-			'IDENTIFIER' => 57,
-			'DESC_WORD' => 2,
-			'NOT_WORD' => 6,
-			'LIKE_WORD' => 8,
-			'WHITESPACE' => 46,
-			'IN_WORD' => 11,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		DEFAULT => -69,
-		GOTOS => {
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'subsequent_values_list' => 96,
-			'spaces' => 86,
-			'subsequent_value_part' => 85
-		}
-	},
-	{#State 87
-		DEFAULT => -58
 	},
 	{#State 88
-		ACTIONS => {
-			'RIGHT_BRACKET' => 97
-		}
+		DEFAULT => -32
 	},
 	{#State 89
 		ACTIONS => {
-			'SET_SEPARATOR' => 98
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 3,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'MINUS' => 50,
+			'LIKE_WORD' => 8,
+			'FALSE_WORD' => 9,
+			'BETWEEN_WORD' => 11,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13
 		},
-		DEFAULT => -48
+		GOTOS => {
+			'order_by_list' => 106,
+			'order_by_property' => 51,
+			'keyword_as_value' => 7,
+			'property' => 52
+		}
 	},
 	{#State 90
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'single_value' => 99,
-			'subsequent_value_part' => 53
-		}
+		DEFAULT => -34
 	},
 	{#State 91
-		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'between_value' => 101,
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'old_syntax_in_value' => 100,
-			'single_value' => 81,
-			'subsequent_value_part' => 53
-		}
+		DEFAULT => -33
 	},
 	{#State 92
-		DEFAULT => -29
+		DEFAULT => -14
 	},
 	{#State 93
-		DEFAULT => -27
+		DEFAULT => -17
 	},
 	{#State 94
 		ACTIONS => {
-			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
-			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
-			'NOT_WORD' => 6,
-			'MINUS' => 51,
-			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
-		},
-		GOTOS => {
-			'number' => 52,
-			'keyword_as_value' => 58,
-			'old_syntax_in_value' => 102,
-			'single_value' => 103,
-			'subsequent_value_part' => 53
+			'IN_DIVIDER' => 107,
+			'MINUS' => 103
 		}
 	},
 	{#State 95
-		DEFAULT => -67
+		DEFAULT => -11
 	},
 	{#State 96
-		DEFAULT => -68
+		DEFAULT => -87
 	},
 	{#State 97
-		DEFAULT => -46
+		DEFAULT => -86
 	},
 	{#State 98
 		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
 			'ASC_WORD' => 1,
-			'INTEGER' => 56,
-			'WORD' => 49,
+			'IDENTIFIER' => 69,
 			'DESC_WORD' => 2,
-			'IDENTIFIER' => 57,
-			'DOUBLEQUOTE_STRING' => 50,
 			'NOT_WORD' => 6,
-			'MINUS' => 51,
 			'LIKE_WORD' => 8,
-			'AND' => 61,
-			'BETWEEN_WORD' => 10,
-			'IN_WORD' => 11,
-			'OR' => 62,
-			'REAL' => 55,
-			'SINGLEQUOTE_STRING' => 63
+			'WHITESPACE' => 58,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'SINGLEQUOTE_STRING' => 75
 		},
+		DEFAULT => -77,
 		GOTOS => {
-			'set_body' => 104,
-			'number' => 52,
-			'value' => 89,
-			'keyword_as_value' => 58,
-			'single_value' => 60,
-			'subsequent_value_part' => 53
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'subsequent_values_list' => 108,
+			'spaces' => 99,
+			'subsequent_value_part' => 98
 		}
 	},
 	{#State 99
-		DEFAULT => -51
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'WHITESPACE' => 58,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		DEFAULT => -80,
+		GOTOS => {
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'subsequent_values_list' => 109,
+			'spaces' => 99,
+			'subsequent_value_part' => 98
+		}
 	},
 	{#State 100
-		DEFAULT => -13
+		DEFAULT => -69
 	},
 	{#State 101
-		DEFAULT => -16
+		ACTIONS => {
+			'RIGHT_BRACKET' => 110
+		}
 	},
 	{#State 102
-		DEFAULT => -44
+		ACTIONS => {
+			'SET_SEPARATOR' => 111
+		},
+		DEFAULT => -57
 	},
 	{#State 103
 		ACTIONS => {
-			'IN_DIVIDER' => 94
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
 		},
-		DEFAULT => -45
+		GOTOS => {
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'single_value' => 112,
+			'subsequent_value_part' => 65
+		}
 	},
 	{#State 104
-		DEFAULT => -47
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'between_value' => 114,
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'old_syntax_in_value' => 113,
+			'single_value' => 94,
+			'subsequent_value_part' => 65
+		}
+	},
+	{#State 105
+		DEFAULT => -38
+	},
+	{#State 106
+		DEFAULT => -36
+	},
+	{#State 107
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'number' => 64,
+			'keyword_as_value' => 70,
+			'old_syntax_in_value' => 115,
+			'single_value' => 116,
+			'subsequent_value_part' => 65
+		}
+	},
+	{#State 108
+		DEFAULT => -78
+	},
+	{#State 109
+		DEFAULT => -79
+	},
+	{#State 110
+		DEFAULT => -55
+	},
+	{#State 111
+		ACTIONS => {
+			'WORD' => 61,
+			'DOUBLEQUOTE_STRING' => 62,
+			'MINUS' => 63,
+			'BETWEEN_WORD' => 11,
+			'REAL' => 67,
+			'INTEGER' => 68,
+			'ASC_WORD' => 1,
+			'IDENTIFIER' => 69,
+			'DESC_WORD' => 2,
+			'NOT_WORD' => 6,
+			'LIKE_WORD' => 8,
+			'AND' => 73,
+			'FALSE_WORD' => 9,
+			'TRUE_WORD' => 12,
+			'IN_WORD' => 13,
+			'OR' => 74,
+			'SINGLEQUOTE_STRING' => 75
+		},
+		GOTOS => {
+			'set_body' => 117,
+			'number' => 64,
+			'value' => 102,
+			'keyword_as_value' => 70,
+			'single_value' => 72,
+			'subsequent_value_part' => 65
+		}
+	},
+	{#State 112
+		DEFAULT => -60
+	},
+	{#State 113
+		DEFAULT => -15
+	},
+	{#State 114
+		DEFAULT => -18
+	},
+	{#State 115
+		DEFAULT => -53
+	},
+	{#State 116
+		ACTIONS => {
+			'IN_DIVIDER' => 107
+		},
+		DEFAULT => -54
+	},
+	{#State 117
+		DEFAULT => -56
 	}
 ],
                                   yyrules  =>
@@ -1357,435 +1451,501 @@ sub
 { [@{$_[1]}, '-group', $_[3]] }
 	],
 	[#Rule 5
-		 'expr', 1,
+		 'boolexpr', 3,
 sub
-#line 16 "BxParser.yp"
-{ $_[1] }
+#line 14 "BxParser.yp"
+{ [@{$_[1]}, '-limit', $_[3]] }
 	],
 	[#Rule 6
-		 'expr', 3,
+		 'boolexpr', 3,
 sub
-#line 17 "BxParser.yp"
-{ UR::BoolExpr::BxParser->_and($_[1], $_[3]) }
+#line 15 "BxParser.yp"
+{ [@{$_[1]}, '-offset', $_[3]] }
 	],
 	[#Rule 7
-		 'expr', 3,
+		 'expr', 1,
 sub
 #line 18 "BxParser.yp"
-{ UR::BoolExpr::BxParser->_or($_[1], $_[3]) }
+{ $_[1] }
 	],
 	[#Rule 8
 		 'expr', 3,
 sub
 #line 19 "BxParser.yp"
-{ $_[2] }
+{ UR::BoolExpr::BxParser->_and($_[1], $_[3]) }
 	],
 	[#Rule 9
-		 'condition', 4,
+		 'expr', 3,
 sub
-#line 22 "BxParser.yp"
-{ [ "$_[1] $_[2]" => $_[4] ] }
+#line 20 "BxParser.yp"
+{ UR::BoolExpr::BxParser->_or($_[1], $_[3]) }
 	],
 	[#Rule 10
-		 'condition', 3,
+		 'expr', 3,
 sub
-#line 23 "BxParser.yp"
-{ [ "$_[1] $_[2]" => $_[3] ] }
+#line 21 "BxParser.yp"
+{ $_[2] }
 	],
 	[#Rule 11
-		 'condition', 3,
+		 'condition', 4,
 sub
 #line 24 "BxParser.yp"
-{ [ "$_[1] $_[2]" => $_[3] ] }
+{ [ "$_[1] $_[2]" => $_[4] ] }
 	],
 	[#Rule 12
-		 'condition', 4,
-sub
-#line 25 "BxParser.yp"
-{ [ "$_[1] in" => $_[4] ] }
-	],
-	[#Rule 13
-		 'condition', 5,
-sub
-#line 26 "BxParser.yp"
-{ [ "$_[1] $_[2] in" => $_[5] ] }
-	],
-	[#Rule 14
 		 'condition', 3,
 sub
-#line 27 "BxParser.yp"
+#line 25 "BxParser.yp"
 { [ "$_[1] $_[2]" => $_[3] ] }
 	],
-	[#Rule 15
+	[#Rule 13
+		 'condition', 3,
+sub
+#line 26 "BxParser.yp"
+{ [ "$_[1] $_[2]" => $_[3] ] }
+	],
+	[#Rule 14
 		 'condition', 4,
 sub
-#line 28 "BxParser.yp"
-{ [ "$_[1] between" => $_[4] ] }
+#line 27 "BxParser.yp"
+{ [ "$_[1] in" => $_[4] ] }
 	],
-	[#Rule 16
+	[#Rule 15
 		 'condition', 5,
 sub
+#line 28 "BxParser.yp"
+{ [ "$_[1] $_[2] in" => $_[5] ] }
+	],
+	[#Rule 16
+		 'condition', 3,
+sub
 #line 29 "BxParser.yp"
-{ [ "$_[1] $_[2] between" => $_[5] ] }
+{ [ "$_[1] $_[2]" => $_[3] ] }
 	],
 	[#Rule 17
-		 'spaces', 1,
+		 'condition', 4,
 sub
-#line 32 "BxParser.yp"
-{ $_[1] }
+#line 30 "BxParser.yp"
+{ [ "$_[1] between" => $_[4] ] }
 	],
 	[#Rule 18
-		 'optional_spaces', 0,
+		 'condition', 5,
 sub
-#line 35 "BxParser.yp"
-{ undef }
+#line 31 "BxParser.yp"
+{ [ "$_[1] $_[2] between" => $_[5] ] }
 	],
 	[#Rule 19
-		 'optional_spaces', 1,
+		 'condition', 2,
 sub
-#line 36 "BxParser.yp"
-{ undef }
+#line 32 "BxParser.yp"
+{ [ "$_[1] $_[2]" => 1 ] }
 	],
 	[#Rule 20
-		 'property', 1,
+		 'condition', 2,
 sub
-#line 39 "BxParser.yp"
-{ $_[1] }
+#line 33 "BxParser.yp"
+{ [ "$_[1] $_[2]" => undef ] }
 	],
 	[#Rule 21
-		 'property', 1,
+		 'boolean_op_word', 1,
 sub
-#line 40 "BxParser.yp"
+#line 36 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 22
-		 'order_by_property', 1,
+		 'boolean_op_word', 1,
 sub
-#line 43 "BxParser.yp"
-{ $_[1 ] }
-	],
-	[#Rule 23
-		 'order_by_property', 2,
-sub
-#line 44 "BxParser.yp"
-{ '-'.$_[2] }
-	],
-	[#Rule 24
-		 'order_by_property', 2,
-sub
-#line 45 "BxParser.yp"
-{ '-'.$_[1] }
-	],
-	[#Rule 25
-		 'order_by_property', 2,
-sub
-#line 46 "BxParser.yp"
+#line 37 "BxParser.yp"
 { $_[1] }
 	],
-	[#Rule 26
-		 'order_by_list', 1,
+	[#Rule 23
+		 'null_op_word', 1,
 sub
-#line 49 "BxParser.yp"
-{ [ $_[1]] }
+#line 40 "BxParser.yp"
+{ '=' }
+	],
+	[#Rule 24
+		 'null_op_word', 2,
+sub
+#line 41 "BxParser.yp"
+{ "!=" }
+	],
+	[#Rule 25
+		 'null_op_word', 1,
+sub
+#line 42 "BxParser.yp"
+{ '!=' }
+	],
+	[#Rule 26
+		 'spaces', 1,
+sub
+#line 45 "BxParser.yp"
+{ $_[1] }
 	],
 	[#Rule 27
-		 'order_by_list', 3,
+		 'optional_spaces', 0,
 sub
-#line 50 "BxParser.yp"
-{ [$_[1], @{$_[3]}] }
+#line 48 "BxParser.yp"
+{ undef }
 	],
 	[#Rule 28
-		 'group_by_list', 1,
+		 'optional_spaces', 1,
 sub
-#line 53 "BxParser.yp"
-{ [ $_[1] ] }
+#line 49 "BxParser.yp"
+{ undef }
 	],
 	[#Rule 29
-		 'group_by_list', 3,
+		 'property', 1,
 sub
-#line 54 "BxParser.yp"
-{ [$_[1], @{$_[3]}] }
+#line 52 "BxParser.yp"
+{ $_[1] }
 	],
 	[#Rule 30
-		 'operator', 1,
+		 'property', 1,
 sub
-#line 57 "BxParser.yp"
+#line 53 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 31
-		 'operator', 2,
+		 'order_by_property', 1,
 sub
-#line 58 "BxParser.yp"
-{ "$_[1] $_[2]" }
+#line 56 "BxParser.yp"
+{ $_[1 ] }
 	],
 	[#Rule 32
-		 'negation', 1,
+		 'order_by_property', 2,
 sub
-#line 61 "BxParser.yp"
-{ 'not' }
+#line 57 "BxParser.yp"
+{ '-'.$_[2] }
 	],
 	[#Rule 33
-		 'negation', 1,
+		 'order_by_property', 2,
 sub
-#line 62 "BxParser.yp"
-{ 'not' }
+#line 58 "BxParser.yp"
+{ '-'.$_[1] }
 	],
 	[#Rule 34
-		 'an_operator', 1,
+		 'order_by_property', 2,
 sub
-#line 65 "BxParser.yp"
+#line 59 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 35
-		 'an_operator', 1,
+		 'order_by_list', 1,
 sub
-#line 66 "BxParser.yp"
-{ '=' }
+#line 62 "BxParser.yp"
+{ [ $_[1]] }
 	],
 	[#Rule 36
-		 'an_operator', 1,
+		 'order_by_list', 3,
 sub
-#line 67 "BxParser.yp"
-{ '=' }
+#line 63 "BxParser.yp"
+{ [$_[1], @{$_[3]}] }
 	],
 	[#Rule 37
-		 'like_operator', 1,
+		 'group_by_list', 1,
 sub
-#line 70 "BxParser.yp"
-{ 'like' }
-	],
-	[#Rule 38
-		 'like_operator', 2,
-sub
-#line 71 "BxParser.yp"
-{ "$_[1] like" }
-	],
-	[#Rule 39
-		 'like_operator', 1,
-sub
-#line 72 "BxParser.yp"
-{ 'like' }
-	],
-	[#Rule 40
-		 'like_operator', 2,
-sub
-#line 73 "BxParser.yp"
-{ "$_[1] like" }
-	],
-	[#Rule 41
-		 'like_value', 1,
-sub
-#line 76 "BxParser.yp"
-{  $_[1] =~ m/\%/ ? $_[1] : '%' . $_[1] . '%' }
-	],
-	[#Rule 42
-		 'in_operator', 1,
-sub
-#line 79 "BxParser.yp"
-{ 'in' }
-	],
-	[#Rule 43
-		 'in_operator', 2,
-sub
-#line 80 "BxParser.yp"
-{ "$_[1] in" }
-	],
-	[#Rule 44
-		 'old_syntax_in_value', 3,
-sub
-#line 83 "BxParser.yp"
-{ [ $_[1], @{$_[3]} ] }
-	],
-	[#Rule 45
-		 'old_syntax_in_value', 3,
-sub
-#line 84 "BxParser.yp"
-{ [ $_[1], $_[3] ] }
-	],
-	[#Rule 46
-		 'set', 3,
-sub
-#line 87 "BxParser.yp"
-{ $_[2] }
-	],
-	[#Rule 47
-		 'set_body', 3,
-sub
-#line 90 "BxParser.yp"
-{ [ $_[1], @{$_[3]} ] }
-	],
-	[#Rule 48
-		 'set_body', 1,
-sub
-#line 91 "BxParser.yp"
+#line 66 "BxParser.yp"
 { [ $_[1] ] }
 	],
-	[#Rule 49
-		 'between_operator', 1,
+	[#Rule 38
+		 'group_by_list', 3,
 sub
-#line 94 "BxParser.yp"
-{ 'between' }
+#line 67 "BxParser.yp"
+{ [$_[1], @{$_[3]}] }
+	],
+	[#Rule 39
+		 'operator', 1,
+sub
+#line 70 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 40
+		 'operator', 2,
+sub
+#line 71 "BxParser.yp"
+{ "$_[1] $_[2]" }
+	],
+	[#Rule 41
+		 'negation', 1,
+sub
+#line 74 "BxParser.yp"
+{ 'not' }
+	],
+	[#Rule 42
+		 'negation', 1,
+sub
+#line 75 "BxParser.yp"
+{ 'not' }
+	],
+	[#Rule 43
+		 'an_operator', 1,
+sub
+#line 78 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 44
+		 'an_operator', 1,
+sub
+#line 79 "BxParser.yp"
+{ '=' }
+	],
+	[#Rule 45
+		 'an_operator', 1,
+sub
+#line 80 "BxParser.yp"
+{ '=' }
+	],
+	[#Rule 46
+		 'like_operator', 1,
+sub
+#line 83 "BxParser.yp"
+{ 'like' }
+	],
+	[#Rule 47
+		 'like_operator', 2,
+sub
+#line 84 "BxParser.yp"
+{ "$_[1] like" }
+	],
+	[#Rule 48
+		 'like_operator', 1,
+sub
+#line 85 "BxParser.yp"
+{ 'like' }
+	],
+	[#Rule 49
+		 'like_operator', 2,
+sub
+#line 86 "BxParser.yp"
+{ "$_[1] like" }
 	],
 	[#Rule 50
-		 'between_operator', 2,
+		 'like_value', 1,
 sub
-#line 95 "BxParser.yp"
-{ "$_[1] between" }
+#line 89 "BxParser.yp"
+{  $_[1] =~ m/\%/ ? $_[1] : '%' . $_[1] . '%' }
 	],
 	[#Rule 51
-		 'between_value', 3,
+		 'in_operator', 1,
 sub
-#line 98 "BxParser.yp"
-{ [ $_[1], $_[3] ] }
+#line 92 "BxParser.yp"
+{ 'in' }
 	],
 	[#Rule 52
-		 'keyword_as_value', 1,
+		 'in_operator', 2,
 sub
-#line 101 "BxParser.yp"
-{ $_[1] }
+#line 93 "BxParser.yp"
+{ "$_[1] in" }
 	],
 	[#Rule 53
-		 'keyword_as_value', 1,
+		 'old_syntax_in_value', 3,
 sub
-#line 102 "BxParser.yp"
-{ $_[1] }
+#line 96 "BxParser.yp"
+{ [ $_[1], @{$_[3]} ] }
 	],
 	[#Rule 54
-		 'keyword_as_value', 1,
+		 'old_syntax_in_value', 3,
 sub
-#line 103 "BxParser.yp"
-{ $_[1] }
+#line 97 "BxParser.yp"
+{ [ $_[1], $_[3] ] }
 	],
 	[#Rule 55
-		 'keyword_as_value', 1,
+		 'set', 3,
 sub
-#line 104 "BxParser.yp"
-{ $_[1] }
+#line 100 "BxParser.yp"
+{ $_[2] }
 	],
 	[#Rule 56
-		 'keyword_as_value', 1,
+		 'set_body', 3,
 sub
-#line 105 "BxParser.yp"
-{ $_[1] }
+#line 103 "BxParser.yp"
+{ [ $_[1], @{$_[3]} ] }
 	],
 	[#Rule 57
-		 'keyword_as_value', 1,
+		 'set_body', 1,
 sub
-#line 106 "BxParser.yp"
-{ $_[1] }
+#line 104 "BxParser.yp"
+{ [ $_[1] ] }
 	],
 	[#Rule 58
-		 'value', 2,
+		 'between_operator', 1,
 sub
-#line 109 "BxParser.yp"
-{ $_[1].$_[2] }
+#line 107 "BxParser.yp"
+{ 'between' }
 	],
 	[#Rule 59
-		 'value', 1,
+		 'between_operator', 2,
 sub
-#line 110 "BxParser.yp"
-{ $_[1] }
+#line 108 "BxParser.yp"
+{ "$_[1] between" }
 	],
 	[#Rule 60
-		 'subsequent_value_part', 1,
+		 'between_value', 3,
 sub
-#line 113 "BxParser.yp"
-{ $_[1] }
+#line 111 "BxParser.yp"
+{ [ $_[1], $_[3] ] }
 	],
 	[#Rule 61
-		 'subsequent_value_part', 1,
+		 'keyword_as_value', 1,
 sub
 #line 114 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 62
-		 'subsequent_value_part', 1,
+		 'keyword_as_value', 1,
 sub
 #line 115 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 63
-		 'subsequent_value_part', 1,
+		 'keyword_as_value', 1,
 sub
 #line 116 "BxParser.yp"
-{ ($_[1] =~ m/^"(.*?)"$/)[0]; }
+{ $_[1] }
 	],
 	[#Rule 64
-		 'subsequent_value_part', 1,
+		 'keyword_as_value', 1,
 sub
 #line 117 "BxParser.yp"
-{ ($_[1] =~ m/^'(.*?)'$/)[0]; }
+{ $_[1] }
 	],
 	[#Rule 65
-		 'subsequent_value_part', 1,
+		 'keyword_as_value', 1,
 sub
 #line 118 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 66
-		 'subsequent_values_list', 1,
+		 'keyword_as_value', 1,
+sub
+#line 119 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 67
+		 'keyword_as_value', 1,
+sub
+#line 120 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 68
+		 'keyword_as_value', 1,
 sub
 #line 121 "BxParser.yp"
 { $_[1] }
 	],
-	[#Rule 67
-		 'subsequent_values_list', 2,
-sub
-#line 122 "BxParser.yp"
-{ $_[1].$_[2] }
-	],
-	[#Rule 68
-		 'subsequent_values_list', 2,
-sub
-#line 123 "BxParser.yp"
-{ $_[1].$_[2] }
-	],
 	[#Rule 69
-		 'subsequent_values_list', 1,
+		 'value', 2,
 sub
 #line 124 "BxParser.yp"
-{ '' }
+{ $_[1].$_[2] }
 	],
 	[#Rule 70
-		 'single_value', 1,
+		 'value', 1,
 sub
-#line 127 "BxParser.yp"
+#line 125 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 71
-		 'single_value', 1,
+		 'subsequent_value_part', 1,
 sub
 #line 128 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 72
-		 'single_value', 1,
+		 'subsequent_value_part', 1,
 sub
 #line 129 "BxParser.yp"
 { $_[1] }
 	],
 	[#Rule 73
-		 'number', 1,
+		 'subsequent_value_part', 1,
 sub
-#line 133 "BxParser.yp"
-{ $_[1] + 0 }
+#line 130 "BxParser.yp"
+{ $_[1] }
 	],
 	[#Rule 74
-		 'number', 1,
+		 'subsequent_value_part', 1,
 sub
-#line 134 "BxParser.yp"
-{ $_[1] + 0 }
+#line 131 "BxParser.yp"
+{ ($_[1] =~ m/^"(.*?)"$/)[0]; }
 	],
 	[#Rule 75
-		 'number', 2,
+		 'subsequent_value_part', 1,
 sub
-#line 135 "BxParser.yp"
-{ 0 - $_[2] }
+#line 132 "BxParser.yp"
+{ ($_[1] =~ m/^'(.*?)'$/)[0]; }
 	],
 	[#Rule 76
-		 'number', 2,
+		 'subsequent_value_part', 1,
+sub
+#line 133 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 77
+		 'subsequent_values_list', 1,
 sub
 #line 136 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 78
+		 'subsequent_values_list', 2,
+sub
+#line 137 "BxParser.yp"
+{ $_[1].$_[2] }
+	],
+	[#Rule 79
+		 'subsequent_values_list', 2,
+sub
+#line 138 "BxParser.yp"
+{ $_[1].$_[2] }
+	],
+	[#Rule 80
+		 'subsequent_values_list', 1,
+sub
+#line 139 "BxParser.yp"
+{ '' }
+	],
+	[#Rule 81
+		 'single_value', 1,
+sub
+#line 142 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 82
+		 'single_value', 1,
+sub
+#line 143 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 83
+		 'single_value', 1,
+sub
+#line 144 "BxParser.yp"
+{ $_[1] }
+	],
+	[#Rule 84
+		 'number', 1,
+sub
+#line 148 "BxParser.yp"
+{ $_[1] + 0 }
+	],
+	[#Rule 85
+		 'number', 1,
+sub
+#line 149 "BxParser.yp"
+{ $_[1] + 0 }
+	],
+	[#Rule 86
+		 'number', 2,
+sub
+#line 150 "BxParser.yp"
+{ 0 - $_[2] }
+	],
+	[#Rule 87
+		 'number', 2,
+sub
+#line 151 "BxParser.yp"
 { 0 - $_[2] }
 	]
 ],
@@ -1793,7 +1953,7 @@ sub
     bless($self,$class);
 }
 
-#line 139 "BxParser.yp"
+#line 154 "BxParser.yp"
 
 
 package UR::BoolExpr::BxParser;
@@ -1815,21 +1975,25 @@ sub _error {
 my %token_states = (
     'DEFAULT' => [
         WHITESPACE => qr{\s+},
-        AND => [ qr{and}, 'DEFAULT'],
-        OR => [ qr{or}, 'DEFAULT' ],
+        AND => [ qr{and}i, 'DEFAULT'],
+        OR => [ qr{or}i, 'DEFAULT' ],
         BETWEEN_WORD => qr{between},
         LIKE_WORD => qr{like},
         IN_WORD => qr{in},
         NOT_WORD => qr{not},
         DESC_WORD => qr{desc},
         ASC_WORD => qr{asc},
+        TRUE_WORD => qr{true},
+        FALSE_WORD => qr{false},
+        LIMIT => qr{limit},
+        OFFSET => qr{offset},
         IDENTIFIER => qr{[a-zA-Z_][a-zA-Z0-9_.]*},
         MINUS => qr{-},
         INTEGER => qr{\d+},
         REAL => qr{\d*\.\d+|\d+\.\d*},
-        WORD => qr{[%\.\/\w][-\.%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
-        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])+"},
-        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])+'},
+        WORD => qr{[%\+\.\/\w][\+\-\.%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])*"},
+        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])*'},
         LEFT_PAREN => [ qr{\(}, 'DEFAULT' ],
         RIGHT_PAREN => [ qr{\)}, 'DEFAULT' ],
         LEFT_BRACKET => [ qr{\[}, 'set_contents'],
@@ -1837,16 +2001,18 @@ my %token_states = (
         NOT_BANG => qr{!},
         EQUAL_SIGN => [ qr{=}, 'dont_gobble_spaces' ],
         DOUBLEEQUAL_SIGN => [ qr{=>}, 'dont_gobble_spaces' ],
-        OPERATORS => [ qr{<|>|<=|>=}, 'dont_gobble_spaces' ],
+        OPERATORS => [ qr{<=|>=|<|>}, 'dont_gobble_spaces' ],
         AND => [ qr{,}, 'DEFAULT' ],
         COLON => [ qr{:}, 'after_colon_value' ],
         TILDE => qr{~},
         ORDER_BY => qr{order by},
         GROUP_BY => qr{group by},
+        IS_NULL => qr{is null|is undef},
+        IS_NOT_NULL => qr{is not null|is not undef},
     ],
     'set_contents' => [
         SET_SEPARATOR => qr{,},  # Depending on state, can be either AND or SET_SEPARATOR
-        WORD => qr{[%\.\w\:][\.\:%\w]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        WORD => qr{[%\+\.\w\:][\+\.\:%\w]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
         RIGHT_BRACKET => [qr{\]}, 'DEFAULT' ],
     ],
     'after_colon_value' => [
@@ -1854,17 +2020,19 @@ my %token_states = (
         REAL => qr{\d*\.\d+|\d+\.\d*},
         IN_DIVIDER => qr{\/},
         #WORD => qr{\w+},    # Override WORD in DEFAULT to disallow /
-        WORD => qr{[%\.\w\:][\.\:%\w]*},   # Override WORD in DEFAULT to disallow /
-        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])+"},
-        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])+'},
+        WORD => qr{[%\+\.\w\:][\+\.\:%\w]*},   # Override WORD in DEFAULT to disallow /
+        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])*"},
+        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])*'},
         WHITESPACE => [qr{\s+}, 'DEFAULT'],
     ],
     'dont_gobble_spaces' => [
         AND => [ qr{and}, 'DEFAULT'],
         OR => [ qr{or}, 'DEFAULT' ],
+        LIMIT => [qr{limit}, 'DEFAULT'],
+        OFFSET => [qr{offset}, 'DEFAULT'],
         INTEGER => qr{\d+},
         REAL => qr{\d*\.\d+|\d+\.\d*},
-        WORD => qr{[%\.\/\w][\-\.\:%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        WORD => qr{[%\+\.\/\w][\+\-\.\:%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
         ORDER_BY => [qr{order by}, 'DEFAULT'],
         GROUP_BY => [qr{group by}, 'DEFAULT'],
     ],
@@ -1947,11 +2115,12 @@ sub parse {
         return (undef, '');  # Didn't match anything
     };
 
-    return $parser->YYParse(
-               yylex => $get_next_token,
-               yyerror => \&_error,
-               yydebug => $yydebug,
-           );
+    return ( $parser->YYParse(
+                yylex => $get_next_token,
+                yyerror => \&_error,
+                yydebug => $yydebug),
+             \$string,
+            );
 }
 
 # Used by the top-level expr production to turn an or-type parse tree with

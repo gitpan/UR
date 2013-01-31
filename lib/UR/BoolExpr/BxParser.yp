@@ -11,6 +11,8 @@ boolexpr:                                 { [] }
         | expr                            { UR::BoolExpr::BxParser->_simplify($_[1]) }
         | boolexpr ORDER_BY order_by_list { [@{$_[1]}, '-order', $_[3]] }
         | boolexpr GROUP_BY group_by_list { [@{$_[1]}, '-group', $_[3]] }
+        | boolexpr LIMIT INTEGER          { [@{$_[1]}, '-limit', $_[3]] }
+        | boolexpr OFFSET INTEGER         { [@{$_[1]}, '-offset', $_[3]] }
         ;
 
 expr: condition                            { $_[1] }
@@ -27,7 +29,18 @@ condition: property operator optional_spaces value                     { [ "$_[1
          | property between_operator between_value                     { [ "$_[1] $_[2]" => $_[3] ] }
          | property COLON optional_spaces between_value                { [ "$_[1] between" => $_[4] ] }
          | property negation COLON optional_spaces between_value       { [ "$_[1] $_[2] between" => $_[5] ] }
+         | property boolean_op_word                                    { [ "$_[1] $_[2]" => 1 ] }
+         | property null_op_word                                       { [ "$_[1] $_[2]" => undef ] }
          ;
+
+boolean_op_word: TRUE_WORD  { $_[1] }
+               | FALSE_WORD { $_[1] }
+      ;
+
+null_op_word: IS_NULL { '=' }
+            | negation IS_NULL  { "!=" }
+            | IS_NOT_NULL { '!=' }
+            ;
 
 spaces: WHITESPACE { $_[1] }
       ;
@@ -104,6 +117,8 @@ keyword_as_value: IN_WORD      { $_[1] }
                 | NOT_WORD     { $_[1] }
                 | DESC_WORD    { $_[1] }
                 | ASC_WORD     { $_[1] }
+                | TRUE_WORD    { $_[1] }
+                | FALSE_WORD   { $_[1] }
        ;
 
 value: single_value subsequent_values_list { $_[1].$_[2] }
@@ -157,21 +172,25 @@ sub _error {
 my %token_states = (
     'DEFAULT' => [
         WHITESPACE => qr{\s+},
-        AND => [ qr{and}, 'DEFAULT'],
-        OR => [ qr{or}, 'DEFAULT' ],
+        AND => [ qr{and}i, 'DEFAULT'],
+        OR => [ qr{or}i, 'DEFAULT' ],
         BETWEEN_WORD => qr{between},
         LIKE_WORD => qr{like},
         IN_WORD => qr{in},
         NOT_WORD => qr{not},
         DESC_WORD => qr{desc},
         ASC_WORD => qr{asc},
+        TRUE_WORD => qr{true},
+        FALSE_WORD => qr{false},
+        LIMIT => qr{limit},
+        OFFSET => qr{offset},
         IDENTIFIER => qr{[a-zA-Z_][a-zA-Z0-9_.]*},
         MINUS => qr{-},
         INTEGER => qr{\d+},
         REAL => qr{\d*\.\d+|\d+\.\d*},
-        WORD => qr{[%\.\/\w][-\.%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
-        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])+"},
-        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])+'},
+        WORD => qr{[%\+\.\/\w][\+\-\.%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])*"},
+        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])*'},
         LEFT_PAREN => [ qr{\(}, 'DEFAULT' ],
         RIGHT_PAREN => [ qr{\)}, 'DEFAULT' ],
         LEFT_BRACKET => [ qr{\[}, 'set_contents'],
@@ -179,16 +198,18 @@ my %token_states = (
         NOT_BANG => qr{!},
         EQUAL_SIGN => [ qr{=}, 'dont_gobble_spaces' ],
         DOUBLEEQUAL_SIGN => [ qr{=>}, 'dont_gobble_spaces' ],
-        OPERATORS => [ qr{<|>|<=|>=}, 'dont_gobble_spaces' ],
+        OPERATORS => [ qr{<=|>=|<|>}, 'dont_gobble_spaces' ],
         AND => [ qr{,}, 'DEFAULT' ],
         COLON => [ qr{:}, 'after_colon_value' ],
         TILDE => qr{~},
         ORDER_BY => qr{order by},
         GROUP_BY => qr{group by},
+        IS_NULL => qr{is null|is undef},
+        IS_NOT_NULL => qr{is not null|is not undef},
     ],
     'set_contents' => [
         SET_SEPARATOR => qr{,},  # Depending on state, can be either AND or SET_SEPARATOR
-        WORD => qr{[%\.\w\:][\.\:%\w]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        WORD => qr{[%\+\.\w\:][\+\.\:%\w]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
         RIGHT_BRACKET => [qr{\]}, 'DEFAULT' ],
     ],
     'after_colon_value' => [
@@ -196,17 +217,19 @@ my %token_states = (
         REAL => qr{\d*\.\d+|\d+\.\d*},
         IN_DIVIDER => qr{\/},
         #WORD => qr{\w+},    # Override WORD in DEFAULT to disallow /
-        WORD => qr{[%\.\w\:][\.\:%\w]*},   # Override WORD in DEFAULT to disallow /
-        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])+"},
-        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])+'},
+        WORD => qr{[%\+\.\w\:][\+\.\:%\w]*},   # Override WORD in DEFAULT to disallow /
+        DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])*"},
+        SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])*'},
         WHITESPACE => [qr{\s+}, 'DEFAULT'],
     ],
     'dont_gobble_spaces' => [
         AND => [ qr{and}, 'DEFAULT'],
         OR => [ qr{or}, 'DEFAULT' ],
+        LIMIT => [qr{limit}, 'DEFAULT'],
+        OFFSET => [qr{offset}, 'DEFAULT'],
         INTEGER => qr{\d+},
         REAL => qr{\d*\.\d+|\d+\.\d*},
-        WORD => qr{[%\.\/\w][\-\.\:%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        WORD => qr{[%\+\.\/\w][\+\-\.\:%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
         ORDER_BY => [qr{order by}, 'DEFAULT'],
         GROUP_BY => [qr{group by}, 'DEFAULT'],
     ],
@@ -289,11 +312,12 @@ sub parse {
         return (undef, '');  # Didn't match anything
     };
 
-    return $parser->YYParse(
-               yylex => $get_next_token,
-               yyerror => \&_error,
-               yydebug => $yydebug,
-           );
+    return ( $parser->YYParse(
+                yylex => $get_next_token,
+                yyerror => \&_error,
+                yydebug => $yydebug),
+             \$string,
+            );
 }
 
 # Used by the top-level expr production to turn an or-type parse tree with

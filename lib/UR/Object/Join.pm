@@ -2,7 +2,7 @@ package UR::Object::Join;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 our @CARP_NOT = qw( UR::Object::Property );
 
@@ -118,12 +118,19 @@ sub _resolve_via_to {
 
     my $via_meta;
     if ($via) {
+        if ($via eq '__self__') {
+            my $to_meta = $class_meta->property_meta_for_name($to);
+            unless ($to_meta) {
+                my $property_name = $pmeta->property_name;
+                Carp::croak "Can't resolve joins for property '$property_name' of $class_name: No property metadata 'to' property '$to'";
+            }
+            return $to_meta->_resolve_join_chain($join_label);
+        }
         $via_meta = $class_meta->property_meta_for_name($via);
         unless ($via_meta) {
             return if $class_name->can($via);  # It's via a method, not an actual property
 
             my $property_name = $pmeta->property_name;
-            my $class_name = $pmeta->class_name;
             Carp::croak "Can't resolve joins for property '$property_name' of $class_name: No property metadata for via property '$via'";
         }
 
@@ -175,7 +182,40 @@ sub _resolve_via_to {
 
         push @joins, $to_meta->_resolve_join_chain($join_label);
     }
-    
+   
+    if (my $return_class_name = $pmeta->_convert_data_type_for_source_class_to_final_class($pmeta->data_type, $pmeta->class_name)) {
+        my $final_class_name = $joins[-1]->foreign_class;
+        if ($return_class_name ne $final_class_name) {
+            if ($return_class_name->isa($final_class_name)) {
+                # the property is a subclass of the one involved in the final join
+                # this happens when there is a via/where/to where say "to" goes-to any "Animal" but this overall property is known to be a "Dog". 
+                my $general_join = pop @joins;
+                my $specific_join = UR::Object::Join->_get_or_define(
+                    source_class => $general_join->{'source_class'},
+                    source_property_names => $general_join->{'source_property_names'},
+                    foreign_class => $return_class_name, # more specific 
+                    foreign_property_names => $general_join->{'foreign_property_names'}, # presume the borrow took you into a subclass and these still work
+                    is_optional => $general_join->{'is_optional'},
+                    id => $general_join->{id} . ' isa ' . $return_class_name
+                );
+                push @joins, $specific_join;
+            }
+            elsif ($return_class_name eq 'UR::Value::SloppyPrimitive' or $final_class_name eq 'UR::Value::SloppyPrimitive') {
+                # backward-compatible layer for before there were primitive types
+            }
+            elsif ($final_class_name->isa($return_class_name)) {
+                Carp::carp("Joins for property '" . $pmeta->property_name . "' of class " . $pmeta->class_name
+                            .  " is declared as data type $return_class_name while its joins connect to a more specific data type $final_class_name!");
+            }
+            else {
+                Carp::carp("Discrepant join for property '" . $pmeta->property_name . "' of class " . $pmeta->class_name
+                            . ".  Its data type ($return_class_name) does not match the join from property '"
+                            . join("','", @{$joins[-1]->{source_property_names}}) . "' of class " . $joins[-1]->{source_class}
+                            . " with type $final_class_name");
+            }
+        }
+    }
+
     return @joins;
 }
 
@@ -322,7 +362,7 @@ sub _resolve_reverse {
                         $pmeta->property_name . "' of class " . $pmeta->class_name);
     }
 
-    my @join_data = map { { %$_ } } reverse $foreign_property_via->_resolve_join_chain($join_label);
+    my @join_data = map { { %$_ } } $foreign_property_via->_resolve_join_chain($join_label);
     my $prev_where = $where;
     for (@join_data) { 
         @$_{@new} = @$_{@old};
@@ -330,7 +370,9 @@ sub _resolve_reverse {
         my $next_where = $_->{where};
         $_->{where} = $prev_where;
 
+        no warnings qw(uninitialized); #source_name_for_foreign can be undefined at the end of the chain
         my $id = $_->{source_class} . '::' . $_->{source_name_for_foreign};
+        use warnings qw(uninitialized);
         if ($prev_where) {
             my $where_rule = UR::BoolExpr->resolve($foreign_class, @$where);
             $id .= ' ' . $where_rule->id;
@@ -347,8 +389,12 @@ sub _resolve_reverse {
 
         $prev_where = $next_where;
     }
+    @join_data = reverse @join_data;
     if ($prev_where) {
-        Carp::confess("final join needs placement! " . Data::Dumper::Dumper($prev_where));
+        # Having a where clause in the last join is only a problem if testing
+        # the where condition needs more joins.  But if it did, then those additional
+        # joins would have already been in the list, right?
+        #Carp::confess("final join needs placement! " . Data::Dumper::Dumper($prev_where));
     }
 
     for my $join_data (@join_data) {

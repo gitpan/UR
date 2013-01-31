@@ -2,14 +2,29 @@ package Command::V2;  # additional methods to dispatch from a command-line
 use strict;
 use warnings;
 
+# instead of tacking these methods onto general Command::V2 objects
+# they could be put on the Command::Shell class, which is a wrapper/adaptor Command for translating from
+# command-line shell to purely functional commands.
+
+# old entry point
+# new cmds will call Command::Shell->run("MyClass",@ARGV)
+# which goes straight into _cmdline_run for now...
 sub execute_with_shell_params_and_exit {
-    # This automatically parses command-line options and "does the right thing":
-    # TODO: abstract out all dispatchers for commands into a given API
     my $class = shift;
-    
     if (@_) {
         die "No params expected for execute_with_shell_params_and_exit()!";
     }
+    my @argv = @ARGV;
+    @ARGV = ();
+    my $exit_code = $class->_cmdline_run(@argv);
+    exit $exit_code;
+}
+
+sub _cmdline_run {
+    # This automatically parses command-line options and "does the right thing":
+    # TODO: abstract out all dispatchers for commands into a given API
+    my $class = shift;
+    my @argv = @_; 
 
     $Command::entry_point_class ||= $class;
     $Command::entry_point_bin ||= File::Basename::basename($0);
@@ -22,8 +37,6 @@ sub execute_with_shell_params_and_exit {
         die "error: failed to exit after handling shell completion!";
     }
 
-    my @argv = @ARGV;
-    @ARGV = ();
     my $exit_code;
     eval {
         $exit_code = $class->_execute_with_shell_params_and_return_exit_code(@argv);
@@ -34,7 +47,7 @@ sub execute_with_shell_params_and_exit {
         UR::Context->rollback or die "Failed to rollback changes after failed commit!!!\n";
         $exit_code = 255 unless ($exit_code);
     }
-    exit $exit_code;
+    return $exit_code;
 }
 
 sub _execute_with_shell_params_and_return_exit_code {
@@ -152,15 +165,19 @@ sub resolve_class_and_params_for_argv {
     do {
         # GetOptions also likes to emit warnings instead of return a list of errors :( 
         my @errors;
-        local $SIG{__WARN__} = sub { push @errors, @_ };
-        
-        ## Change the pattern to be '--', '-' followed by a non-digit, or '+'.
-        ## This s the effect of treating a negative number as a value of an option.
-        ## This means that we won't be allowed to have an option named, say, -1.
-        ## But since command modules' properties have to be allowable function names,
-        ## and "1" is not a valid function name, it's not really a problem
-        #Getopt::Long::Configure('prefix_pattern=--|-(?!\D)|\+');
-        unless (GetOptions($params_hash,@spec)) {
+        my $rv;
+        {
+            local $SIG{__WARN__} = sub { push @errors, @_ };
+
+            ## Change the pattern to be '--', '-' followed by a non-digit, or '+'.
+            ## This s the effect of treating a negative number as a value of an option.
+            ## This means that we won't be allowed to have an option named, say, -1.
+            ## But since command modules' properties have to be allowable function names,
+            ## and "1" is not a valid function name, it's not really a problem
+            #Getopt::Long::Configure('prefix_pattern=--|-(?!\D)|\+');
+            $rv = GetOptions($params_hash,@spec);
+        }
+        unless ($rv) {
             for my $error (@errors) {
                 $self->error_message($error);
             }
@@ -310,6 +327,39 @@ sub _errors_from_missing_parameters {
 
     my $class_meta = $self->__meta__;
 
+    my @all_property_metas = $class_meta->properties();
+    my @specified_property_metas = grep { exists $params->{$_->property_name} } @all_property_metas;
+
+    my %specified_property_metas = map { $_->property_name => $_ } @specified_property_metas;
+    my %set_indirectly;
+    my @todo = @specified_property_metas;
+    while (my $property_meta = shift @todo) {
+        if (my $via = $property_meta->via) {
+            if (not $property_meta->is_mutable) {
+                my $list = $set_indirectly{$via} ||= [];
+                push @$list, $property_meta;
+            }
+            unless ($specified_property_metas{$via}) {
+                my $via_meta = $specified_property_metas{$via} = $class_meta->property($via);
+                push @specified_property_metas, $via_meta;
+                push @todo, $via_meta;
+            }
+        }
+        elsif (my $id_by = $property_meta) {
+            my $list = $set_indirectly{$id_by} ||= [];
+            push @$list, $property_meta;
+            unless ($specified_property_metas{$id_by}) {
+                my $id_by_meta = $specified_property_metas{$id_by} = $class_meta->property($id_by);
+                push @specified_property_metas, $id_by_meta;
+                push @todo, $id_by_meta;
+            }
+        }
+    }
+
+    # TODO: this should use @all_property_metas, and filter down to is_param and is_input
+    # This old code just ignores things inherited from a base class.
+    # We will need to be careful fixing this because it could add checks to tools which
+    # work currently and lead to unexpected failures. 
     my @property_names;
     if (my $has = $class_meta->{has}) {
         @property_names = $self->_unique_elements(keys %$has);
@@ -324,6 +374,13 @@ sub _errors_from_missing_parameters {
         next if $property_meta->implied_by;
         next if defined $property_meta->default_value;
         next if defined $params->{$pn};
+        next if $set_indirectly{$pn};
+
+        if (my $via = $property_meta->via) {
+            if ($params->{$via} or $set_indirectly{$via}) {
+                next;
+            }
+        }
 
         my $arg = $pn;
         $arg =~ s/_/-/g;
@@ -443,25 +500,27 @@ sub _shell_args_property_meta {
     # Find which property metas match the rules.  We have to do it this way
     # because just calling 'get_all_property_metas()' will product multiple matches 
     # if a property is overridden in a child class
-    my $rule = UR::Object::Property->define_boolexpr(@_);
+    my ($rule, %extra) = UR::Object::Property->define_boolexpr(@_);
     my %seen;
-    my (@positional,@required,@optional);
+    my (@positional,@required_input,@required_param,@optional_input,@optional_param);
 
-    my @properties_with_position = map { [ $_->position_in_module_header, $_ ] }
-                                   $class_meta->properties();
-    my @sorted =
-        sort { 
-            $a->[0] <=> $b->[0]
-        } 
-        @properties_with_position;
-    my @property_meta = map { $_->[1] } @sorted;
+    my @property_meta = $class_meta->properties(); 
+    PROP:
     foreach my $property_meta (@property_meta) {
         my $property_name = $property_meta->property_name;
 
         next if $seen{$property_name}++;
         next unless $rule->evaluate($property_meta);
-
         next unless $property_meta->can("is_param") and ($property_meta->is_param or $property_meta->is_input);
+        if (%extra) {
+            $DB::single = 1;
+            no warnings;
+            for my $key (keys %extra) {
+                if ($property_meta->$key ne $extra{$key}) {
+                    next PROP;
+                }
+            }
+        }
 
         next if $property_name eq 'id';
         next if $property_name eq 'result';
@@ -486,25 +545,33 @@ sub _shell_args_property_meta {
             push @positional, $property_meta;
         }
         elsif ($property_meta->is_optional) {
-            push @optional, $property_meta;
+            if ($property_meta->is_input) {
+                push @optional_input, $property_meta;
+            }
+            elsif ($property_meta->is_param) {
+                push @optional_param, $property_meta;
+            }
         }
         else {
-            push @required, $property_meta;
+            if ($property_meta->is_input) {
+                push @required_input, $property_meta;
+            }
+            elsif ($property_meta->is_param) {
+                push @required_param, $property_meta;
+            }
         }
     }
 
-    @required   = map { [ $_->position_in_module_header, $_ ] } @required;
-    @optional   = map { [ $_->position_in_module_header, $_ ] } @optional;
-    @positional = map { [ $_->{shell_args_position}, $_ ] } @positional;
-
     my @result;
     @result = ( 
-        (sort { $a->[0] cmp $b->[0] } @required),
-        (sort { $a->[0] cmp $b->[0] } @optional),
-        (sort { $a->[0] <=> $b->[0] } @positional),
+        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @required_param),
+        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @optional_param),
+        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @required_input),
+        (sort { $a->position_in_module_header cmp $b->position_in_module_header } @optional_input),
+        (sort { $a->shell_args_position <=> $b->shell_args_position } @positional),
     );
 
-    return map { $_->[1] } @result;
+    return @result;
 }
 
 
@@ -704,6 +771,7 @@ sub resolve_param_value_from_cmdline_text {
             %SEEN_FROM_CLASS = ();
             # call resolve_param_value_from_text without a via_method to "bootstrap" recursion
             @arg_results = eval{$self->resolve_param_value_from_text($arg, $param_class)};
+            Carp::croak($@) if ($@ and $@ !~ m/Not a valid BoolExpr/);
         } 
         last if ($@ && !@arg_results);
 
@@ -772,7 +840,7 @@ sub resolve_param_value_from_text {
     if (!@results && !$@) {
         # no result and was valid BoolExpr then we don't want to break it apart because we
         # could query enormous amounts of info
-        die $@;
+        return;
     }
     # the first param_arg is all param_args to try BoolExpr so skip if it has commas
     if (!@results && $param_arg !~ /,/) {
@@ -890,19 +958,28 @@ sub _resolve_param_value_from_text_by_bool_expr {
     return @results;
 }
 
-sub _resolve_param_value_from_text_by_name_or_id {
+sub _try_get_by_id {
     my ($self, $param_class, $str) = @_;
-    my (@results);
 
     my $class_meta = $param_class->__meta__;
     my @id_property_names = $class_meta->id_property_names;
     if (@id_property_names == 0) {
-        die "Failed to determine id property names for class $param_class.";
+        die "Failed to determine ID property names for class ($param_class).";
+    } elsif (@id_property_names == 1) {
+        my $id_data_type = $class_meta->property_meta_for_name($id_property_names[0])->_data_type_as_class_name || '';
+        # Validate $str, if possible, to prevent warnings from database if $str does not fit column type.
+        if ($id_data_type->isa('UR::Value::Number')) { # Oracle's Number data type includes floats but we just use integers for numeric IDs
+            return ($str =~ /^[+-]?\d+$/);
+        }
     }
+    return 1;
+}
 
-    my $first_type = $class_meta->property_meta_for_name($id_property_names[0])->data_type || '';
-    if (@id_property_names > 1 or $first_type eq 'Text' or $str =~ /^-?\d+$/) { # try to get by ID
-        @results = $param_class->get($str);
+sub _resolve_param_value_from_text_by_name_or_id {
+    my ($self, $param_class, $str) = @_;
+    my (@results);
+    if ($self->_try_get_by_id($param_class, $str)) {
+        @results = eval { $param_class->get($str) };
     }
     if (!@results && $param_class->can('name')) {
         @results = $param_class->get(name => $str);
@@ -910,7 +987,6 @@ sub _resolve_param_value_from_text_by_name_or_id {
             @results = $param_class->get("name like" => "$str");
         }
     }
-    #$self->debug_message("S: $param_class '$str' " . scalar(@results));
 
     return @results;
 }

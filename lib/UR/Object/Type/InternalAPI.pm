@@ -3,7 +3,7 @@ use warnings;
 use strict;
 
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 use Sys::Hostname;
 use Cwd;
@@ -105,20 +105,23 @@ sub property_meta_for_name {
 sub _concrete_property_meta_for_class_and_name {
     my($self,$property_name) = @_;
 
-    my $property_meta = $self->property_meta_for_name($property_name);
+    my @property_metas = $self->property_meta_for_name($property_name);
 
-    if ($property_meta
-        and $property_meta->class_name eq 'UR::Object'
-        and $property_meta->property_name eq 'id')
-    {
-        # This is the generic id property.  Remap it to the class' real ID property name
-        my @id_properties = $self->id_property_names;
-        if (@id_properties == 1 and $id_properties[0] eq 'id') {
-            return $property_meta;
+    for (my $i = 0; $i < @property_metas; $i++) {
+        if ($property_metas[$i]->id eq "UR::Object\tid"
+            and $property_name !~ /\./) #If we're looking at a foreign object's id, can't replace with our own
+        {
+            # This is the generic id property.  Remap it to the class' real ID property name
+            my @id_properties = $self->id_property_names;
+            if (@id_properties == 1 and $id_properties[0] eq 'id') {
+                next; # this class doesn't have any other ID properties
+            }
+            #return map { $self->_concrete_property_meta_for_class_and_name($_) } @id_properties;
+            my @remapped = map { $self->_concrete_property_meta_for_class_and_name($_) } @id_properties;
+            splice(@property_metas, $i, 1, @remapped);
         }
-        return map { $self->_concrete_property_meta_for_class_and_name($_) } @id_properties;
     }
-    return $property_meta;
+    return @property_metas;
 }
 
 
@@ -182,6 +185,37 @@ sub parent_class_names {
     my $self = shift;   
     return @{ $self->{is} };
 }
+
+
+# If $property_name represents an alias-type property (via => '__self__'),
+# then return a string with all the aliases removed
+push @cache_keys, '_resolve_property_aliases';
+sub resolve_property_aliases {
+    my($self,$property_name) = @_;
+
+    return unless $property_name;
+    unless ($self->{'_resolve_property_aliases'} && $self->{'_resolve_property_aliases'}->{$property_name}) {
+        $self->{'_resolve_property_aliases'} ||= {};
+
+        my @property_metas = $self->property_meta_for_name($property_name);
+        my @property_names;
+        if (@property_metas) {
+            @property_names = map { $_->alias_for } @property_metas;
+        } else {
+            # there was a problem resolving the chain of properties
+            # This happens in the case of an object accessor (is => 'Some::Class') without an id_by
+            my @split_names = split(/\./,$property_name);
+            my $prop_meta = $self->property_meta_for_name(shift @split_names);
+            return unless $prop_meta;
+            my $foreign_class = $prop_meta->data_type && eval { $prop_meta->data_type->__meta__};
+            return unless $foreign_class;
+            @property_names = ( $prop_meta->alias_for, $foreign_class->resolve_property_aliases(join('.', @split_names)));
+        }
+        $self->{'_resolve_property_aliases'}->{$property_name} = join('.', @property_names);
+    }
+    return $self->{'_resolve_property_aliases'}->{$property_name};
+}
+
 
 push @cache_keys, '_id_property_names';
 sub id_property_names {
@@ -248,6 +282,26 @@ sub all_table_names {
         ( $self->table_name, $self->ancestry_table_names );
     return @table_names;
 }
+
+sub first_table_name {
+    my $self = _object(shift);
+    if ($self->{_first_table_name}) {
+        return $self->{first_table_name};
+    }
+
+    my @classes = ($self);
+    while(@classes) {
+        my $co = shift @classes;
+        if (my $table_name = $co->table_name) {
+            $self->{first_table_name} = $table_name;
+            return $table_name;
+        }
+        my @parents = map { $_->__meta__ } @{$co->{'is'}};
+        push @classes, @parents;
+    }
+    return;
+}
+    
 
 sub ancestry_class_names {
     my $self = shift;
@@ -545,15 +599,21 @@ sub sorter {
                 push @is_descending, 0;
             }
 
-            my $pmeta;
+            my $class_meta;
             if ($self->isa("UR::Object::Set::Type")) {
                 # If we're a set, we want to examine the property of our members.
                 my $subject_class = $self->class_name;
                 $subject_class =~ s/::Set$//g;
-                $pmeta = $subject_class->__meta__->property($property);
+                $class_meta = $subject_class->__meta__;#->property($property);
             } else {
-                $pmeta = $self->property($property);
+                $class_meta = $self;
             }
+
+            my ($pmeta,@extra) = $class_meta->_concrete_property_meta_for_class_and_name($property);
+            if(@extra) {
+                $pmeta = $class_meta->property($property); #a composite property (typically ID)
+            }
+
             if ($pmeta) {
                 my $is_numeric = $pmeta->is_numeric;
                 push @is_numeric, $is_numeric;
@@ -569,13 +629,20 @@ sub sorter {
 
         no warnings;   # don't print a warning about undef values ...alow them to be treated as 0 or '' 
         $sorter = $self->{_sorter}{$key} ||= sub($$) {
+
             for (my $n = 0; $n < @properties; $n++) {
                 my $property = $properties[$n];
-                my($first,$second) = $is_descending[$n] ? ($_[1]->$property,$_[0]->$property) : ($_[0]->$property,$_[1]->$property);
-                if (!defined($second)) {
-                    return -1;
-                } elsif (!defined($first)) {
-                    return 1;
+                my @property_string = split('\.',$property);
+
+                my($first,$second) = $is_descending[$n] ? ($_[1], $_[0]) : ($_[0], $_[1]);
+                for my $current (@property_string) {
+                    $first = $first->$current;
+                    $second = $second->$current;
+                    if (!defined($second)) {
+                        return -1;
+                    } elsif (!defined($first)) {
+                        return 1;
+                    }
                 }
 
                 my $cmp = $is_numeric[$n] ? $first <=> $second : $first cmp $second;
@@ -882,8 +949,8 @@ sub _load {
             my @classes = $namespace->get_material_classes;
             return $class->is_loaded($params);
         }
-        my @params = %$params;
-        Carp::confess("Non-class_name used to find a class object: @params");
+        Carp::confess("Non-class_name used to find a class object: "
+                    . join(', ', map { "$_ => " . (defined $params->{$_} ? "'" . $params->{$_} . "'" : 'undef') } keys %$params));
     }
 
     # Besides the common case of asking for a class by its name, the next most
@@ -928,7 +995,8 @@ sub _load {
         # We need to handle $@ here otherwise we'll see
         # "Can't locate UR/Object/Type/Ghost.pm in @INC" error.
         # We want to fall through "in the right circumstances".
-        Carp::croak("Error while autoloading with 'use $class_name': $@") unless ($@ =~ /Can't locate \S+ in \@INC/);
+        (my $module_path = $class_name . '.pm') =~ s/::/\//g;
+        Carp::croak("Error while autoloading with 'use $class_name': $@") unless ($@ =~ /Can't locate $module_path in \@INC/);
         # FIXME: I think other conditions here will result in silent errors.
     }
 
@@ -957,7 +1025,7 @@ sub _load {
         # which would fire recursively for three extensions of
         # Acme::Equipment.
         my $full_base_class_name = $prefix . ($base ? "::" . $base : "");
-        my $base_class_obj = UR::Object::Type->get(class_name => $full_base_class_name);
+        my $base_class_obj = eval { $full_base_class_name->__meta__ };
 
         if ($base_class_obj)
         {
@@ -1414,14 +1482,13 @@ sub _invalidate_cached_data_for_subclasses {
 
     delete @$class_meta{@cache_keys};
 
-    #my @subclasses = $class_meta->subclasses_loaded($class_obj->class_name);
-    my @subclasses = @{$UR::Object::_init_subclasses_loaded{$class_meta->class_name}};
+    my @subclasses = @{$UR::Object::Type::_init_subclasses_loaded{$class_meta->class_name}};
     my %seen;
     while (my $subclass = shift @subclasses) {
+        next if ($seen{$subclass}++);
         my $sub_meta = UR::Object::Type->get(class_name => $subclass);
         delete @$sub_meta{@cache_keys};
-        #push @subclasses, $sub_meta->subclasses_loaded($subclass);
-        push @subclasses, @{$UR::Object::_init_subclasses_loaded{$sub_meta->class_name}};
+        push @subclasses, @{$UR::Object::Type::_init_subclasses_loaded{$sub_meta->class_name}};
     }
 }
 

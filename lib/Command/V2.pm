@@ -11,7 +11,7 @@ use Getopt::Long;
 use Command::View::DocMethods;
 use Command::Dispatch::Shell;
 
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 our $entry_point_class;
 our $entry_point_bin;
@@ -120,6 +120,7 @@ sub create {
     return unless $self;
 
     # set non-optional boolean flags to false.
+    # TODO: rename that property meta method if it is not ONLY used for shell args
     for my $property_meta ($self->_shell_args_property_meta) {
         my $property_name = $property_meta->property_name;
         if (!$property_meta->is_optional and !defined($self->$property_name)) {

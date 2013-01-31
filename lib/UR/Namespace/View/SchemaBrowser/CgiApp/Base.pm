@@ -10,7 +10,7 @@ use base 'CGI::Application';
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 sub new {
 my $class = shift;
@@ -91,7 +91,7 @@ my $self = shift;
 
 # FIXME is there a way to dynamically get all the available namespaces?
 sub GetNamespaceNames {
-return qw(GSC UR);
+    return map { $_->class } UR::Namespace->is_loaded();
 }
 
 

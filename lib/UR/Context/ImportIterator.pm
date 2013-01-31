@@ -8,7 +8,7 @@ package UR::Context;
 use strict;
 use warnings;
 
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 
 # A wrapper around the method of the same name in UR::DataSource::* to iterate over the
@@ -551,7 +551,7 @@ sub _create_import_iterator_for_underlying_context {
         my $primary_object_for_next_db_row;
 
         LOAD_AN_OBJECT:
-        until ($primary_object_for_next_db_row) { # note that we return directly when the db is out of data
+        until (defined $primary_object_for_next_db_row) { # note that we return directly when the db is out of data
 
             my ($next_db_row);
             ($next_db_row) = $db_iterator->() if ($db_iterator);
@@ -729,17 +729,15 @@ sub _create_import_iterator_for_underlying_context {
 
             $primary_object_for_next_db_row = $imported[-1];
 
-            foreach my $obj (@imported) {
-                # The object importer will return undef for an object if no object
-                # got created for that $next_db_row, and will return a string if the object
-                # needs to be subclassed before being returned.  Don't put serial numbers on
-                # these
-                next unless (defined($obj) && ref($obj));
+            # The object importer will return undef for an object if no object
+            # got created for that $next_db_row, and will return a string if the object
+            # needs to be subclassed before being returned.  Don't put serial numbers on
+            # these
+            map { $_->{'__get_serial'} = $this_get_serial }
+                grep { defined && ref }
+                @imported;
 
-                $obj->{'__get_serial'} = $this_get_serial;
-            }
-
-            if ($re_iterate and $primary_object_for_next_db_row and ! ref($primary_object_for_next_db_row)) {
+            if ($re_iterate and defined($primary_object_for_next_db_row) and ! ref($primary_object_for_next_db_row)) {
                 # It is possible that one or more objects go into subclasses which require more
                 # data than is on the results row.  For each subclass (or set of subclasses),
                 # we make a more specific, subordinate iterator to delegate-to.
@@ -765,7 +763,7 @@ sub _create_import_iterator_for_underlying_context {
 
             } # end of handling a possible subordinate iterator delegate
 
-            unless ($primary_object_for_next_db_row) {
+            unless (defined $primary_object_for_next_db_row) {
             #if (!$primary_object_for_next_db_row or $rule->evaluate($primary_object_for_next_db_row)) {
                 redo LOAD_AN_OBJECT;
             }
@@ -780,7 +778,9 @@ sub _create_import_iterator_for_underlying_context {
                 push @by_hand_recursive_source_values, @values;
             }
 
-            if (! $next_object_to_return or $next_object_to_return eq $primary_object_for_next_db_row) {
+            if (! defined($next_object_to_return)
+                or (Scalar::Util::refaddr($next_object_to_return) == Scalar::Util::refaddr($primary_object_for_next_db_row))
+            ) {
                 # The first time through the iterator, we need to buffer the object until
                 # $primary_object_for_next_db_row is something different.
                 $next_object_to_return = $primary_object_for_next_db_row;

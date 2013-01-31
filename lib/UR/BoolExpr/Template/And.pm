@@ -2,7 +2,7 @@ package UR::BoolExpr::Template::And;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;;
+our $VERSION = "0.39"; # UR $VERSION;;
 
 UR::Object::Type->define(
     class_name      => __PACKAGE__,
@@ -489,7 +489,8 @@ sub params_list_for_values {
         else {
             my ($property, $op) = ($key =~ /^(\-*[\w\.]+)\s*(.*)$/);        
             unless ($property) {
-                die "bad key $key in @keys_sorted";
+                $DB::single = 1;
+                Carp::confess("bad key $key in @keys_sorted");
             }
             my $value = $values_sorted[$v];
             if ($op) {
@@ -887,7 +888,14 @@ sub _fast_construct {
     # The normalizer will store this.  Below, we'll
     # find or create the template for this ID.
     my $normalized_constant_value_id = (scalar(@constant_values_sorted) ? UR::BoolExpr::Util->values_to_value_id(@constant_values_sorted) : $constant_value_id);
-    my $normalized_id = UR::BoolExpr::Template->__meta__->resolve_composite_id_from_ordered_values($subject_class_name, "And", join(",",@keys_sorted), $normalized_constant_value_id);
+
+    my @keys_unaliased = $UR::Object::Type::bootstrapping
+                            ? @keys_sorted
+                            : map { $_->[0] = substr($_->[0], 0, 1) eq '-' ? $_->[0] : $subject_class_meta->resolve_property_aliases($_->[0]);
+                                    join(' ',@$_); }
+                                map { [ split(' ') ] }
+                                @keys_sorted;
+    my $normalized_id = UR::BoolExpr::Template->__meta__->resolve_composite_id_from_ordered_values($subject_class_name, "And", join(",",@keys_unaliased), $normalized_constant_value_id);
 
     $self = bless {
         id                              => $id,

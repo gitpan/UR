@@ -7,7 +7,7 @@ require UR;
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.38"; # UR $VERSION;;
+our $VERSION = "0.39"; # UR $VERSION;;
 our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
 
 # class_meta and r_class_meta duplicate the functionality if two properties of the same name,
@@ -54,6 +54,16 @@ sub is_valid_storage_for_value {
         }
     }
     return 0;
+}
+
+sub alias_for {
+    my $self = shift;
+
+    if ($self->{'via'} and $self->{'to'} and $self->{'via'} eq '__self__') {
+        return $self->{'to'};
+    } else {
+        return $self->{'property_name'};
+    }
 }
 
 sub _convert_data_type_for_source_class_to_final_class {
@@ -291,7 +301,10 @@ sub get_property_name_pairs_for_join {
     unless ($self->{'_get_property_name_pairs_for_join'}) {
         my @linkage = $self->_get_direct_join_linkage();
         unless (@linkage) {
-            Carp::croak("Cannot resolve underlying property joins for property ".$self->id);
+            Carp::croak("Cannot resolve underlying property joins for property '"
+                            . $self->property_name . "' of class "
+                            . $self->class_name
+                            . ": Couldn't determine which properties link to the remote class");
         }
         my @results;
         if ($self->reverse_as) {

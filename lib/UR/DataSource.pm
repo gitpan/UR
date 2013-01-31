@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 use Sys::Hostname;
 
 *namespace = \&get_namespace;
@@ -609,17 +609,25 @@ sub _set_specified_objects_saved_uncommitted {
 sub _set_all_objects_saved_committed {
     # called by UR::DBI on commit
     my $self = shift;
-    return $self->_set_all_specified_objects_saved_committed($self->_get_current_entities);
+    return $self->_set_specified_objects_saved_committed([ $self->_get_current_entities ]);
 }
 
 sub _set_all_specified_objects_saved_committed {
     my $self = shift;
-    my @objects = @_;
+    my($pkg, $file, $line) = caller;
+    Carp::carp("Deprecated method _set_all_specified_objects_saved_committed called at file $file line $line.  The new name for this method is _set_specified_objects_saved_committed");
+    my @changed_objects = @_;
+    $self->_set_specified_objects_saved_committed(\@changed_objects);
+}
+
+sub _set_specified_objects_saved_committed {
+    my $self = shift;
+    my $objects = shift;
 
     # Two step process... set saved and committed, then fire commit observers.
     # Doing so prevents problems should any of the observers themselves commit.
     my @saved_objects;
-    for my $obj (@objects) {
+    for my $obj (@$objects) {
         my $saved = $self->_set_object_saved_committed($obj);
         push @saved_objects, $saved if $saved;
     }
@@ -632,7 +640,7 @@ sub _set_all_specified_objects_saved_committed {
         }
     }
 
-    return scalar(@objects) || "0 but true";
+    return scalar(@$objects) || "0 but true";
 }
 
 sub _set_object_saved_committed {
@@ -664,6 +672,18 @@ sub _set_all_objects_saved_rolled_back {
         }
     }
 }
+
+sub _set_specified_objects_saved_rolled_back {
+    my $self = shift;
+    my $objects = shift;
+    for my $obj (@$objects)  {
+        unless ($self->_set_object_saved_rolled_back($obj)) {
+            die "An error occurred setting " . $obj->__display_name__
+             . " to match the rolled-back database state.  Exiting...";
+        }
+    }
+}
+
 
 
 sub _set_object_saved_rolled_back {
@@ -749,22 +769,11 @@ sub ur_data_type_for_data_source_data_type {
 }
 
 
-# This is a no-op in the base class.  If the DataSource needs to do any
-# database handle disconnection or other housekeeping prior to a fork, this should be
-# the place to do it.
-sub prepare_for_fork {
-    my $self = shift;
-    
-    return 1;
-}
-
-# this is also a no-op here.  If a DataSource needs to do any work after forking
-# this is the place for that.  For example, a file based data source will need to
-# re-open the file and seek() to the location it was at before the fork happened.
-sub finish_up_after_fork {
-    my $self = shift;
-
-    return 1;
-}
+# prepare_for_fork, do_after_fork_in_child, and finish_up_after_fork are no-op
+# here in the UR::DataSource base class and should be implented in subclasses
+# as needed.
+sub prepare_for_fork { return 1 }
+sub do_after_fork_in_child { return 1 }
+sub finish_up_after_fork { return 1 }
 
 1;

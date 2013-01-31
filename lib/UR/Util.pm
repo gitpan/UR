@@ -4,9 +4,22 @@ package UR::Util;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 use Cwd;
 use Data::Dumper;
+use Clone::PP;
+
+sub on_destroy(&) {
+    my $sub = shift;
+    unless ($sub) {
+        Carp::confess("expected an anonymous sub!")
+    }
+    return bless($sub, "UR::Util::CallOnDestroy");
+}
+
+# used only by the above sub
+# the local $@ ensures that we this does not stomp on thrown exceptions
+sub UR::Util::CallOnDestroy::DESTROY { local $@; shift->(); }
 
 sub d {
     Data::Dumper->new([@_])->Terse(1)->Indent(0)->Useqq(1)->Dump;
@@ -83,7 +96,6 @@ sub compiled_inc {
 }
 
 sub deep_copy {
-    require Clone::PP;
     return Clone::PP::clone($_[0]);
 }
 

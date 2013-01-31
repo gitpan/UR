@@ -4,7 +4,7 @@ package UR::BoolExpr::Template::PropertyComparison::In;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name  => __PACKAGE__, 
@@ -31,9 +31,9 @@ sub _compare {
     use warnings;
 
     # Binary search within @$comparison_values
-    my $cv_min = 0;
-    my $cv_max = $#$comparison_values;
     for ( $pv_idx = 0; $pv_idx < @property_values; $pv_idx++ ) {
+        my $cv_min = 0;
+        my $cv_max = $#$comparison_values;
         do {
             $cv_idx = ($cv_min + $cv_max) >> 1;
             my $result = &$sorter;

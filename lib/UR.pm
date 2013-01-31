@@ -8,7 +8,7 @@ use strict;
 use warnings FATAL => 'all';
 
 # Set the version at compile time, since some other modules borrow it.
-our $VERSION = "0.38"; # UR $VERSION
+our $VERSION = "0.39"; # UR $VERSION
 
 BEGIN {
     # unless otherwise specified, begin uncaching at 1 million objects 
@@ -223,7 +223,7 @@ UR::Object::Type->define(
         is_final                         => { is => 'Boolean', default_value => 0,
                                                 doc => 'further subclassification is prohibited on final classes' },
 
-        is_transactional                 => { is => 'Boolean', default_value => 1,
+        is_transactional                 => { is => 'Boolean', default_value => 1, is_optional => 1,
                                                 doc => 'non-transactional objects are left out of in-memory transactions' },
 
         is_singleton                     => { is => 'Boolean', default_value => 0,
@@ -255,8 +255,11 @@ UR::Object::Type->define(
         table_name                       => { is => 'Text', len => undef, is_optional => 1, 
                                                 doc => 'for classes with a data source, this specifies the table or equivalent data structure which holds instances' },
 
-        query_hint                       => { is => 'Text', len => 1024 , is_optional => 1,
+        select_hint                       => { is => 'Text', len => 1024 , is_optional => 1,
                                                 doc => 'used to optimize access to underlying storage (database specific)' },
+
+        join_hint                        => { is => 'Text', len => 1024 , is_optional => 1,
+                                                doc => 'used to optimize access to underlying storage when this class is part of a join (database specific)' },
                                             
         id_generator                     => { is => 'Text', len => 256, is_optional => 1,
                                                 doc => 'override the default choice for generating new object IDs' },
@@ -469,7 +472,7 @@ UR - rich declarative transactional objects
 
 =head1 VERSION
 
-This document describes UR version 0.38
+This document describes UR version 0.39
 
 =head1 SYNOPSIS
 

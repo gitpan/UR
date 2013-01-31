@@ -1,5 +1,7 @@
 package UR::DataSource::File;
 
+# NOTE!  This module is deprecated.  Use UR::DataSource::Filesystem instead.
+
 # A data source implementation for text files where the fields
 # are delimited by commas (or anything else really).  Usually,
 # the lines in the file will be sorted by one or more columns,
@@ -11,11 +13,10 @@ package UR::DataSource::File;
 # delimiter().
 # FIXME - work out a way to support record-oriented data as well as line-oriented data
 
-
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 use Fcntl qw(:DEFAULT :flock);
 use Errno qw(EINTR EAGAIN EOPNOTSUPP);
@@ -1221,7 +1222,7 @@ sub _sync_database {
         return;
     }
 
-    $self->_set_all_specified_objects_saved_committed(@$changed_objects);
+    $self->_set_specified_objects_saved_committed($changed_objects);
     return 1;
 }
 
@@ -1239,6 +1240,10 @@ sub initializer_should_create_column_name_for_class_properties {
 =head1 NAME
 
 UR::DataSource::File - Parent class for file-based data sources
+
+=head1 DEPRECATED
+
+This module is deprecated.  Use UR::DataSource::Filesystem instead.
 
 =head1 SYNOPSIS
   

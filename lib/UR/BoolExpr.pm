@@ -8,7 +8,7 @@ require UR;
 use Carp;
 our @CARP_NOT = ('UR::Context');
 
-our $VERSION = "0.38"; # UR $VERSION;;
+our $VERSION = "0.39"; # UR $VERSION;;
 
 # readable stringification
 use overload ('""' => '__display_name__');
@@ -221,8 +221,11 @@ sub operator_for {
 
 sub underlying_rules {
     my $self = shift;
-    my @values = $self->values;
-    return $self->template->get_underlying_rules_for_values(@values);
+    unless (exists $self->{'_underlying_rules'}) {
+        my @values = $self->values;
+        $self->{'_underlying_rules'} = [ $self->template->get_underlying_rules_for_values(@values) ];
+    }
+    return @{ $self->{'_underlying_rules'} };
 }
 
 # De-compose the rule back into its original form.
@@ -289,6 +292,48 @@ sub get {
 # because these are weakened
 sub DESTROY {
     delete $UR::Object::rules->{$_[0]->{id}};
+}
+
+sub flatten_hard_refs {
+    my $self = $_[0];
+    return $self if not $self->{hard_refs};
+
+    my $subject_class_name = $self->subject_class_name;
+    my $meta = $subject_class_name->__meta__;
+    my %params = $self->_params_list;
+    my $changes = 0;
+    for my $key (keys %params) {
+        my $value = $params{$key};
+        if (ref($value) and Scalar::Util::blessed($value) and $value->isa("UR::Object")) {
+            my ($property_name,$op) = ($key =~ /^(\S+)\s*(.*)/);
+            
+            my $value_class_name = $meta->property($property_name)->data_type;
+            next unless $value_class_name;
+            $DB::single = 1;
+            my $id = $value->id;
+            my $value2 = eval { 
+                $value_class_name->get($id)
+            };
+            if (not $value2) {
+                next;
+            }
+            if ($value2 == $value) {
+                # safe to re-represent as .id
+                my $new_key = $property_name . '.id';
+                $new_key .= ' ' . $op if $op;
+                my $new_value = $value->id;
+                delete $params{$key};
+                $params{$new_key} = $new_value;
+                $changes++;
+            }
+        }
+    }
+    if ($changes) {
+        return $self->resolve($subject_class_name, %params);
+    }
+    else {
+        return $self;
+    }
 }
 
 sub resolve_normalized {
@@ -364,21 +409,20 @@ sub resolve {
     if (defined($in_params[0]) and $in_params[0] eq '-or') {
         shift @in_params;
         my @sub_queries = @{ shift @in_params };
-        my $bx = UR::BoolExpr::Template::Or->_compose(
-            $subject_class,
-            @sub_queries,
-        );
-        # FIXME a hack to support order-by.  To make it more general to work for -group, -recurse, etc
-        # support needs to go into UR::BoolExpr::Template::Or::_compose()
-        for (my $i = 0; $i < @in_params; $i+=2 ) {
-            if ($in_params[$i] eq '-order' or $in_params[$i] eq '-order_by') {
-                my $order_by = $in_params[$i+1];
-                $bx->template->order_by($order_by);
-                foreach ( $bx->underlying_rules ) {
-                    $_->template->order_by($order_by);
-                }
+
+        my @meta_params;
+        for (my $i = 0; $i < @in_params; $i += 2 ) {
+            if ($in_params[$i] =~ m/^-/) {
+                push @meta_params, $in_params[$i], $in_params[$i+1];
             }
         }
+
+        my $bx = UR::BoolExpr::Template::Or->_compose(
+            $subject_class,
+            \@sub_queries,
+            \@meta_params,
+        );
+
         $resolve_depth--;
         return $bx;
     }
@@ -495,22 +539,9 @@ sub resolve {
         $subject_class_meta->{'cache'}{'UR::BoolExpr::resolve'} ||=
         { map {$_, 1}  ( $subject_class_meta->all_property_type_names) };
 
-    my ($op,@extra);
-
-    my $kn = 0;
-    my $vn = 0;
-    my $cn = 0;
-
-    my @xadd_keys;
-    my @xadd_values;
-    my @xremove_keys;
-    my @xremove_values;
-    my @extra_key_pos;
-    my @extra_value_pos;
-    my @swap_key_pos;
-    my @swap_key_value;
-    my $complex_values = 0;
-    my %in_clause_values_are_strings;
+    my($kn, $vn, $cn, $complex_values) = (0,0,0,0);
+    my ($op,@extra,@xadd_keys,@xadd_values,@xremove_keys,@xremove_values,@extra_key_pos,@extra_value_pos,
+        @swap_key_pos,@swap_key_value,%in_clause_values_are_strings);
 
     for my $value (@values) {
         $key = $keys[$kn++];
@@ -649,6 +680,15 @@ sub resolve {
                     push @xremove_keys, $kn-1;
                     push @xremove_values, $vn-1;
                 }
+                # This is disabled here because it is good for get() but not create()
+                # The flatten_hard_refs() method is run before doing a get() to create the same effect.
+                # elsif ($property_meta->is_delegated and not $property_meta->is_many) {
+                #    print STDERR "adding $property_name.id\n";
+                #    push @xadd_keys, $property_name . '.id' . ' ' . $operator;
+                #    push @xadd_values, $value->id;
+                #    push @xremove_keys, $kn-1;
+                #    push @xremove_values, $vn-1;
+                # }
                 elsif ($property_meta->is_valid_storage_for_value($value)) {
                     push @hard_refs, $vn-1, $value;
                 }
@@ -889,7 +929,7 @@ sub resolve_for_string {
 
     #$DB::single=1;
     #my $tree = UR::BoolExpr::BxParser::parse($filter_string, tokdebug => 1, yydebug => 7);
-    my $tree = UR::BoolExpr::BxParser::parse($filter_string);
+    my($tree, $remaining_strref) = UR::BoolExpr::BxParser::parse($filter_string);
     unless ($tree) {
         Carp::croak("resolve_for_string() couldn't parse string \"$filter_string\"");
     }
@@ -903,6 +943,9 @@ sub resolve_for_string {
         Carp::croak("Can't create BoolExpr on $subject_class_name from params generated from string "
                     . $filter_string . " which parsed as:\n"
                     . Data::Dumper::Dumper($tree));
+    }
+    if ($$remaining_strref) {
+        Carp::croak("Trailing input after the parsable end of the filter string: '". $$remaining_strref."'");
     }
     return $bx;
 }

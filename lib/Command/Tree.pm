@@ -5,7 +5,7 @@ use warnings;
 use UR;
 use File::Basename qw/basename/;
 
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 class Command::Tree {
     is => 'Command::V2',
@@ -53,8 +53,13 @@ sub resolve_option_completion_spec {
             push @completion_spec, '>' . $sub => $sub_tree;
         }
         else {
-            print "WARNING: $sub has sub_class $sub_class of ($class) but could not resolve option completion spec for it.\n".
-                    "Setting $sub to non-delegating command, investigate to correct tab completion.\n";
+            if (defined $sub_class) {
+                print "WARNING: $sub has sub_class $sub_class of ($class) but could not resolve option completion spec for it.\n".
+                        "Setting $sub to non-delegating command, investigate to correct tab completion.\n";
+            } else {
+                print "WARNING: $sub has no sub_class so could not resolve option completion spec for it.\n".
+                        "Setting $sub to non-delegating command, investigate to correct tab completion.\n";
+            }
             push @completion_spec, $sub => undef;
         }
     }
@@ -493,6 +498,23 @@ sub class_for_sub_command {
     }
 }
 
+my $depth = 0;
+sub __extend_namespace__ {
+    my ($self,$ext) = @_;
+
+    my $meta = $self->SUPER::__extend_namespace__($ext);
+    return $meta if $meta;
+
+    $depth++;
+    if ($depth>1) {
+        $depth--;
+        return;
+    }
+
+    my $class = Command::Tree::class_for_sub_command((ref $self || $self), $self->_command_name_for_class_word($ext));
+    return $class->__meta__ if $class;
+    return;
+}
 
 1;
 

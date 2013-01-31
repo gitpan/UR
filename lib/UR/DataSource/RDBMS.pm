@@ -9,7 +9,7 @@ use Scalar::Util;
 use File::Basename;
 
 require UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS',
@@ -51,14 +51,19 @@ sub create_database {
 }
 
 sub _resolve_ddl_for_table {
-    my ($self,$table) = @_;
+    my ($self,$table, %opts) = @_;
+
+    my $all = delete $opts{all};
+    if (%opts) {
+        Carp::confess("odd arguments to _resolve_ddl_for_table: " . UR::Util::d(\%opts));
+    }
 
     my $table_name = $table->table_name;
     my @ddl;
-    if ($table->{db_committed}) {
+    if ($table->{db_committed} and not $all) {
         my @columns = $table->columns;
         for my $column (@columns) {
-            next unless $column->last_object_revision eq '-';
+            next unless $all or $column->last_object_revision eq '-';
             my $column_name = $column->column_name;
             my $ddl = "alter table $table_name add column ";
 
@@ -73,7 +78,7 @@ sub _resolve_ddl_for_table {
         my $ddl;
         my @columns = $table->columns;
         for my $column (@columns) {
-            next unless $column->last_object_revision eq '-';
+            next unless $all or $column->last_object_revision eq '-';
             my $column_name = $column->column_name;
             $ddl = 'create table ' . $table_name . "(\n" unless defined $ddl;
 
@@ -140,7 +145,7 @@ sub generate_schema_for_class_meta {
     
     unless ($table_name) {
         if (my @column_names = keys %properties_with_expected_columns) {
-            Carp::confess "class " . $class_meta->__display_name__ . " has no table_name specified for columns @column_names!";
+            Carp::confess("class " . $class_meta->__display_name__ . " has no table_name specified for columns @column_names!");
         }
         else {
             # no table, but no storable columns.  all ok.
@@ -174,7 +179,7 @@ sub generate_schema_for_class_meta {
         my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
         $table = UR::DataSource::RDBMS::Table->$method(
             table_name  => $ds_table,
-            data_source => $self->id,
+            data_source => $self->_my_data_source_id,
             owner => $ds_owner,
             remarks => $class_meta->doc,
             er_type => 'entity',
@@ -263,7 +268,7 @@ sub generate_schema_for_class_meta {
             r_table_name    => $ds_r_table,
             owner           => $ds_owner,
             r_owner         => $ds_owner,
-            data_source     => $self->id,
+            data_source     => $self->_my_data_source_id,
             last_object_revision => '-',
         );
         unless ($fk) {
@@ -281,7 +286,7 @@ sub generate_schema_for_class_meta {
                                  r_table_name    => $ds_r_table,
                                  r_column_name   => $r_column_name,
                                  owner           => $ds_owner,
-                                 data_source     => $self->id,
+                                 data_source     => $self->_my_data_source_id,
                                );
 
             my $fkcol = UR::DataSource::RDBMS::FkConstraintColumn->get(%fkcol_params);
@@ -446,20 +451,6 @@ sub disconnect_default_handle {
     return $dbh;
 }
 
-sub set_all_dbh_to_inactive_destroy {
-    my $self = shift->_singleton_object;
-    my $dbhs = $self->_all_dbh_hashref;    
-    for my $k (keys %$dbhs) {
-        $dbhs->{$k}->{InactiveDestroy} = 1;
-        delete $dbhs->{$k};
-    }
-    my $dbh = $self->_default_dbh;
-    if ($dbh) {
-        $self->disconnect_default_dbh;;
-    }
-    return 1;
-}
-
 sub get_for_dbh {
     my $class = shift;
     my $dbh = shift;
@@ -488,6 +479,17 @@ sub _dbi_connect_args {
     return @connection;
 }
 
+sub get_connection_debug_info {
+    my $self = shift;
+    my @debug_info = (
+        "DBI Data Source Name: ", $self->dbi_data_source_name, "\n",
+        "DBI Login: ", $self->login, "\n",
+        "DBI Version: ", $DBI::VERSION, "\n",
+        "DBI Error: ", UR::DBI->errstr, "\n",
+    );
+    return @debug_info;
+}
+
 sub create_dbh {
     my $self = shift;
     if (! ref($self) and $self->isa('UR::Singleton')) {
@@ -499,9 +501,13 @@ sub create_dbh {
     
     # connect
     my $dbh = UR::DBI->connect(@connection);
-    $dbh or
-        Carp::confess("Failed to connect to the database!\n"
-            . UR::DBI->errstr . "\n");
+    unless ($dbh) {
+        my @confession = (
+            "Failed to connect to the database!\n",
+            $self->get_connection_debug_info(),
+        );
+        Carp::confess(@confession);
+    }
 
     # used for reverse lookups
     $dbh->{'private_UR::DataSource::RDBMS_name'} = $self->class;
@@ -622,15 +628,14 @@ sub get_nullable_foreign_key_columns_for_table {
     my $table = shift;
 
     my @nullable_fk_columns;
-
     my @fk = $table->fk_constraints;
     for my $fk (@fk){
         my @fk_columns = UR::DataSource::RDBMS::FkConstraintColumn->get(
                              fk_constraint_name => $fk->fk_constraint_name,
                              owner => $table->owner,
-                             data_source => $self->id);
+                             data_source => $self->_my_data_source_id);
         for my $fk_col (@fk_columns){
-            my $column_obj = UR::DataSource::RDBMS::TableColumn->get(data_source => $self->id,
+            my $column_obj = UR::DataSource::RDBMS::TableColumn->get(data_source => $self->_my_data_source_id,
                                  table_name => $fk_col->table_name,
                                  owner => $fk_col->owner,
                                  column_name=> $fk_col->column_name);
@@ -770,6 +775,51 @@ sub resolve_property_name_for_column_name {
     return $type_name;
 }
 
+sub _get_or_create_table_meta {
+	my $self = shift;
+
+	my ($data_source, 
+		$ur_owner,
+		$ur_table_name,
+		$db_table_name,
+		$creation_method,
+		$table_data,
+		$revision_time) = @_;
+	
+        my $data_source_id = $self->_my_data_source_id;	
+	my $table_object = UR::DataSource::RDBMS::Table->get(data_source => $data_source_id,
+	                                                     owner       => $ur_owner,
+	                                                     table_name  => $ur_table_name);
+	if ($table_object) {
+	    # Already exists, update the existing entry
+	    # Instead of deleting and recreating the table object (the old way),
+	    # modify its attributes in-place.  The name can't change but all the other
+	    # stuff might.
+	    $table_object->table_type($table_data->{TABLE_TYPE});
+	    $table_object->owner($table_data->{TABLE_SCHEM});
+	    $table_object->data_source($data_source->class);
+	    $table_object->remarks($table_data->{REMARKS});
+	    $table_object->last_object_revision($revision_time) if ($table_object->__changes__());
+
+	} else {
+	    # Create a brand new one from scratch
+
+	    $table_object = UR::DataSource::RDBMS::Table->$creation_method(
+	        table_name => $ur_table_name,
+	        table_type => $table_data->{TABLE_TYPE},
+	        owner => $table_data->{TABLE_SCHEM},
+	        data_source => $data_source_id,
+	        remarks => $table_data->{REMARKS},
+	        last_object_revision => $revision_time,
+	    );
+	    unless ($table_object) {
+	        Carp::confess("Failed to $creation_method table object for $db_table_name");
+	    }
+	}
+	
+	return $table_object;
+}
+
 sub refresh_database_metadata_for_table_name {
     my ($self,$db_table_name, $creation_method) = @_;
 
@@ -808,37 +858,18 @@ sub refresh_database_metadata_for_table_name {
         return;
     }
 
-    my $data_source_id = $data_source->id;
-    my $table_object = UR::DataSource::RDBMS::Table->get(data_source => $data_source_id,
-                                                         owner       => $ur_owner,
-                                                         table_name  => $ur_table_name);
-    if ($table_object) {
-        # Already exists, update the existing entry
-        # Instead of deleting and recreating the table object (the old way),
-        # modify its attributes in-place.  The name can't change but all the other
-        # stuff might.
-        $table_object->table_type($table_data->{TABLE_TYPE});
-        $table_object->owner($table_data->{TABLE_SCHEM});
-        $table_object->data_source($data_source->class);
-        $table_object->remarks($table_data->{REMARKS});
-        $table_object->last_object_revision($revision_time) if ($table_object->__changes__());
-
-    } else {
-        # Create a brand new one from scratch
-
-        $table_object = UR::DataSource::RDBMS::Table->$creation_method(
-            table_name => $ur_table_name,
-            table_type => $table_data->{TABLE_TYPE},
-            owner => $table_data->{TABLE_SCHEM},
-            data_source => $data_source_id,
-            remarks => $table_data->{REMARKS},
-            last_object_revision => $revision_time,
-        );
-        unless ($table_object) {
-            Carp::confess("Failed to $creation_method table object for $db_table_name");
-        }
-    }
-
+	
+    my $data_source_id = $data_source->_my_data_source_id;
+	
+	
+	my $table_object = $self->_get_or_create_table_meta(
+									$data_source,
+									$ur_owner,
+									$ur_table_name,
+									$db_table_name,
+									$creation_method,
+									$table_data,
+									$revision_time);
 
     # COLUMNS
     # mysql databases seem to require you to actually put in the database name in the first arg
@@ -1339,6 +1370,7 @@ sub get_unique_index_details_from_data_dictionary {
     Carp::confess("Class $class didn't define its own unique_index_info() method");
 }
 
+our %sequence_for_class_name;
 sub autogenerate_new_object_id_for_class_name_and_rule {
     # The sequences in the database are named by a naming convention which allows us to connect them to the table
     # whose surrogate keys they fill.  Look up the sequence and get a unique value from it for the object.
@@ -1352,9 +1384,8 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
         return $self->next_dummy_autogenerated_id;
     }
 
-    my $class_meta = UR::Object::Type->get(class_name => $class_name);
-    my $sequence = $class_meta->id_generator;
-
+    my $sequence = $sequence_for_class_name{$class_name} || $class_name->__meta__->id_generator;
+    
     # FIXME Child classes really should use the same sequence generator as its parent
     # if it doesn't specify its own.
     # It'll be hard to distinguish the case of a class meta not explicitly mentioning its
@@ -1365,7 +1396,7 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
         my $table_name;
         for my $parent_class_name ($class_name, $class_name->inheritance) {
             # print "checking $parent_class_name (for $class_name)\n";
-            my $parent_class = UR::Object::Type->get(class_name => $parent_class_name);
+            my $parent_class = $parent_class_name->__meta__; # UR::Object::Type->get(class_name => $parent_class_name);
             # print "object $parent_class\n";
             next unless $parent_class;
             #$sequence = $class_meta->id_generator;
@@ -1384,7 +1415,7 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
         my $table_meta = UR::DataSource::RDBMS::Table->get(
                              table_name => $ds_table,
                              owner => $ds_owner,
-                             data_source => $self->id);
+                             data_source => $self->_my_data_source_id);
 
         my @primary_keys;
         if ($table_meta) {
@@ -1392,6 +1423,7 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
             $sequence = $self->_get_sequence_name_for_table_and_column($table_name, $primary_keys[0]);
         } else {
             # No metaDB info... try and make a guess based on the class' ID properties
+            my $class_meta = $class_name->__meta__;
             for my $meta ($class_meta, $class_meta->ancestry_class_metas) {
                 @primary_keys = grep { $_ }  # Only interested in the properties with columns defined
                                 map { $_->column_name }
@@ -1415,6 +1447,8 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
         if (!$sequence) {
             Carp::croak("No identity generator found for table " . $table_name . "\n");
         }
+
+        $sequence_for_class_name{$class_name} = $sequence;
     }
 
     my $new_id = $self->_get_next_value_from_sequence($sequence);
@@ -1514,7 +1548,12 @@ sub create_iterator_closure_for_rule {
 
     my $sql = "\nselect ";
     if ($select_hint) {
-        $sql .= $select_hint . " ";
+        my $hint = '';
+        foreach (@$select_hint) {
+            $hint .= ' ' . $_;
+        }
+        $hint =~ s/\/\*\s?|\s?\*\///g;  # remove embedded comment marks
+        $sql .= "/*$hint */ ";
     }
     $sql .= $select_clause;
     $sql .= "\nfrom $from_clause";
@@ -1738,20 +1777,35 @@ sub _resolve_ids_from_class_name_and_sql {
     my $sth = $dbh->prepare($query);
 
     unless ($sth) {
-        confess("could not prepare query $query");
+        Carp::croak("Could not prepare query $query: $DBI::errstr");
     }
+    unless ($sth->{NUM_OF_PARAMS} == scalar(@params)) {
+        Carp::croak('The number of params supplied ('
+                    . scalar(@params)
+                    . ') does not match the number of placeholders (' . $sth->{NUM_OF_PARAMS}
+                    . ") in the supplied sql: $query");
+    }
+
     $sth->execute(@params);
-    my $data;
 
-    my @id_fetch_set;
-
-    while ($data = $sth->fetchrow_hashref()) {
-        my @id_vals = map { $data->{$_} } @id_columns;
-        my $cid = $class_name->__meta__->resolve_composite_id_from_ordered_values(@id_vals);
-        push @id_fetch_set, $cid;       
+    # After execute, we can see if the SQL contained all the required primary keys
+    my @id_column_idx = map { $sth->{NAME_lc_hash}->{$_} }
+                        map { lc }
+                        @id_columns;
+    if (grep { ! defined } @id_column_idx) {
+        @id_columns  = sort @id_columns;
+        my @missing_ids = sort grep { ! defined($sth->{NAME_lc_hash}->{lc($_)}) } @id_columns;
+        Carp::croak("The SQL supplied is missing one or more ID columns.\n\tExpected: "
+                    . join(', ', @id_columns)
+                    . ' but some were missing: '
+                    . join(', ', @missing_ids)
+                   . " for query: $query");
     }
 
-    return @id_fetch_set;
+    my $id_resolver = $class_name->__meta__->get_composite_id_resolver();
+
+    my $id_values = $sth->fetchall_arrayref(\@id_column_idx);
+    return [ map { $id_resolver->(@$_) } @$id_values ];
 }
 
 sub _sync_database {
@@ -1824,17 +1878,8 @@ sub _sync_database {
                     my $id = $change->{id};                    
                     $all_tables{$table_name}++;
                     my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
-                    my $table =
-                        UR::DataSource::RDBMS::Table->get(
-                            table_name => $ds_table,
-                            owner => $ds_owner,
-                            data_source => $self->class)
-                        ||
-                        UR::DataSource::RDBMS::Table->get(
-                            table_name => $ds_table,
-                            owner => $ds_owner,
-                            data_source => 'UR::DataSource::Meta');
-
+					
+					my $table = $self->_get_table_object($ds_table, $ds_owner);
                     my $fully_qualified_table_name = defined $ds_owner ? join('.', $ds_owner, $ds_table) : $ds_table;
                     if ($change->{type} eq 'insert')
                     {
@@ -1862,15 +1907,7 @@ sub _sync_database {
     my %tables_requiring_lock;
     for my $table_name (keys %all_tables) {
         my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
-        my $table_object = UR::DataSource::RDBMS::Table->get(
-                               table_name => $ds_table,
-                               owner => $ds_owner,
-                               data_source => $self->class)
-                           ||
-                           UR::DataSource::RDBMS::Table->get(
-                               table_name => $ds_table,
-                               owner => $ds_owner,
-                               data_source => 'UR::DataSource::Meta');
+		my $table_object = $self->_get_table_object($ds_table, $ds_owner);
 
         unless ($table_object) {
             warn "looking up schema for RDBMS table $table_name...\n";
@@ -1918,15 +1955,9 @@ sub _sync_database {
 
     for my $table_name_from_class (keys %all_tables) {
         my($ds_owner,$ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name_from_class);
-        my $table = UR::DataSource::RDBMS::Table->get(
-                        table_name => $ds_table,
-                        owner => $ds_owner,
-                        data_source => $self->class)
-                    ||
-                    UR::DataSource::RDBMS::Table->get(
-                        table_name => $ds_table,
-                        owner => $ds_owner,
-                        data_source => 'UR::DataSource::Meta');
+		
+		my $data_source_id = $self->_my_data_source_id;
+		my $table = $self->_get_table_object($ds_table, $ds_owner);
 
         my @fk = $table->fk_constraints;
 
@@ -2229,15 +2260,10 @@ sub _sync_database {
                 my @all_table_names = $class_object->all_table_names;                
                 for my $table_name (@all_table_names) {                    
                     my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
-                    my $table = UR::DataSource::RDBMS::Table->get(
-                                    table_name => $ds_table,
-                                    owner => $ds_owner,
-                                    data_source => $self->class)
-                                ||
-                                UR::DataSource::RDBMS::Table->get(
-                                    table_name => $ds_table,
-                                    owner => $ds_owner,
-                                    data_source => 'UR::DataSource::Meta');
+					
+					my $data_source_id = $self->_my_data_source_id;
+					my $table = $self->_get_table_object($ds_table, $ds_owner);
+					
                     push @$tables, $table;
                     $column_objects_by_class_and_column_name{$class_name} ||= {};             
                     my $columns = $column_objects_by_class_and_column_name{$class_name};
@@ -2306,15 +2332,7 @@ sub _sync_database {
         my $max_failed_attempts = 10;
         for my $table_name (@tables_requiring_lock) {
             my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
-            my $table = UR::DataSource::RDBMS::Table->get(
-                            table_name => $ds_table,
-                            owner => $ds_owner,
-                            data_source => $self->class)
-                        ||
-                        UR::DataSource::RDBMS::Table->get(
-                            table_name => $ds_table,
-                            owner => $ds_owner,
-                            data_source => 'UR::DataSource::Meta');
+			my $table = $self->_get_table_object($ds_table, $ds_owner);
             my $dbh = $table->dbh;
             my $sth = $dbh->prepare("lock table $table_name in exclusive mode");
             my $failed_attempts = 0;
@@ -2452,7 +2470,7 @@ sub _sync_database {
     if (@previous_failure_sets) {
         my $msg = "Dependency failure saving: " . Dumper(\@explicit_commands_in_order)
                   . "\n\nThe following error sets were produced:\n"
-                  . Dumper(\@previous_failure_sets) . "\n\n" . Carp::cluck . "\n\n";
+                  . Dumper(\@previous_failure_sets) . "\n\n" . Carp::cluck() . "\n\n";
 
         $self->warning_message($msg);
         $UR::Context::current->send_email(
@@ -2463,6 +2481,31 @@ sub _sync_database {
     }
 
     return 1;
+}
+
+# this is necessary for overriding data source names when looking up table metadata with 
+# bifurcated oracle/postgres syncs in testing.
+sub _my_data_source_id {
+	my $self = shift;
+	return ref($self) ? $self->id : $self;
+}
+
+sub _get_table_object {
+	my $self = shift;
+	my ($ds_table, $ds_owner) = @_;
+	
+    my $data_source_id = $self->_my_data_source_id;
+	
+    my $table = UR::DataSource::RDBMS::Table->get(
+                    table_name => $ds_table,
+                    owner => $ds_owner,
+                    data_source => $data_source_id)
+                ||
+                UR::DataSource::RDBMS::Table->get(
+                    table_name => $ds_table,
+                    owner => $ds_owner,
+                    data_source => 'UR::DataSource::Meta');
+
 }
 
 
@@ -2572,7 +2615,7 @@ sub _id_values_for_primary_key {
             Carp::croak("While committing, metadata for table $table_name does not match class $class_name.\n  Table primary key columns are " .
                         join(', ',@pk_cols) .
                         "\n  class ID property columns " .
-                        join('', @columns));
+                        join(', ', @columns));
         }
     }
 
@@ -2591,6 +2634,22 @@ sub _id_values_for_primary_key {
 
     return @id_values_in_pk_order;
 }
+
+sub _lookup_class_for_table_name {
+    my $self = shift;
+    my $table_name = shift;
+
+    my @table_class_obj = grep { $_->class_name !~ /::Ghost$/ } UR::Object::Type->is_loaded(table_name => $table_name);
+    my $table_class;
+    my $table_class_obj;
+    if (@table_class_obj == 1) {
+        $table_class_obj = $table_class_obj[0]; 
+        return $table_class_obj->class_name; 
+    } elsif (@table_class_obj > 1) {
+        Carp::confess("Got more than one class object for $table_name, this should not happen: @table_class_obj");
+    }
+}
+
 
 sub _default_save_sql_for_object {
     my $self = shift;        
@@ -2639,44 +2698,24 @@ sub _default_save_sql_for_object {
         my ($db_owner, $table_name_to_update) = $self->_resolve_owner_and_table_from_table_name($table_name);
         # Get general info on the table we're working-with.                
 
-        my $dsn = ref($self) ? $self->id : $self;  # The data source name
+        my $dsn = ref($self) ? $self->_my_data_source_id: $self;  # The data source name
 
-        my $table = UR::DataSource::RDBMS::Table->get(
-                        table_name => $table_name_to_update,
-                        owner => $db_owner,
-                        data_source => $dsn)
-                    ||
-                    UR::DataSource::RDBMS::Table->get(
-                        table_name => $table_name_to_update,
-                        owner => $db_owner,
-                        data_source => 'UR::DataSource::Meta');
+		my $table = $self->_get_table_object($table_name_to_update, $db_owner);
+
         unless ($table) {
             $self->generate_schema_for_class_meta($class_object,1);
             # try again...
-            $table = UR::DataSource::RDBMS::Table->get(
-                         table_name => $table_name_to_update,
-                         owner => $db_owner,
-                         data_source => $dsn)
-                     ||
-                     UR::DataSource::RDBMS::Table->get(
-                         table_name => $table_name_to_update,
-                         owner => $db_owner,
-                         data_source => 'UR::DataSource::Meta');
+			$table = $self->_get_table_object($table_name_to_update, $db_owner);
             unless ($table) {
                 Carp::croak("No table $table_name found for data source $dsn and owner '$db_owner'");
             }
         }        
-        my @table_class_obj = grep { $_->class_name !~ /::Ghost$/ } UR::Object::Type->is_loaded(table_name => $table_name);
-        my $table_class;
-        my $table_class_obj;
-        if (@table_class_obj == 1) {
-            $table_class_obj = $table_class_obj[0]; 
-            $table_class = $table_class_obj->class_name; 
-        }
-        else {
-            Carp::croak("NO CLASS FOR $table_name: @table_class_obj!\n");
-        }        
 
+        my $table_class = $self->_lookup_class_for_table_name($table_name);
+        if (!$table_class) {
+            Carp::croak("NO CLASS FOR $table_name\n");
+        }        
+	
 
         my $data_source = $UR::Context::current->resolve_data_source_for_object($object_to_save);
         unless ($data_source) {
@@ -3007,7 +3046,7 @@ sub _generate_class_data_for_loading {
                 grep { defined }
                 map { 
                     my $p = $inheritance_class_object->property_meta_for_name($_);
-                    die ("No property $_ found for " . $inheritance_class_object->class_name . "?") unless $p;
+                    Carp::croak("No property $_ found for " . $inheritance_class_object->class_name) unless $p;
                     $p->column_name;
                 } 
                 map { $_->property_name }
@@ -3021,7 +3060,7 @@ sub _generate_class_data_for_loading {
 
     my @all_table_properties;
     my @direct_table_properties;
-    my $first_table_name;
+    my $first_table_name = $class_meta->first_table_name;
     my $sub_classification_method_name;
     my ($sub_classification_meta_class_name, $subclassify_by);
 
@@ -3030,10 +3069,10 @@ sub _generate_class_data_for_loading {
     my $prev_id_column_name;
 
     for my $co ( $class_meta, @{ $parent_class_data->{parent_class_objects} } ) {   
-        my $table_name = $co->table_name;
+        my $table_name = $co->first_table_name;
         next unless $table_name;
 
-        $first_table_name ||= $co->table_name;
+        #$first_table_name ||= $co->table_name;
         $sub_classification_method_name ||= $co->sub_classification_method_name;
         $sub_classification_meta_class_name ||= $co->sub_classification_meta_class_name;
         $subclassify_by   ||= $co->subclassify_by;
@@ -3055,7 +3094,7 @@ sub _generate_class_data_for_loading {
     for my $class_property (@all_table_properties) {
         my ($sql_class,$sql_property,$sql_table_name) = @$class_property;
         my $data_type = $sql_property->data_type || '';             
-        if ($data_type =~ /LOB$/) {
+        if ($data_type =~ /LOB$/i) {
             push @lob_column_names, $sql_property->column_name;
             push @lob_column_positions, $pos;
         }
@@ -3067,12 +3106,12 @@ sub _generate_class_data_for_loading {
     if (@lob_column_names) {
         $query_config = $self->_prepare_for_lob;
         if ($query_config) {
-            my $dbh = $self->get_default_handle;
             my $results_row_arrayref;
             my @lob_ids;
             my @lob_values;
             $post_process_results_callback = sub { 
                 $results_row_arrayref = shift;
+                my $dbh = $self->get_default_handle;
                 @lob_ids = @$results_row_arrayref[@lob_column_positions];
                 @lob_values = $self->_post_process_lob_values($dbh,\@lob_ids);
                 @$results_row_arrayref[@lob_column_positions] = @lob_values;
@@ -3205,10 +3244,9 @@ sub ur_data_type_for_data_source_data_type {
 
 sub prepare_for_fork {
     my $self = shift;
-   
-    $self->set_all_dbh_to_inactive_destroy();
-    
-    return 1;
+    if ($self->has_default_handle) {
+        $self->disconnect_default_handle;
+    }
 }
 
 

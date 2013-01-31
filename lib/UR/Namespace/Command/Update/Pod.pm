@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use UR;
-our $VERSION = "0.38"; # UR $VERSION;
+our $VERSION = "0.39"; # UR $VERSION;
 use IO::File;
 
 class UR::Namespace::Command::Update::Pod {
@@ -163,7 +163,9 @@ sub get_all_subcommands {
 
     my @subcommands;
     eval {
-        @subcommands = $command->sub_command_classes;
+        if ($command->can('sub_command_classes')) {
+            @subcommands = $command->sub_command_classes;
+        }
     };
 
     if($@) {

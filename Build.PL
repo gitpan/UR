@@ -37,15 +37,18 @@ my $build = $subclass->new(
     'Carp'                => '',
     'Sys::Hostname'       => '1.11',
     'File::Basename'      => '2.73',
+    'File::Temp'          => '',
+    'File::Path'          => '',
     'Lingua::EN::Inflect' => '1.88',
     'Date::Format'        => '',
     'Data::Compare'       => '0.13',
     'Text::Diff'          => '0.35',
     'Path::Class'         => '',
     'Class::Inspector'    => '',
-    'XML::Dumper'         => '',
-    'XML::Generator'      => '',
-    'XML::Simple'         => '',
+    'Text::Glob'          => '',
+    #'XML::Dumper'         => '',
+    #'XML::Generator'      => '',
+    #'XML::Simple'         => '',
     'version'             => '',
     'JSON'                => '',
     'Test::Fork'          => '',
@@ -60,11 +63,12 @@ my $build = $subclass->new(
     'Sub::Name'           => '0.04',
     'Sub::Install'        => '0.924',
     'Data::UUID'          => '0.148',
+    'Devel::GlobalDestruction' => '',
 
     # possibly move to a web-specific 
-    'Net::HTTPServer'     => '',
-    'CGI::Application'    => '',
-    'URI::Escape'         => '',
+    #'Net::HTTPServer'     => '',
+    #'CGI::Application'    => '',
+    #'URI::Escape'         => '',
     
     #'Getopt::Complete' => [
     # we may migrate some of the Command logic here and really depend on it

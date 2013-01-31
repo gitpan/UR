@@ -81,35 +81,59 @@ sub doc_help {
 
     # standard: update this to do the old --help format
     my $synopsis = $self->help_synopsis;
-    my $required_args = $self->help_options(is_optional => 0);
-    my $optional_args = $self->help_options(is_optional => 1);
-    $text = sprintf(
-        "\n%s\n%s\n\n%s%s%s%s%s\n",
-        Term::ANSIColor::colored('USAGE', 'underline'),
+    my $required_inputs = $self->help_options(is_optional => 0, is_input => 1);
+    my $required_params = $self->help_options(is_optional => 0, is_param => 1);
+    my $optional_inputs = $self->help_options(is_optional => 1, is_input => 1);
+    my $optional_params = $self->help_options(is_optional => 1, is_param => 1);
+    $DB::single = 1;
+    my @parts;
+    
+    push @parts, Term::ANSIColor::colored('USAGE', 'underline');
+    push @parts, 
         Text::Wrap::wrap(
             ' ', 
             '    ', 
             Term::ANSIColor::colored($self->command_name, 'bold'),
             $self->_shell_args_usage_string || '',
-        ),
+        );
+
+    push @parts, 
         ( $synopsis 
             ? sprintf("%s\n%s\n", Term::ANSIColor::colored("SYNOPSIS", 'underline'), $synopsis)
             : ''
-        ),
-        ( $required_args 
-            ? sprintf("%s\n%s\n", Term::ANSIColor::colored("REQUIRED ARGUMENTS", 'underline'), $required_args)
+        );
+    push @parts, 
+        ( $required_inputs
+            ? sprintf("%s\n%s\n", Term::ANSIColor::colored("REQUIRED INPUTS", 'underline'), $required_inputs)
             : ''
-        ),
-        ( $optional_args 
-            ? sprintf("%s\n%s\n", Term::ANSIColor::colored("OPTIONAL ARGUMENTS", 'underline'), $optional_args)
+        );
+    push @parts, 
+        ( $required_params
+            ? sprintf("%s\n%s\n", Term::ANSIColor::colored("REQUIRED PARAMS", 'underline'), $required_params)
             : ''
-        ),
+        );
+    push @parts, 
+        ( $optional_inputs
+            ? sprintf("%s\n%s\n", Term::ANSIColor::colored("OPTIONAL INPUTS", 'underline'), $optional_inputs)
+            : ''
+        );
+    push @parts, 
+        ( $optional_params
+            ? sprintf("%s\n%s\n", Term::ANSIColor::colored("OPTIONAL PARAMS", 'underline'), $optional_params)
+            : ''
+        );
+    push @parts, 
         sprintf(
             "%s\n%s\n",
             Term::ANSIColor::colored("DESCRIPTION", 'underline'),
             _pod2txt($self->help_detail || '')
-        ),
-        ( $extra_help ? $extra_help : '' ),
+        );
+    push @parts, 
+        ( $extra_help ? $extra_help : '' );
+
+    $text = sprintf(
+        "\n%s\n%s\n\n%s%s%s%s%s%s%s\n",
+        @parts
     );
 
     return $text;
@@ -408,9 +432,6 @@ sub help_options {
         }
 
         push @data, [$param_name, $param_type, $doc, $default_value];
-        if ($param_type eq 'Boolean') {
-            push @data, ['no'.$param_name, $param_type, "Make $param_name 'false'" ];
-        }
     }
     my $text = '';
     for my $row (@data) {
@@ -496,7 +517,6 @@ sub _shell_args_usage_string {
     my $self = shift;
 
     return eval {
-        print $self->class."\n";
         if ( $self->isa('Command::Tree') ) { 
             return '...';
         }
@@ -529,11 +549,39 @@ sub _shell_args_usage_string_abbreviated {
     }
 }
 
+sub sub_command_mapping {
+    my ($self, $class) = @_;
+    return if !$class;
+    no strict 'refs';
+    my $mapping = ${ $class . '::SUB_COMMAND_MAPPING'};
+    if (ref($mapping) eq 'HASH') {
+        return $mapping;
+    } else {
+        return;
+    }
+};
+
 sub command_name {
     my $self = shift;
     my $class = ref($self) || $self;
     my $prepend = '';
-    if (defined($Command::entry_point_class) and $class =~ /^($Command::entry_point_class)(::.+|)$/) {
+
+
+    # There can be a hash in the command entry point class that maps
+    # root level tools to classes so they can be in a different location
+    # ...this bit of code considers that misdirection:
+    my $entry_point_class = $Command::entry_point_class;
+    my $mapping = $self->sub_command_mapping($entry_point_class);
+    for my $k (%$mapping) {
+        my $v = $mapping->{$k};
+        if ($v && $v eq $class) {
+            my @words = grep { $_ ne 'Command' } split(/::/,$class);
+            return join(' ', $self->_command_name_for_class_word($words[0]), $k);
+        }
+    }
+
+
+    if (defined($entry_point_class) and $class =~ /^($entry_point_class)(::.+|)$/) {
         $prepend = $Command::entry_point_bin;
         $class = $2;
         if ($class =~ s/^:://) {

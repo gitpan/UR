@@ -66,7 +66,7 @@ UR::Object::Type->define(
     ]
 );
 
-our $VERSION = "0.38"; # UR $VERSION;;
+our $VERSION = "0.39"; # UR $VERSION;;
 
 # Borrow from the util package.
 # This will go away with refactoring.
@@ -412,7 +412,8 @@ sub sub_classify {
 
 # flyweight constructor
 # NOTE: this caches outside of the regular system since these are stateless objects
-
+# NOTE: It's not possible to use this to construct a template with meta-props, like
+# -hints or -order.  To do that, it'll have to also accept constant values as an arg
 sub get_by_subject_class_name_logic_type_and_logic_detail {
     my $class = shift;
     my $subject_class_name = shift;
