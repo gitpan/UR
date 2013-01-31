@@ -16,7 +16,7 @@ package UR::DataSource::File;
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.39"; # UR $VERSION;
+our $VERSION = "0.391"; # UR $VERSION;
 
 use Fcntl qw(:DEFAULT :flock);
 use Errno qw(EINTR EAGAIN EOPNOTSUPP);
@@ -1079,7 +1079,7 @@ sub _sync_database {
         $monitor_start_time = Time::HiRes::time();
         my $time = time();
         UR::DBI->sql_fh->printf("\nFILE: SYNC_DATABASE AT %d [%s].  Started transaction for %s to temp file %s\n",
-                                $time, scalar(localtime($time)), $original_data_file, $write_fh->filename);
+                                $time, scalar(localtime($time)), $original_data_file, $temp_file_name);
 
     }
 
