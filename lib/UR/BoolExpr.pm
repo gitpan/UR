@@ -8,7 +8,7 @@ require UR;
 use Carp;
 our @CARP_NOT = ('UR::Context');
 
-our $VERSION = "0.392"; # UR $VERSION;;
+our $VERSION = "0.40"; # UR $VERSION;;
 
 # readable stringification
 use overload ('""' => '__display_name__');
@@ -309,7 +309,6 @@ sub flatten_hard_refs {
             
             my $value_class_name = $meta->property($property_name)->data_type;
             next unless $value_class_name;
-            $DB::single = 1;
             my $id = $value->id;
             my $value2 = eval { 
                 $value_class_name->get($id)

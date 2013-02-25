@@ -2,7 +2,7 @@ package UR::Object::Join;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.392"; # UR $VERSION;
+our $VERSION = "0.40"; # UR $VERSION;
 
 our @CARP_NOT = qw( UR::Object::Property );
 
@@ -71,7 +71,8 @@ sub _resolve_chain_for_property_meta {
         }
         else {
             # TODO: handle hard-references to objects here maybe?
-            $pmeta->error_message("Property " . $pmeta->id . " has no 'id_by' or 'reverse_as' property metadata");
+            $pmeta->error_message("Property '" . $pmeta->property_name . "' of class " . $pmeta->class_name
+                                    . " has no 'id_by' or 'reverse_as' property metadata");
             return;
         }
     }
@@ -208,10 +209,10 @@ sub _resolve_via_to {
                             .  " is declared as data type $return_class_name while its joins connect to a more specific data type $final_class_name!");
             }
             else {
-                Carp::carp("Discrepant join for property '" . $pmeta->property_name . "' of class " . $pmeta->class_name
-                            . ".  Its data type ($return_class_name) does not match the join from property '"
-                            . join("','", @{$joins[-1]->{source_property_names}}) . "' of class " . $joins[-1]->{source_class}
-                            . " with type $final_class_name");
+                #Carp::carp("Discrepant join for property '" . $pmeta->property_name . "' of class " . $pmeta->class_name
+                #            . ".  Its data type ($return_class_name) does not match the join from property '"
+                #            . join("','", @{$joins[-1]->{source_property_names}}) . "' of class " . $joins[-1]->{source_class}
+                #            . " with type $final_class_name");
             }
         }
     }
@@ -248,8 +249,9 @@ sub _resolve_forward {
     #####
     
     # direct reference (or primitive, which is a direct ref to a value obj)
-    my (@source_property_names, @foreign_property_names);
-    my ($source_name_for_foreign, $foreign_name_for_source);
+    my (@source_property_names, @source_property_types,
+        @foreign_property_names, @foreign_property_types,
+        $source_name_for_foreign, $foreign_name_for_source);
 
     if ($foreign_class->isa("UR::Value")) {
         if (my $id_by = $pmeta->id_by) {

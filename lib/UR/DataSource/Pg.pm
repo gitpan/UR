@@ -2,10 +2,8 @@ package UR::DataSource::Pg;
 use strict;
 use warnings;
 
-use DBD::Pg;
-
 require UR;
-our $VERSION = "0.392"; # UR $VERSION;
+our $VERSION = "0.40"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Pg',
@@ -162,7 +160,8 @@ sub _alter_sth_for_selecting_blob_columns {
     for (my $n = 0; $n < @$column_objects; $n++) {
         next unless defined ($column_objects->[$n]);  # No metaDB info for this one
         if (uc($column_objects->[$n]->data_type) eq 'BLOB') {
-            $sth->bind_param($n+1, undef, { pg_type => PG_BYTEA });
+            require DBD::Pg;
+            $sth->bind_param($n+1, undef, { pg_type => DBD::Pg::PG_BYTEA() });
         }
     }
 }

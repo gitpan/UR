@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.392"; # UR $VERSION;
+our $VERSION = "0.40"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Oracle',
@@ -37,12 +37,14 @@ my($self,$sp_name) = @_;
 }
 
 
+my $DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';
+my $TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SSXFF';
 sub _init_created_dbh {
     my ($self, $dbh) = @_;
     return unless defined $dbh;
     $dbh->{LongTruncOk} = 0;
-    $dbh->do("alter session set NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS'");
-    $dbh->do("alter session set NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SSXFF'");
+    $dbh->do("alter session set NLS_DATE_FORMAT = '$DATE_FORMAT'");
+    $dbh->do("alter session set NLS_TIMESTAMP_FORMAT = '$TIMESTAMP_FORMAT'");
     return $dbh;
 }
 
@@ -667,6 +669,55 @@ sub _get_oracle_major_server_version {
         $self->{'__ora_major_server_version'} = (split(/\./, $data[0]->[0]))[0];
     }
     return $self->{'__ora_major_server_version'};
+}
+
+sub cast_for_data_conversion {
+    my($class, $prop_meta1, $prop_meta2) = @_;
+
+    my @retval = ('%s','%s');
+
+    my $prop_meta1_type = $prop_meta1->_data_type_as_class_name;
+    my $prop_meta2_type = $prop_meta2->_data_type_as_class_name;
+    #printf("Cast %s::%s (%s) and %s::%s (%s)\n",
+    #    $prop_meta1->class_name, $prop_meta1->property_name, $prop_meta1_type,
+    #    $prop_meta2->class_name, $prop_meta2->property_name, $prop_meta2_type);
+
+    if ($prop_meta1_type->isa($prop_meta2_type)
+        or
+        $prop_meta2_type->isa($prop_meta1_type)
+    ) {
+        return @retval;
+    }
+
+    if (! $prop_meta1_type->isa('UR::Value::Text')
+        and
+        ! $prop_meta2_type->isa('UR::Value::Text')
+    ) {
+        # We only support cases where one is a string, for now
+        # hopefully the DB can sort it out
+        return @retval;
+    }
+
+    # Figure out which one is the non-string
+    my($data_type, $i) = $prop_meta1_type->isa('UR::Value::Text')
+                        ? ( $prop_meta2_type, 1)
+                        : ( $prop_meta1_type, 0);
+
+    if ($data_type->isa('UR::Value::Number')) {
+        $retval[$i] = q{to_char(%s)};
+
+    } elsif ($data_type->isa('UR::Value::Timestamp')) {
+        # These time formats shoule match what's given in _init_created_dbh
+        $retval[$i] = qq{to_char(%s, '$TIMESTAMP_FORMAT')};
+
+    } elsif ($data_type->isa('UR::Value::DateTime')) {
+        $retval[$i] = qq{to_char(%s, '$DATE_FORMAT')};
+
+    } else {
+        @retval = $class->SUPER::cast_for_data_conversion($prop_meta1, $prop_meta2);
+    }
+
+    return @retval;
 }
 
 1;

@@ -9,7 +9,7 @@ use Scalar::Util;
 use File::Basename;
 
 require UR;
-our $VERSION = "0.392"; # UR $VERSION;
+our $VERSION = "0.40"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS',
@@ -190,7 +190,7 @@ sub generate_schema_for_class_meta {
         push @defined, $table;
     }
 
-    my ($update,$add,$extra) = _intersect_lists([keys %properties_with_expected_columns],[keys %existing_columns]);
+    my ($update,$add,$extra) = UR::Util::intersect_lists([keys %properties_with_expected_columns],[keys %existing_columns]);
 
     for my $column_name (@$extra) {
         my $column = $existing_columns{$column_name};
@@ -325,28 +325,6 @@ sub generate_schema_for_class_meta {
     }
 
     return @defined;
-}
-
-# why isn't something like this in List::Util?
-sub _intersect_lists {
-    my ($m,$n) = @_;
-    my %shared;
-    my %monly;
-    my %nonly;
-    @monly{@$m} = @$m;
-    for my $v (@$n) {
-        if ($monly{$v}) {
-            $shared{$v} = delete $monly{$v};
-        }    
-        else{
-            $nonly{$v} = $v;
-        }
-    }
-    return (
-        [ values %shared ],
-        [ values %monly ],
-        [ values %nonly ],
-    );
 }
 
 # override in architecture-oriented subclasses
@@ -3240,6 +3218,21 @@ sub ur_data_type_for_data_source_data_type {
         $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
     }
     return $urtype;
+}
+
+
+# Given two properties with different 'is', return a 2-element list of
+# SQL functions to apply to perform a comparison in the DB.  0th element
+# gets applied to the left side, 1st element to the right.  This implementation
+# uses printf formats where the %s gets fed an SQL expression like
+# "table.column"
+#
+# SQLite basically treats everything as strings, so needs no conversion.
+# other DBs will have their own conversions
+sub cast_for_data_conversion {
+    my($class, $prop_meta1, $prop_meta2) = @_;
+
+    return ('%s', '%s');
 }
 
 sub prepare_for_fork {

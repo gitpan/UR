@@ -48,7 +48,7 @@ my $build = $subclass->new(
     'Data::Compare'       => '0.13',
     'Text::Diff'          => '0.35',
     'Path::Class'         => '',
-    'Class::Inspector'    => '',
+    #'Class::Inspector'    => '',
     'Text::Glob'          => '',
     #'XML::Dumper'         => '',
     #'XML::Generator'      => '',
@@ -58,6 +58,8 @@ my $build = $subclass->new(
     'Test::Fork'          => '',
     'Pod::Simple::Text'   => '2.02',
     'Pod::Simple::HTML'   => '3.03',
+    'List::MoreUtils'     => '',
+    'MRO::Compat'         => '',
 
     # C
     'FreezeThaw'          => '0.43',
