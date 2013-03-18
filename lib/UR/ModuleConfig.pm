@@ -30,7 +30,7 @@ require 5.006_000;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.41_05"; # UR $VERSION;;
+our $VERSION = "0.41"; # UR $VERSION;;
 use base qw(UR::ModuleBase);
 use IO::File;
 
@@ -109,7 +109,7 @@ configuration hash.
 When called as an object method, the config for both the object and
 all classes in its inheritance hierarchy are referenced, with the
 object config taking precedence over class methods and class methods
-closer to the object (first in the @ISA array) taking precendence over
+closer to the object (first in the @ISA array) taking precedence over
 those further away (later in the @ISA array).  When called as a class
 method, the same procedure is used, except no object configuration is
 referenced.

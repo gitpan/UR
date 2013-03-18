@@ -10,7 +10,7 @@ use UR::Object::Command::List::Style;
 use List::Util qw(reduce);
 use Command::V2;
 
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 
 class UR::Object::Command::List {
     is => 'Command::V2',
@@ -194,7 +194,6 @@ sub _resolve_field_list {
     my $self = shift;
 
     if ( my $show = $self->show ) {
-        $DB::single = 1;
         if (substr($show,0,1) =~ /([\+\^\-])/) {
             # if it starts with any of the special characters, combine with the default
             my $default = $self->__meta__->property('show')->default_value;

@@ -16,7 +16,7 @@ BEGIN {
     }
 };
 
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 
 use Carp ();
 use Sub::Name ();
@@ -886,7 +886,7 @@ sub _normalize_class_description_impl {
     }
 
     # Catch a mistake in the class definition where a property is 'via'
-    # something, and its 'to' # is the same as the via's reverse_as.  This
+    # something, and its 'to' is the same as the via's reverse_as.  This
     # ends up being a circular definition and generates junk SQL
     foreach my $property_name ( @property_names ) {
         my $property_data = $instance_properties->{$property_name};
@@ -1298,7 +1298,6 @@ sub _inform_all_parent_classes_of_newly_loaded_subclass {
 
 sub _complete_class_meta_object_definitions {
     my $self = shift;
-    my $class = $self->{class_name};
 
     # track related objects
     my @subordinate_objects;
@@ -1418,13 +1417,23 @@ sub _complete_class_meta_object_definitions {
                 #$DB::single = 1;
                 1;
             }
+
+            # No data_type specified, first try parent classes for the same property name
+            # and use their type
+            if (!$bootstrapping and !exists($id_property_detail->{data_type})) {
+                if (my $inh_prop = ($self->ancestry_property_metas(property_name => $id_property_name))[0]) {
+                    $id_property_detail->{data_type} = $inh_prop->data_type;
+                }
+            }
+
+            # Didn't find one - use the data type of the ID property(s) in the class we point to
             unless ($id_property_detail->{data_type}) {
                 unless ($r_class) {
                     # FIXME - it'd be nice if we didn't have to load the remote class here, and
                     # instead put off loading until it's necessary
                     $r_class ||= UR::Object::Type->get($r_class_name);
                     unless ($r_class) {
-                        Carp::confess("Unable to load $r_class_name while defining relationship ".$pinfo->{'property_name'}. " in class $class");
+                        Carp::confess("Unable to load $r_class_name while defining relationship ".$pinfo->{'property_name'}. " in class $class_name");
                     }
                     @r_id_properties = $r_class->id_property_names;
                 }
@@ -1439,12 +1448,12 @@ sub _complete_class_meta_object_definitions {
                     #$DB::single = 1;
                     my $property_name = $pinfo->{'property_name'};
                     if (@$id_properties != @r_id_properties) {
-                        Carp::croak("Can't resolve relationship for class $class property '$property_name': "
+                        Carp::croak("Can't resolve relationship for class $class_name property '$property_name': "
                                     . "id_by metadata has " . scalar(@$id_properties) . " items, but remote class "
                                     . "$r_class_name only has " . scalar(@r_id_properties) . " ID properties\n");
                     } else {
                         my $r_id_property = $r_id_properties[$n] ? "'$r_id_properties[$n]'" : '(undef)';
-                        Carp::croak("Can't resolve relationship for class $class property '$property_name': "
+                        Carp::croak("Can't resolve relationship for class $class_name property '$property_name': "
                                     . "Class $r_class_name does not have an ID property named $r_id_property, "
                                     . "which would be linked to the local property '".$id_properties->[$n]."'\n");
                     }
@@ -1504,7 +1513,7 @@ sub _complete_class_meta_object_definitions {
         my $property_object = UR::Object::Property->__define__(%$pinfo, id => $class_name . "\t" . $property_name);
 
         unless ($property_object) {
-            $self->error_message("Error creating property $property_name for class " . $self->class_name . ": " . $class->error_message);
+            $self->error_message("Error creating property $property_name for class " . $self->class_name . ": " . $class_name->error_message);
             for $property_object (@subordinate_objects) { $property_object->unload }
             $self->unload;
             return;

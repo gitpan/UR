@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -454,6 +454,7 @@ sub _init_rdbms {
         my $property_name = $delegated_property;
         my $delegation_chain_data           = $self->_delegation_chain_data || $self->_delegation_chain_data({});
         $delegation_chain_data->{"__all__"}{table_alias} = {};
+        $delegation_chain_data->{"__all__"}{class_alias} = { $first_table_name => $class_meta };
 
         my ($final_accessor, $is_optional, @joins) = _resolve_object_join_data_for_property_chain($rule_template,$property_name,$property_name);
         
@@ -1069,9 +1070,9 @@ sub _add_join {
             my @db_join_data;
             for (my $n = 0; $n < @foreign_column_names; $n++) {
 
-                my $link_table_name = $table_alias->{$source_table_and_column_names->[$n][0]};
-                $link_table_name ||= $source_table_and_column_names->[$n][2];
-                $link_table_name ||= $source_table_and_column_names->[$n][0];
+                my $link_table_name = $table_alias->{$source_table_and_column_names->[$n][0]}
+                                    || $source_table_and_column_names->[$n][2]
+                                    || $source_table_and_column_names->[$n][0];
 
                 my $link_column_name = $source_table_and_column_names->[$n][1];
                 

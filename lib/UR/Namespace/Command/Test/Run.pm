@@ -12,7 +12,7 @@ use Path::Class; # qw(file dir);
 use DBI;
 use Cwd;
 use UR;
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 use File::Find;
 
 use TAP::Harness;
@@ -1019,7 +1019,11 @@ directory, and runs ALL tests under that directory.
  This many tests should be run in parallel.  If --lsf is also specified, then
  these parallel tests will be submitted as LSF jobs.
 
+=back
+
 =head1 PENDING FEATURES
+
+=over
 
 =item automatic remote execution for tests requiring a distinct hardware platform
 

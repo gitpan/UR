@@ -6,7 +6,7 @@ use warnings;
 use Scalar::Util;
 use UR::Context;
 
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 
 # A helper package for UR::Context to keep track of the subrefs used
 # to create objects from database data
@@ -1120,7 +1120,7 @@ that was using this fabricator has gone out of scope.
   $fab->apply_all_params_loaded();
 
 As the fabricator constructs objects, it buffers changes to all_params_loaded
-(the Context's query cache) to maintain consistancy if multiple iterators are
+(the Context's query cache) to maintain consistency if multiple iterators are
 working concurrently.  At the appripriate time, call apply_all_params_loaded()
 to take those changes and apply them to the current Context's all_params_loaded.
 

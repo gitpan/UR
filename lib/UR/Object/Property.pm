@@ -7,7 +7,7 @@ require UR;
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.41_05"; # UR $VERSION;;
+our $VERSION = "0.41"; # UR $VERSION;;
 our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
 
 # class_meta and r_class_meta duplicate the functionality if two properties of the same name,
@@ -596,7 +596,7 @@ of the property in any way, but is useful in documentation.
 
 =item implied_by => Text
 
-If this propery is created as a result of another property's existence,
+If this property is created as a result of another property's existence,
 implied_by is the name of that other property.  This can happen in the
 case where an object accessor property is defined
 

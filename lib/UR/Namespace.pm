@@ -5,7 +5,7 @@ use warnings;
 use File::Find;
 
 require UR;
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::Namespace',
@@ -219,7 +219,7 @@ the MyApp tree.
 
 A UR namespace is the top-level object that represents your data's class
 structure in the most general way.  After use-ing a namespace module, the
-program gets access to the module autoloader, which will automaticaly use
+program gets access to the module autoloader, which will automatically use
 modules on your behalf if you attempt to interact with their packages in
 a UR-y way, such as calling get().
 

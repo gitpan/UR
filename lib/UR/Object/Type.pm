@@ -6,7 +6,7 @@ require UR;
 
 # Used during bootstrapping.
 our @ISA = qw(UR::Object);
-our $VERSION = "0.41_05"; # UR $VERSION;;
+our $VERSION = "0.41"; # UR $VERSION;;
 
 our @CARP_NOT = qw( UR::Object UR::Context  UR::ModuleLoader Class::Autouse UR::BoolExpr );
 
@@ -585,7 +585,11 @@ Returns a list of ID column names for each direct property meta.
 Return lists of property meta objects and their names for properties that
 have no column name.
 
+=back
+
 =head1 METHODS
+
+=over
 
 =item property_meta_for_name
 

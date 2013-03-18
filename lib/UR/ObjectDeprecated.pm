@@ -5,7 +5,7 @@ package UR::Object;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.41_05"; # UR $VERSION;
+our $VERSION = "0.41"; # UR $VERSION;
 
 use Data::Dumper;
 use Scalar::Util qw(blessed);
@@ -335,6 +335,8 @@ package UR::ModuleBase;
 # Method for setting a callback using the old, non-command messaging API
 
 =pod
+
+=over
 
 =item message_callback
 
