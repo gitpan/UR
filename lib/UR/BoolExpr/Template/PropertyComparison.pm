@@ -3,7 +3,7 @@ package UR::BoolExpr::Template::PropertyComparison;
 
 use warnings;
 use strict;
-our $VERSION = "0.41"; # UR $VERSION;;
+our $VERSION = "0.42_01"; # UR $VERSION;;
 
 # Define the class metadata.
 
@@ -67,18 +67,6 @@ sub evaluate_subject_and_values {
     return $self->_compare($comparison_value, @property_values);
 }
 
-our %subclass_suffix_for_builtin_symbolic_operator = (
-    '='     => "Equals",
-    '<'     => "LessThan",
-    '>'     => "GreaterThan",    
-    '[]'    => "In",
-    'in []' => "In",
-    '!='    => "NotEqual",
-    'ne'    => "NotEqual",
-    '<='    => 'LessOrEqual',
-    '>='    => 'GreaterOrEqual',
-);
-
 sub resolve_subclass_for_comparison_operator {
     my $class = shift;
     my $comparison_operator = shift;
@@ -86,40 +74,14 @@ sub resolve_subclass_for_comparison_operator {
     # Remove any escape sequence that may have been put in at UR::BoolExpr::resolve()
     $comparison_operator =~ s/-.+$// if $comparison_operator;
     
-    my $subclass_name;
-    
-    if (!defined($comparison_operator) or $comparison_operator eq '') {
-        $subclass_name = $class . '::Equals';
-    }    
-    else {
-        $comparison_operator = lc($comparison_operator);
-        my $suffix;
-        my $not;
-        unless ($suffix = $subclass_suffix_for_builtin_symbolic_operator{$comparison_operator}) {
-            my $core_comparison_operator;
-            if ($comparison_operator =~ /not (.*)/) {
-                $not = 1;
-                $core_comparison_operator = $1;
-            }
-            elsif ($comparison_operator =~ m/between/) {
-                $not = 0;
-                $core_comparison_operator = 'between';
-            }
-            else {
-                $not = 0;
-                $core_comparison_operator = $comparison_operator;
-            }
+    my $suffix = UR::Util::class_suffix_for_operator($comparison_operator);
 
-            $suffix = $subclass_suffix_for_builtin_symbolic_operator{$core_comparison_operator} || ucfirst(lc($core_comparison_operator));
-        }
-        $subclass_name = $class . '::' . ($not ? 'Not' : '') . $suffix;
-        
-        my $subclass_meta = UR::Object::Type->get($subclass_name);
-        unless ($subclass_meta) {
-            Carp::confess("Unknown operator '$comparison_operator'");
-        }
+    my $subclass_name = join('::', $class, $suffix);
+
+    my $subclass_meta = UR::Object::Type->get($subclass_name);
+    unless ($subclass_meta) {
+        Carp::confess("Unknown operator '$comparison_operator'");
     }
-    
     return $subclass_name;
 }
 
@@ -127,7 +89,7 @@ sub _get_for_subject_class_name_and_logic_detail {
     my $class = shift;
     my $subject_class_name = shift;
     my $logic_detail = shift;
-    
+
     my ($property_name, $comparison_operator) = split(' ',$logic_detail, 2);    
     my $subclass_name = $class->resolve_subclass_for_comparison_operator($comparison_operator);    
     my $id = $subclass_name->__meta__->resolve_composite_id_from_ordered_values($subject_class_name, 'PropertyComparison', $logic_detail);

@@ -69,6 +69,9 @@ sub test_foreign_key_handling {
         my $expected = $expected_fk_data->{'from'}->{$table};
         my $expected_count = scalar(@$expected);
 
+        $found = [ sort { $a->{FK_TABLE_NAME} cmp $b->{FK_TABLE_NAME} } @$found ];
+        $expected = [ sort { $a->{FK_TABLE_NAME} cmp $b->{FK_TABLE_NAME} } @$expected ];
+
         is($found_count, $expected_count, "Number of FK rows from $table is correct");
         is_deeply($found, $expected, 'FK data is correct');
     }
@@ -78,8 +81,10 @@ sub test_foreign_key_handling {
         my $found_count = scalar(@$found);
 
         my $expected = $expected_fk_data->{'to'}->{$table};
-        $expected = sort_fk_records($expected);
         my $expected_count = scalar(@$expected);
+
+        $found = [ sort { $a->{UK_TABLE_NAME} cmp $b->{UK_TABLE_NAME} } @$found ];
+        $expected = [ sort { $a->{UK_TABLE_NAME} cmp $b->{UK_TABLE_NAME} } @$expected ];
 
         is($found_count, $expected_count, "Number of FK rows to $table is correct");
         is_deeply($found, $expected, 'FK data is correct');
@@ -97,47 +102,56 @@ sub setup_schema {
     ok( $dbh->do('CREATE TABLE foo (id1 integer, id2 integer, PRIMARY KEY (id1, id2))'),
         'create table (foo) with 2 primary keys');
 
-    ok($dbh->do("CREATE TABLE inline (id integer PRIMARY KEY REFERENCES foo(id1), name varchar(255) default 'some name')"),
+    ok($dbh->do("CREATE TABLE inline (id integer PRIMARY KEY REFERENCES foo(id1) ON UPDATE RESTRICT ON DELETE SET NULL, name varchar(255) default 'some name')"),
        'create table with one inline foreign key to foo');
 
-    ok($dbh->do('CREATE TABLE inline_s (id integer PRIMARY KEY REFERENCES foo (id1) , name varchar)'),
+    ok($dbh->do('CREATE TABLE inline_s (id integer PRIMARY KEY REFERENCES foo (id1) ON UPDATE RESTRICT ON DELETE SET NULL , name varchar)'),
       'create table with one inline foreign key to foo, with different whitespace');
 
-    ok($dbh->do('CREATE TABLE named (id integer PRIMARY KEY, name varchar, CONSTRAINT named_fk FOREIGN KEY (id) REFERENCES foo (id1))'),
+    ok($dbh->do('CREATE TABLE named (id integer PRIMARY KEY, name varchar, CONSTRAINT named_fk FOREIGN KEY (id) REFERENCES foo (id1) ON UPDATE RESTRICT ON DELETE SET NULL)'),
        'create table with one named table constraint foreign key to foo');
 
-    ok($dbh->do('CREATE TABLE named_s (id integer PRIMARY KEY, name varchar, CONSTRAINT named_s_fk FOREIGN KEY(id) REFERENCES foo (id1))'),
+    ok($dbh->do('CREATE TABLE named_s (id integer PRIMARY KEY, name varchar, CONSTRAINT named_s_fk FOREIGN KEY(id) REFERENCES foo (id1) ON UPDATE RESTRICT ON DELETE SET NULL)'),
        'create table with one named table constraint foreign key to foo, with different whitespace');
 
-    ok($dbh->do('CREATE TABLE unnamed (id integer PRIMARY KEY, name varchar, FOREIGN KEY (id) REFERENCES foo (id1))'),
+    ok($dbh->do('CREATE TABLE unnamed (id integer PRIMARY KEY, name varchar, FOREIGN KEY (id) REFERENCES foo (id1) ON UPDATE RESTRICT ON DELETE SET NULL)'),
        'create table with one unnamed table constraint foreign key to foo');
 
-    ok($dbh->do('CREATE TABLE unnamed_s (id integer PRIMARY KEY, name varchar, FOREIGN KEY(id) REFERENCES foo(id1))'),
+    ok($dbh->do('CREATE TABLE unnamed_s (id integer PRIMARY KEY, name varchar, FOREIGN KEY(id) REFERENCES foo(id1) ON UPDATE RESTRICT ON DELETE SET NULL)'),
         'create table with one unnamed table constraint foreign key to foo, with different whitespace');
 
-    ok($dbh->do('CREATE TABLE named_2 (id1 integer, id2 integer, name varchar, PRIMARY KEY (id1, id2), CONSTRAINT named_2_fk FOREIGN KEY (id1, id2) REFERENCES foo (id1,id2))'),
+    ok($dbh->do('CREATE TABLE named_2 (id1 integer, id2 integer, name varchar, PRIMARY KEY (id1, id2), CONSTRAINT named_2_fk FOREIGN KEY (id1, id2) REFERENCES foo (id1,id2) ON UPDATE RESTRICT ON DELETE SET NULL)'),
        'create table with a dual column named foreign key to foo');
 
-    ok($dbh->do('CREATE TABLE named_2_s (id1 integer, id2 integer, name varchar, PRIMARY KEY ( id1 , id2 ) , CONSTRAINT named_2_s_fk FOREIGN KEY( id1 , id2 ) REFERENCES foo( id1 , id2 ) )'),
+    ok($dbh->do('CREATE TABLE named_2_s (id1 integer, id2 integer, name varchar, PRIMARY KEY ( id1 , id2 ) , CONSTRAINT named_2_s_fk FOREIGN KEY( id1 , id2 ) REFERENCES foo( id1 , id2 ) ON UPDATE RESTRICT ON DELETE SET NULL )'),
       'create table with a dual column named foreign key to foo, with different whitespace');
 
-    ok($dbh->do('CREATE TABLE unnamed_2 (id1 integer, id2 integer, name varchar, PRIMARY KEY (id1, id2), FOREIGN KEY (id1, id2) REFERENCES foo (id1,id2))'),
+    ok($dbh->do('CREATE TABLE unnamed_2 (id1 integer, id2 integer, name varchar, PRIMARY KEY (id1, id2), FOREIGN KEY (id1, id2) REFERENCES foo (id1,id2) ON UPDATE RESTRICT ON DELETE SET NULL)'),
        'create table with a dual column unnamed foreign key to foo');
 
-    ok($dbh->do('CREATE TABLE unnamed_2_s (id1 integer, id2 integer, name varchar, PRIMARY KEY( id2 , id2 ) , FOREIGN KEY( id1 , id2 ) REFERENCES foo( id1 , id2 ) )'),
+    ok($dbh->do('CREATE TABLE unnamed_2_s (id1 integer, id2 integer, name varchar, PRIMARY KEY( id2 , id2 ) , FOREIGN KEY( id1 , id2 ) REFERENCES foo( id1 , id2 ) ON UPDATE RESTRICT ON DELETE SET NULL )'),
         'create table with a dual column unnamed foreign key to foo, with different whitespace');
 }
     
 
 sub make_expected_fk_data {
-     my $from = {
+     my $to = {
              foo => [],
              inline => [
                       { FK_NAME => 'inline_id_foo_id1_fk',
                         FK_TABLE_NAME => 'inline',
                         FK_COLUMN_NAME => 'id',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                       },
                     ],
              inline_s => [
@@ -145,7 +159,16 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'inline_s',
                         FK_COLUMN_NAME => 'id',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                       },
                     ],
              named => [ 
@@ -153,7 +176,16 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'named',
                         FK_COLUMN_NAME => 'id',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                     ],
              named_s => [
@@ -161,7 +193,16 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'named_s',
                         FK_COLUMN_NAME => 'id',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                     ],
              unnamed => [
@@ -169,7 +210,16 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'unnamed',
                         FK_COLUMN_NAME => 'id',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                     ],
              unnamed_s => [
@@ -177,7 +227,16 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'unnamed_s',
                         FK_COLUMN_NAME => 'id',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                     ],
              named_2 => [
@@ -185,13 +244,31 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'named_2',
                         FK_COLUMN_NAME => 'id1',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                       { FK_NAME => 'named_2_fk',
                         FK_TABLE_NAME => 'named_2',
                         FK_COLUMN_NAME => 'id2',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id2'
+                        UK_COLUMN_NAME => 'id2',
+                        ORDINAL_POSITION => 2,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                      ],
              named_2_s => [
@@ -199,13 +276,31 @@ sub make_expected_fk_data {
                         FK_TABLE_NAME => 'named_2_s',
                         FK_COLUMN_NAME => 'id1',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id1'
+                        UK_COLUMN_NAME => 'id1',
+                        ORDINAL_POSITION => 1,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                       { FK_NAME => 'named_2_s_fk',
                         FK_TABLE_NAME => 'named_2_s',
                         FK_COLUMN_NAME => 'id2',
                         UK_TABLE_NAME => 'foo',
-                        UK_COLUMN_NAME => 'id2'
+                        UK_COLUMN_NAME => 'id2',
+                        ORDINAL_POSITION => 2,
+                        UPDATE_RULE => 1,
+                        DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                        },
                      ],
              unnamed_2 => [
@@ -213,13 +308,31 @@ sub make_expected_fk_data {
                          FK_TABLE_NAME => 'unnamed_2',
                          FK_COLUMN_NAME => 'id1',
                          UK_TABLE_NAME => 'foo',
-                         UK_COLUMN_NAME => 'id1'
+                         UK_COLUMN_NAME => 'id1',
+                         ORDINAL_POSITION => 1,
+                         UPDATE_RULE => 1,
+                         DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                         },
                        { FK_NAME => 'unnamed_2_id1_id2_foo_id1_id2_fk',
                          FK_TABLE_NAME => 'unnamed_2',
                          FK_COLUMN_NAME => 'id2',
                          UK_TABLE_NAME => 'foo',
-                         UK_COLUMN_NAME => 'id2'
+                         UK_COLUMN_NAME => 'id2',
+                         ORDINAL_POSITION => 2,
+                         UPDATE_RULE => 1,
+                         DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                         },
                       ],
              unnamed_2_s => [
@@ -227,27 +340,45 @@ sub make_expected_fk_data {
                          FK_TABLE_NAME => 'unnamed_2_s',
                          FK_COLUMN_NAME => 'id1',
                          UK_TABLE_NAME => 'foo',
-                         UK_COLUMN_NAME => 'id1'
+                         UK_COLUMN_NAME => 'id1',
+                         ORDINAL_POSITION => 1,
+                         UPDATE_RULE => 1,
+                         DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                         },
                        { FK_NAME => 'unnamed_2_s_id1_id2_foo_id1_id2_fk',
                          FK_TABLE_NAME => 'unnamed_2_s',
                          FK_COLUMN_NAME => 'id2',
                          UK_TABLE_NAME => 'foo',
-                         UK_COLUMN_NAME => 'id2'
+                         UK_COLUMN_NAME => 'id2',
+                         ORDINAL_POSITION => 2,
+                         UPDATE_RULE => 1,
+                         DELETE_RULE => 2,
+                        UK_TABLE_CAT => undef,
+                        UK_TABLE_SCHEM => undef,
+                        FK_TABLE_CAT => undef,
+                        FK_TABLE_SCHEM => undef,
+                        UK_NAME => undef,
+                        DEFERABILITY => undef,
                         },
                       ],
           };
 
-    # The 'to' data is just the inverse of 'from'
-    my $to;
-    foreach my $fk_list ( values %$from ) {
+    # The 'from' data is just the inverse of 'to'
+    my $from;
+    foreach my $fk_list ( values %$to ) {
         foreach my $fk ( @$fk_list ) {
             my $uk_table = $fk->{'UK_TABLE_NAME'};
-            $to->{$uk_table} ||= [];
-            push @{$to->{$uk_table}}, $fk;
+            $from->{$uk_table} ||= [];
+            push @{$from->{$uk_table}}, $fk;
 
             my $fk_table = $fk->{'FK_TABLE_NAME'};
-            $to->{$fk_table} ||= [];
+            $from->{$fk_table} ||= [];
         }
     }
 
@@ -265,25 +396,6 @@ sub get_fk_info_from_dd {
         push @rows, $row;
     }
 
-    my $rows = sort_fk_records(\@rows);
-    return $rows;
+    return \@rows;
 }
 
-
-
-sub sort_fk_records {
-    my($listref) = @_;
-
-#    no warnings 'uninitialized';
-
-    my @sorted = sort { 
-                        $a->{'FK_TABLE_NAME'} cmp $b->{'FK_TABLE_NAME'}
-                        ||
-                        $a->{'FK_COLUMN_NAME'} cmp $b->{'FK_COLUMN_NAME'}
-                        ||    
-                        $a->{'UK_TABLE_NAME'} cmp $b->{'UK_TABLE_NAME'}
-                        ||
-                        $a->{'UK_COLUMN_NAME'} cmp $b->{'UK_COLUMN_NAME'}
-                      } @$listref;
-    return \@sorted;
-}

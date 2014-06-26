@@ -7,7 +7,7 @@ use Cwd;
 use Carp;
 use File::Find;
 
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -214,6 +214,11 @@ sub _class_names_in_tree {
         $class =~ s/^$lib_path\///;
         $class =~ s/\//::/g;
         $class =~ s/\.pm$//;
+
+        # Paths can have invalid package names so are therefore packages in
+        # another "namespace" and should not be included.
+        next unless UR::Util::is_valid_class_name($class);
+
         push @class_names, $class;
     }
     return @class_names;

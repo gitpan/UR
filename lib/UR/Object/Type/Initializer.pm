@@ -1,4 +1,3 @@
-
 # This line forces correct deployment by some tools.
 package UR::Object::Type::Initializer;
 
@@ -16,7 +15,7 @@ BEGIN {
     }
 };
 
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 use Carp ();
 use Sub::Name ();
@@ -367,6 +366,9 @@ sub _normalize_class_description {
     # normalize the data behind the property descriptions
     my @property_names = keys %{$desc->{has}};
     for my $property_name (@property_names) {
+        Carp::croak("Invalid property name in class ".$desc->{class_name}.": '$property_name'")
+            unless UR::Util::is_valid_property_name($property_name);
+
         my $pdesc = $desc->{has}->{$property_name};
         my $unknown_ma = delete $pdesc->{unrecognized_meta_attributes};
         next unless $unknown_ma;
@@ -390,7 +392,6 @@ sub _normalize_class_description_impl {
     my %old_class = @_;
 
     if (exists $old_class{extra}) {
-        $DB::single=1;
         %old_class = (%{delete $old_class{extra}}, %old_class);
     }
 
@@ -607,8 +608,7 @@ sub _normalize_class_description_impl {
 
     # Flatten and format the property list(s) in the class description.
     # NOTE: we normalize the details at the end of normalizing the class description.
-    my @keys = grep { /has|attributes_have/ } keys %old_class;
-    unshift @keys, qw(id_implied); # we want to hit this first to preserve position_ and is_specified_ keys
+    my @keys = _class_definition_property_keys_in_processing_order(\%old_class);
     foreach my $key ( @keys ) {
         # parse the key to see if we're looking at instance or meta attributes,
         # and take the extra words as additional attribute meta-data.
@@ -947,6 +947,25 @@ sub _normalize_class_description_impl {
     return $desc;
 }
 
+sub _class_definition_property_keys_in_processing_order {
+    my $class_hashref = shift;
+
+    my @order;
+
+    # we want to hit 'id_implied' first to preserve position_ and is_specified_ keys
+    push(@order, 'id_implied') if exists $class_hashref->{id_implied};
+
+    # 'has' next so is_optional can get set to 0 in case the same property also appears in has_optional
+    push(@order, 'has') if exists $class_hashref->{has};
+
+    # everything else
+    push @order, grep { /has_|attributes_have/ } keys %$class_hashref;
+
+    return @order;
+}
+
+
+
 sub _normalize_property_description1 {
     my $class = shift;
     my $property_name = shift;
@@ -1068,6 +1087,10 @@ sub _normalize_property_description1 {
         }
     }
 
+    if ($new_property{id_by} && $new_property{reverse_as}) {
+        die qq(Can't initialize class $class_name: Property '$new_property{property_name}' has both id_by and reverse_as specified.);
+    }
+
     if ($new_property{data_type}) {
         if (my ($length) = ($new_property{data_type} =~ /\((\d+)\)$/)) {
             $new_property{data_length} = $length;
@@ -1133,10 +1156,22 @@ sub _normalize_property_description2 {
         $the_data_source = $new_class{'data_source_id'}->{'is'};
     } elsif ($new_class{'data_source_id'}) {
         $the_data_source = $new_class{'data_source_id'};
+        # using local() here to save $@ doesn't work.  You end up with the
+        # error "Unknown error" if one of the parent classes of the data source has
+        # some kind of problem
+        my $dollarat = $@;
+        $@ = '';
         $the_data_source = UR::DataSource->get($the_data_source) || eval { $the_data_source->get() };
         unless ($the_data_source) {
-            Carp::croak("Can't resolve data source from value '".$new_class{'data_source_id'}."' in class definition for $class_name");
+            my $error = "Can't resolve data source from value '"
+                        . $new_class{'data_source_id'}
+                        . "' in class definition for $class_name";
+            if ($@) {
+                $error .= "\n$@";
+            }
+            Carp::croak($error);
         }
+        $@ = $dollarat;
     }
     # UR::DataSource::File-backed classes don't have table_names, but for querying/saving to
     # work property, their properties still have to have column_name filled in
@@ -1191,7 +1226,7 @@ sub _make_minimal_class_from_normalized_class_description {
 
     # only do this when the classes match
     # when they do not match, the super-class has already called this by delegating to the correct subclass
-    $class_name::VERSION = 2.0;
+    $class_name::VERSION = 2.0; # No BumpVersion
 
     my $self =  bless { id => $class_name, %$desc }, $meta_class_name;
 
@@ -1276,6 +1311,7 @@ sub _inform_all_parent_classes_of_newly_loaded_subclass {
     my $last_parent_class = "";
     for my $parent_class (@i) {
         next if $parent_class eq $last_parent_class;
+
         $last_parent_class = $parent_class;
         $_init_subclasses_loaded{$parent_class} ||= [];
         push @{ $_init_subclasses_loaded{$parent_class} }, $class_name;
@@ -1370,24 +1406,33 @@ sub _complete_class_meta_object_definitions {
             return;
         }
 
-        if (not defined $self->schema_name) {
-            if (my $schema_name = $parent_class->schema_name) {
-                $self->{'schema_name'} = $self->{'db_committed'}->{'schema_name'} = $schema_name;
-            }
-        }
-
-        if (not defined $self->data_source_id) {
-            if (my $data_source_id = $parent_class->data_source_id) {
-                $self->{'data_source_id'} = $self->{'db_committed'}->{'data_source_id'} = $data_source_id;
+        # These class meta values get propogated from parent to child
+        foreach my $inh_property ( qw(schema_name data_source_id) ) {
+            if (not defined ($self->$inh_property)) {
+                if (my $inh_value = $parent_class->$inh_property) {
+                    $self->{$inh_property} = $self->{'db_committed'}->{$inh_property} = $inh_value;
+                }
             }
         }
 
         # For classes with no data source, the default for id_generator is -urinternal
         # For classes with a data source, autogenerate_new_object_id_for_class_name_and_rule gets called
         # on that data source which can use id_generator as it sees fit
-        if (! defined($self->{'id_generator'}) and ! $self->{'data_source_id'}) {
-            $self->{'id_generator'} = '-urinternal';
+        if (! defined $self->{id_generator}) {
+            my $id_generator;
+            if ($self->{data_source_id}) {
+                if ($parent_class->data_source_id
+                    and
+                    $parent_class->data_source_id eq $self->data_source_id
+                ) {
+                    $id_generator = $parent_class->id_generator;
+                }
+            } else {
+                $id_generator = $parent_class->id_generator;
+            }
+            $self->{id_generator} = $self->{'db_committed'}->{id_generator} = $id_generator;
         }
+
 
         # If a parent is declared as a singleton, we are too.
         # This only works for abstract singletons.
@@ -1586,12 +1631,19 @@ sub _complete_class_meta_object_definitions {
 
     $self->__signal_change__("load");
 
+
+    my @i = $class_name->inheritance;
+
+    for my $parent_class_name (@i) {
+        if ($parent_class_name->can('__signal_observers__')) {
+            $parent_class_name->__signal_observers__('subclass_loaded', $class_name);
+        }
+    }
+
     # The inheritance method is high overhead because of the number of times it is called.
     # Cache on a per-class basis.
-    my @i = $class_name->inheritance;
     if (grep { $_ eq '' } @i) {
         print "$class_name! @{ $self->{is} }";
-        #$DB::single = 1;
         $class_name->inheritance;
     }
     Carp::confess("Odd inheritance @i for $class_name") unless $class_name->isa('UR::Object');

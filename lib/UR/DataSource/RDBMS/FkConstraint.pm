@@ -4,7 +4,7 @@ use warnings;
 package UR::DataSource::RDBMS::FkConstraint;
 
 use UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS::FkConstraint',
@@ -148,6 +148,7 @@ my($self,$table_name) = @_;
 
     foreach my $try_class ( $self->_table_classes ) {
         my $table = $try_class->get(data_source => $self->data_source,
+                                    owner => $self->owner,
                                     table_name  => $table_name);
         return $table if $table;
     }

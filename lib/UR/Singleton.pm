@@ -4,13 +4,18 @@ package UR::Singleton;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::Singleton',
     is => ['UR::Object'],
     is_abstract => 1,
 );
+
+sub id {
+    my $self = shift;
+    return (ref $self ? $self->SUPER::id(@_) : $self);
+}
 
 sub _init_subclass {
     my $class_name = shift;
@@ -158,8 +163,6 @@ sub create {
     my $bx = $class->define_boolexpr(@_);
     my $id = $bx->value_for_id;
     unless (defined $id) {
-        use Data::Dumper;
-        my $params = { $bx->params_list };
         Carp::confess("No singleton ID class specified for constructor?");
     }
     my $subclass = $class->_resolve_subclass_name_for_id($id);
@@ -168,7 +171,7 @@ sub create {
         eval '@' . $subclass . "::ISA = ('" . __PACKAGE__ . "')";
     }
         
-    return $subclass->SUPER::create(@_);
+    return $subclass->_concrete_get();
 }
 
 

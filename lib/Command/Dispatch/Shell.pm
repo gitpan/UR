@@ -24,7 +24,7 @@ sub _cmdline_run {
     # This automatically parses command-line options and "does the right thing":
     # TODO: abstract out all dispatchers for commands into a given API
     my $class = shift;
-    my @argv = @_; 
+    my @argv = @_;
 
     $Command::entry_point_class ||= $class;
     $Command::entry_point_bin ||= File::Basename::basename($0);
@@ -40,17 +40,7 @@ sub _cmdline_run {
     my $exit_code;
     eval {
         $exit_code = $class->_execute_with_shell_params_and_return_exit_code(@argv);
-        
-        my @changed_objects = (
-            UR::Context->all_objects_loaded('UR::Object::Ghost'),
-            grep { $_->__changes__ } UR::Context->all_objects_loaded('UR::Object')
-        );
-
-        # Only commit if we have things to do.
-        my @committable_changed_objects = grep {UR::Context->resolve_data_source_for_object($_)} @changed_objects;
-        if (@committable_changed_objects > 0) {
-          UR::Context->commit or die "Failed to commit!: " . UR::Context->error_message();
-        }
+        UR::Context->commit or die "Failed to commit!: " . UR::Context->error_message();
     };
     if ($@) {
         $class->error_message($@);
@@ -77,7 +67,7 @@ sub _execute_with_shell_params_and_return_exit_code {
         $delegate_class->dump_error_messages(1);
         for my $error (@$errors) {
             $delegate_class->error_message(join(' ', $error->property_names) . ": " . $error->desc);
-        }        
+        }
         $exit_code = 1;
     }
     else {
@@ -138,7 +128,10 @@ sub _execute_delegate_class_with_params {
     $command_object->dump_status_messages(1);
     $command_object->dump_warning_messages(1);
     $command_object->dump_error_messages(1);
-    $command_object->dump_debug_messages(0);
+    $command_object->dump_debug_messages($command_object->debug);
+    if ($command_object->debug) {
+        UR::ModuleBase->dump_debug_messages($command_object->debug);
+    }
 
     my $rv = $command_object->execute($params);
 
@@ -158,7 +151,7 @@ sub resolve_class_and_params_for_argv {
     # This is used by execute_with_shell_params_and_exit, but might be used within an application.
     my $self = shift;
     my @argv = @_;
-    
+
     my ($params_hash,@spec) = $self->_shell_args_getopt_specification;
     unless (grep { /^help\W/ } @spec) {
         push @spec, "help!";
@@ -171,9 +164,9 @@ sub resolve_class_and_params_for_argv {
     # Not a problem in Perl. :)  (which is probably why it was never fixed)
     local @ARGV;
     @ARGV = @argv;
-   
+
     do {
-        # GetOptions also likes to emit warnings instead of return a list of errors :( 
+        # GetOptions also likes to emit warnings instead of return a list of errors :(
         my @errors;
         my $rv;
         {
@@ -217,8 +210,8 @@ sub resolve_class_and_params_for_argv {
                 $params_hash->{$name} = $value;
             }
         }
-    } 
-    
+    }
+
     if (@ARGV and not $self->_bare_shell_argument_names) {
         ## argv but no names
         $self->error_message("Unexpected bare arguments: @ARGV!");
@@ -266,7 +259,7 @@ sub resolve_class_and_params_for_argv {
     ##
     my $params = $params_hash;
     my $class = $self->class;
-    
+
     if (my @errors = $self->_errors_from_missing_parameters($params)) {
         return ($class, $params, \@errors);
     }
@@ -278,12 +271,13 @@ sub resolve_class_and_params_for_argv {
     # should this be moved up into the methods which are only called
     # directly from the shell, or is it okay everywhere in this module to
     # presume we're a direct cmdline call? -ssmith
-    local $ENV{UR_COMMAND_DUMP_STATUS_MESSAGES} = 1;
+    local $ENV{UR_COMMAND_DUMP_STATUS_MESSAGES} = (!exists($ENV{UR_COMMAND_DUMP_STATUS_MESSAGES})
+                                                    or $ENV{UR_COMMAND_DUMP_STATUS_MESSAGES});
 
     my @params_to_resolve = $self->_params_to_resolve($params);
     for my $p (@params_to_resolve) {
         my $param_arg_str = join(',', @{$p->{value}});
-        my $pmeta = $self->__meta__->property($p->{name}); 
+        my $pmeta = $self->__meta__->property($p->{name});
 
         my @params;
         eval {
@@ -369,7 +363,7 @@ sub _errors_from_missing_parameters {
     # TODO: this should use @all_property_metas, and filter down to is_param and is_input
     # This old code just ignores things inherited from a base class.
     # We will need to be careful fixing this because it could add checks to tools which
-    # work currently and lead to unexpected failures. 
+    # work currently and lead to unexpected failures.
     my @property_names;
     if (my $has = $class_meta->{has}) {
         @property_names = $self->_unique_elements(keys %$has);
@@ -397,9 +391,16 @@ sub _errors_from_missing_parameters {
         $arg = "--$arg";
 
         if ($property_meta->is_output and not $property_meta->is_input and not $property_meta->is_param) {
-            if ($property_meta->_data_type_as_class_name->__meta__->data_source) {
-                # outputs with a data source do not need a specification 
+            if ($property_meta->_data_type_as_class_name->__meta__->data_source 
+                and not $property_meta->_data_type_as_class_name->isa("UR::Value")
+            ) {
+                # outputs with a data source do not need a specification
                 # on the cmdline to "store" them after execution
+                next;
+            }
+            elsif ($property_meta->is_calculated) {
+                # outputs that are calculated don't need to be specified on
+                # the command line
                 next;
             }
             else {
@@ -432,7 +433,7 @@ sub _params_to_resolve {
         my @params_may_require_verification;
 
         for my $param_name (keys %$params) {
-            my $pmeta = $cmeta->property($param_name); 
+            my $pmeta = $cmeta->property($param_name);
             unless ($pmeta) {
                 # This message was a die after a next, so I guess it isn't supposed to be fatal?
                 $self->warning_message("No metadata for property '$param_name'");
@@ -508,22 +509,21 @@ sub _shell_args_property_meta {
     my $class_meta = $self->__meta__;
 
     # Find which property metas match the rules.  We have to do it this way
-    # because just calling 'get_all_property_metas()' will product multiple matches 
+    # because just calling 'get_all_property_metas()' will product multiple matches
     # if a property is overridden in a child class
     my ($rule, %extra) = UR::Object::Property->define_boolexpr(@_);
     my %seen;
-    my (@positional,@required_input,@required_param,@optional_input,@optional_param);
+    my (@positional,@required_input,@required_param,@optional_input,@optional_param, @output);
 
-    my @property_meta = $class_meta->properties(); 
+    my @property_meta = $class_meta->properties();
     PROP:
     foreach my $property_meta (@property_meta) {
         my $property_name = $property_meta->property_name;
 
         next if $seen{$property_name}++;
         next unless $rule->evaluate($property_meta);
-        next unless $property_meta->can("is_param") and ($property_meta->is_param or $property_meta->is_input);
+        next unless $property_meta->can("is_param") and ($property_meta->is_param or $property_meta->is_input or $property_meta->is_output);
         if (%extra) {
-            $DB::single = 1;
             no warnings;
             for my $key (keys %extra) {
                 if ($property_meta->$key ne $extra{$key}) {
@@ -551,11 +551,12 @@ sub _shell_args_property_meta {
         else {
             next unless($property_meta->is_mutable);
         }
+
         if ($property_meta->{shell_args_position}) {
             push @positional, $property_meta;
         }
         elsif ($property_meta->is_optional) {
-            if ($property_meta->is_input) {
+            if ($property_meta->is_input or $property_meta->is_output) {
                 push @optional_input, $property_meta;
             }
             elsif ($property_meta->is_param) {
@@ -563,7 +564,7 @@ sub _shell_args_property_meta {
             }
         }
         else {
-            if ($property_meta->is_input) {
+            if ($property_meta->is_input or $property_meta->is_output) {
                 push @required_input, $property_meta;
             }
             elsif ($property_meta->is_param) {
@@ -573,7 +574,7 @@ sub _shell_args_property_meta {
     }
 
     my @result;
-    @result = ( 
+    @result = (
         (sort { $a->position_in_module_header cmp $b->position_in_module_header } @required_param),
         (sort { $a->position_in_module_header cmp $b->position_in_module_header } @optional_param),
         (sort { $a->position_in_module_header cmp $b->position_in_module_header } @required_input),
@@ -590,13 +591,13 @@ sub _shell_arg_name_from_property_meta {
     my $property_name = ($singularize ? $property_meta->singular_name : $property_meta->property_name);
     my $param_name = $property_name;
     $param_name =~ s/_/-/g;
-    return $param_name; 
+    return $param_name;
 }
 
 sub _shell_arg_getopt_qualifier_from_property_meta {
     my ($self, $property_meta) = @_;
 
-    my $many = ($property_meta->is_many ? '@' : ''); 
+    my $many = ($property_meta->is_many ? '@' : '');
     if (defined($property_meta->data_type) and $property_meta->data_type =~ /Boolean/) {
         return '!' . $many;
     }
@@ -630,7 +631,7 @@ sub _shell_arg_usage_string_from_property_meta {
                 $string .= "=?[,?]";
             }
             else {
-                $string .= '=?'; 
+                $string .= '=?';
             }
             if ($property_meta->is_optional) {
                 $string = "[$string]";
@@ -670,7 +671,7 @@ sub _shell_arg_getopt_complete_specification_from_property_meta {
             'Directory','DirectoryPath','Dir','DirPath',
         );
         if (!defined($type)) {
-            $completions = 'files'; 
+            $completions = 'files';
         }
         else {
             for my $pattern (@complete_as_files) {
@@ -689,7 +690,7 @@ sub _shell_arg_getopt_complete_specification_from_property_meta {
     }
     return (
         $arg_name .  $self->_shell_arg_getopt_qualifier_from_property_meta($property_meta),
-        $completions, 
+        $completions,
 #        ($property_meta->is_many ? ($arg_name => []) : ())
     );
 }
@@ -701,10 +702,10 @@ sub _shell_args_getopt_specification {
     for my $meta ($self->_shell_args_property_meta) {
         my ($spec, @params_addition) = $self->_shell_arg_getopt_specification_from_property_meta($meta);
         push @getopt,$spec;
-        push @params, @params_addition; 
+        push @params, @params_addition;
     }
     @getopt = sort @getopt;
-    return { @params}, @getopt; 
+    return { @params}, @getopt;
 }
 
 sub _shell_args_getopt_complete_specification {
@@ -714,15 +715,15 @@ sub _shell_args_getopt_complete_specification {
         my ($spec, $completions) = $self->_shell_arg_getopt_complete_specification_from_property_meta($meta);
         push @getopt, $spec, $completions;
     }
-    return @getopt; 
+    return @getopt;
 }
 
 
-sub _bare_shell_argument_names { 
+sub _bare_shell_argument_names {
     my $self = shift;
     my $meta = $self->__meta__;
-    my @ordered_names = 
-        map { $_->property_name } 
+    my @ordered_names =
+        map { $_->property_name }
         sort { $a->{shell_args_position} <=> $b->{shell_args_position} }
         grep { $_->{shell_args_position} }
         $self->_shell_args_property_meta();
@@ -850,7 +851,7 @@ sub resolve_param_value_from_text {
             @results_by_string = $param_class->_resolve_param_value_from_text_by_name_or_id($param_arg);
         }
         else {
-            @results_by_string = $self->_resolve_param_value_from_text_by_name_or_id($param_class, $param_arg); 
+            @results_by_string = $self->_resolve_param_value_from_text_by_name_or_id($param_class, $param_arg);
         }
         push @results, @results_by_string;
     }

@@ -10,7 +10,7 @@ use Getopt::Long;
 use Term::ANSIColor;
 require Text::Wrap;
 
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => __PACKAGE__,
@@ -24,6 +24,7 @@ UR::Object::Type->define(
                                  doc => 'when set, this property is a positional argument when run from a shell' },
     ],
     has_optional => [
+        debug       => { is => 'Boolean', doc => 'enable debug messages' },
         is_executed => { is => 'Boolean' },
         result      => { is => 'Scalar', is_output => 1 },
         original_command_line => { is => 'String', doc => 'null-byte separated list of command and arguments when run via execute_with_shell_params_and_exit'},
@@ -274,7 +275,10 @@ sub _execute_delegate_class_with_params {
     $command_object->dump_status_messages(1);
     $command_object->dump_warning_messages(1);
     $command_object->dump_error_messages(1);
-    $command_object->dump_debug_messages(0);
+    $command_object->dump_debug_messages($command_object->debug);
+    if ($command_object->debug) {
+        UR::ModuleBase->dump_debug_messages($command_object->debug);
+    }
 
     my $rv = $command_object->execute($params);
 
@@ -463,7 +467,6 @@ sub command_name {
     my $self = shift;
     my $class = ref($self) || $self;
     my $prepend = '';
-    $DB::single = 1;
     if (defined($Command::entry_point_class) and $class =~ /^($Command::entry_point_class)(::.+|)$/) {
         $prepend = $Command::entry_point_bin;
         $class = $2;
@@ -908,6 +911,7 @@ sub help_options {
         #$param_name = "--$param_name";
         my $doc = $property_meta->doc;
         my $valid_values = $property_meta->valid_values;
+        my $example_values = $property_meta->example_values;
         unless ($doc) {
             # Maybe a parent class has documentation for this property
             eval {
@@ -935,6 +939,13 @@ sub help_options {
                 $max_name_length = length($v)+2 if $max_name_length < length($v)+2;
             }
             chomp $doc;
+        }
+        if ($example_values && @$example_values) {
+            $doc .= "\nexample" . (@$example_values > 1 and 's') . ":\n";
+            $doc .= join(', ',
+                        map { ref($_) ? Data::Dumper->new([$_])->Terse(1)->Dump() : $_ } @$example_values
+                    );
+            chomp($doc);
         }
         $max_name_length = length($param_name) if $max_name_length < length($param_name);
 
@@ -1132,7 +1143,6 @@ sub help_sub_commands {
         }
         $text .= "\n";
     }
-    #$DB::single = 1;
     return $text;
 }
 

@@ -6,7 +6,7 @@ package UR::Object::Type;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 #use warnings FATAL => 'all';
 
 use Carp ();
@@ -35,45 +35,26 @@ sub mk_rw_accessor {
             }
             return $new;
         }
-        return $_[0]->{ $property_name };  # properties with default values are filled in at _construct_object()
+        my $r = eval { $_[0]->{ $property_name } };
+        if ($@) {
+            Carp::confess("Exception while processing property $property_name: $@");
+        }
+        return $r;
     };
 
-    Sub::Install::reinstall_sub({
-        into => $class_name,
-        as   => $accessor_name,
-        code => $accessor,
-    });
-
-}
-
-
-sub mk_alias_accessor {
-    my($self, $class_name, $accessor_name, $alias_for) = @_;
-
-    if ($accessor_name eq $alias_for) {
-        Carp::croak("Cannot create alias property '$accessor_name' which is an alias to itself");
+    if (_class_is_singleton($class_name)) {
+        my $basic_accessor = $accessor;
+        $accessor = sub {
+            shift->_singleton_object->$basic_accessor(@_);
+        };
     }
 
-    my $full_name = join('::', $class_name, $accessor_name);
-    my $accessor = Sub::Name::subname $full_name => sub {
-        my $real_sub = $_[0]->can($alias_for);
-        unless ($real_sub) {
-            Carp::croak("Can't locate object method \"$alias_for\" via package \"$class_name\" while resolving alias property \"$accessor_name\"");
-        }
-        Sub::Install::reinstall_sub({
-            into => $class_name,
-            as   => $accessor_name,
-            code => $real_sub,
-        });
-
-        goto $real_sub;
-    };
-
     Sub::Install::reinstall_sub({
         into => $class_name,
         as   => $accessor_name,
         code => $accessor,
     });
+
 }
 
 sub mk_ro_accessor {
@@ -97,12 +78,24 @@ sub mk_ro_accessor {
         return $_[0]->{ $property_name };
     };
 
+    if (_class_is_singleton($class_name)) {
+        my $basic_accessor = $accessor;
+        $accessor = sub {
+            shift->_singleton_object->$basic_accessor(@_);
+        };
+    }
+
     Sub::Install::reinstall_sub({
         into => $class_name,
         as   => $accessor_name,
         code => $accessor,
     });
 
+}
+
+sub _class_is_singleton {
+    my $class_name = shift;
+    return grep { $_->isa('UR::Singleton') } @{ $class_name->__meta__->{is} };
 }
 
 sub mk_id_based_flex_accessor {
@@ -659,7 +652,8 @@ sub mk_indirect_ro_accessor {
 
 
 sub mk_indirect_rw_accessor {
-    my ($ur_object_type, $class_name, $accessor_name, $via, $to, $where, $singular_name) = @_;
+    my ($ur_object_type, $class_name, $accessor_name, $via, $to, $where, $singular_name, $property_name) = @_;
+    $property_name ||= $accessor_name;
     my @where = ($where ? @$where : ());
     my $full_name = join( '::', $class_name, $accessor_name );
     
@@ -680,24 +674,24 @@ sub mk_indirect_rw_accessor {
             # this is only allowed when the remote object has no direct properties
             # which are not id properties.
         
-            my $my_property_meta = $class_name->__meta__->property_meta_for_name($accessor_name);
+            my $my_property_meta = $class_name->__meta__->property_meta_for_name($property_name);
             unless ($my_property_meta) {
-                Carp::croak("Failed to find property meta for '$accessor_name' on class $class_name");
+                Carp::croak("Failed to find property meta for '$property_name' on class $class_name");
             }
             $is_many = $my_property_meta->is_many;
 
             $via_property_meta ||= $class_name->__meta__->property_meta_for_name($via);
             unless ($via_property_meta) {
-                Carp::croak("Failed to find property metadata for via property '$via' while resolving property '$accessor_name' on class $class_name");
+                Carp::croak("Failed to find property metadata for via property '$via' while resolving property '$property_name' on class $class_name");
             }
 
             $r_class_name ||= $via_property_meta->data_type;
             unless ($r_class_name) {
-                Carp::croak("Cannot resolve property '$accessor_name' on class $class_name: It is via property '$via' which has no data_type");
+                Carp::croak("Cannot resolve property '$property_name' on class $class_name: It is via property '$via' which has no data_type");
             }
             my $r_class_meta = $r_class_name->__meta__;
             unless ($r_class_meta) {
-                Carp::croak("Cannot resolve property '$accessor_name' on class $class_name: It is via property '$via' with data_type $r_class_name which is not a valid class name");
+                Carp::croak("Cannot resolve property '$property_name' on class $class_name: It is via property '$via' with data_type $r_class_name which is not a valid class name");
             }
 
             $adder = "add_" . $via_property_meta->singular_name;
@@ -788,9 +782,13 @@ sub mk_indirect_rw_accessor {
     });
 
     if ($singular_name) {  # True if we're defining an is_many indirect property
-        # Add 
+        # Add
         my $via_adder;
-        my $add_accessor = Sub::Name::subname $class_name ."::add_$singular_name" => sub {
+        my $add_accessor_name = 'add_' . $singular_name;
+        if ($class_name->can($add_accessor_name)) {
+            $add_accessor_name = '__' . $add_accessor_name;
+        }
+        my $add_accessor = Sub::Name::subname $class_name . '::' . $add_accessor_name => sub {
             my($self) = shift;
 
 
@@ -807,16 +805,19 @@ sub mk_indirect_rw_accessor {
             }
             $self->$via_adder(@where,@_);
         };
-
         Sub::Install::reinstall_sub({
                 into => $class_name,
-                as   => "add_$singular_name",
+                as   => $add_accessor_name,
                 code => $add_accessor,
             });
 
-        # Remove 
-        my  $via_remover;
-        my $remove_accessor = Sub::Name::subname $class_name ."::remove_$singular_name" => sub {
+        # Remove
+        my $via_remover;
+        my $remove_accessor_name = 'remove_' . $singular_name;
+        if ($class_name->can($remove_accessor_name)) {
+            $remove_accessor_name = '__' . $remove_accessor_name;
+        }
+        my $remove_accessor = Sub::Name::subname $class_name . '::' . $remove_accessor_name => sub {
             my($self) = shift;
 
             $resolve_update_strategy->() unless (defined $update_strategy);
@@ -832,10 +833,9 @@ sub mk_indirect_rw_accessor {
             }
             $self->$via_remover(@where,@_);
         };
-
         Sub::Install::reinstall_sub({
                 into => $class_name,
-                as   => "remove_$singular_name",
+                as   => $remove_accessor_name,
                 code => $remove_accessor,
         });
     }
@@ -918,6 +918,16 @@ sub mk_calculation_accessor {
             }
             return $_[0]->{$accessor_name};
         };
+
+        # Make a method to clear the cached value and force another calculation
+        my $invalidator_name;
+        ($invalidator_name = $accessor_name) =~ s/^_+//;
+        $invalidator_name = "__invalidate_${invalidator_name}__";
+        Sub::Install::reinstall_sub({
+            into => $class_name,
+            as   => $invalidator_name,
+            code => sub { delete $_[0]->{$accessor_name} },
+        });
     }
 
     my $full_name = join( '::', $class_name, $accessor_name );
@@ -1052,12 +1062,18 @@ sub mk_dimension_identifying_accessor {
 
 sub mk_rw_class_accessor
 {
-    my ($self, $class_name, $accessor_name, $column_name, $variable_value) = @_;
+    my ($self, $class_name, $accessor_name, $column_name, $is_transient, $variable_value) = @_;
 
     my $full_accessor_name = $class_name . "::" . $accessor_name;
     my $accessor = Sub::Name::subname $full_accessor_name => sub {
             if (@_ > 1) {
-                $variable_value = pop;
+                my $old = $variable_value;
+                $variable_value = $_[0];
+
+                my $different = eval { no warnings; $old ne $variable_value };
+                if ($different or $@ =~ m/has no overloaded magic/) {
+                    $_[0]->__signal_change__( $accessor_name, $old, $variable_value ) unless $is_transient;
+                }
             }
             return $variable_value;
     };
@@ -1075,16 +1091,14 @@ sub mk_ro_class_accessor {
     my $full_accessor_name = $class_name . "::" . $accessor_name;
     my $accessor = Sub::Name::subname $full_accessor_name => sub {
         if (@_ > 1) {
-            my $old = $variable_value;
             my $new = $_[1];
 
-            no warnings;
-
-            my $different = eval { no warnings; $old ne $new };
+            my $different = eval { no warnings; $variable_value ne $new };
             if ($different or $@ =~ m/has no overloaded magic/) {
-                Carp::croak("Cannot change read-only class-wide property $accessor_name for class $class_name from $old to $new!");
+                $new = defined($new) ? $new : '(undef)';
+                my $report_variable_value = defined($variable_value) ? $variable_value : '(undef)';
+                Carp::croak("Cannot change read-only class-wide property $accessor_name for class $class_name from $report_variable_value to $new!");
             }
-            return $new;
         }
         return $variable_value;
     };
@@ -1408,7 +1422,11 @@ sub mk_object_set_accessors {
         });
     }
 
-    my $add_accessor = Sub::Name::subname $class_name ."::add_$singular_name" => sub {
+    my $add_accessor_name = 'add_' . $singular_name;
+    if ($class_name->can($add_accessor_name)) {
+        $add_accessor_name = '__' . $add_accessor_name;
+    }
+    my $add_accessor = Sub::Name::subname $class_name . '::' . $add_accessor_name => sub {
         # TODO: this handles only a single item when making objects: support a list of hashrefs
         my $self = shift;
         my $rule;
@@ -1436,7 +1454,7 @@ sub mk_object_set_accessors {
             }
             else { 
                 if (@_ != 1) {
-                    die "$class_name add_$singular_name expects a single value to add.  Got @_";
+                    die "$class_name $add_accessor_name expects a single value to add.  Got @_";
                 }
                 push @{ $self->{$plural_name} ||= [] }, $_[0];
                 return $_[0];
@@ -1445,11 +1463,15 @@ sub mk_object_set_accessors {
     };
     Sub::Install::reinstall_sub({
         into => $class_name,
-        as   => "add_$singular_name",
+        as   => $add_accessor_name,
         code => $add_accessor,
     });
 
-    my $remove_accessor = Sub::Name::subname $class_name ."::remove_$singular_name" => sub {
+    my $remove_accessor_name = 'remove_' . $singular_name;
+    if ($class_name->can($remove_accessor_name)) {
+        $remove_accessor_name = '__' . $remove_accessor_name;
+    }
+    my $remove_accessor = Sub::Name::subname $class_name . '::' . $remove_accessor_name => sub {
         my $self = shift;
         my $rule;
         $rule = $rule_resolver->($self) unless (defined $rule_template);
@@ -1472,7 +1494,7 @@ sub mk_object_set_accessors {
             }
             my $trans = UR::Context::Transaction->begin;
             @matches = map {
-                $_->delete or die "Error deleting $r_class_name " . $_->id . " for remove_$singular_name!: " . $_->error_message;
+                $_->delete or die "Error deleting $r_class_name " . $_->id . " for $remove_accessor_name!: " . $_->error_message;
             } @matches;
             $trans->commit;
             return @matches;
@@ -1519,14 +1541,16 @@ sub mk_object_set_accessors {
                     @{ $self->{$plural_name} ||= [] } = ();
                 }
                 else {
-                    die "$class_name remove_$singular_name should be called with a specific value.  Params are only usable for ur objects!  Got: @_";
+                    die "$class_name $remove_accessor_name should be called with a specific value.  Params are only usable for ur objects!  Got: @_";
                 }
             }
         }
     };
+
+    # check here
     Sub::Install::reinstall_sub({
         into => $class_name,
-        as   => "remove_$singular_name",
+        as   => $remove_accessor_name,
         code => $remove_accessor,
     });
 
@@ -1575,10 +1599,26 @@ sub initialize_direct_accessors {
         }
     }    
 
-    for my $property_name (sort keys %{ $self->{has} }) {
-        my $property_data = $self->{has}{$property_name};
+    for my $pname (sort keys %{ $self->{has} }) {
+        my $property_name = $pname; # mutable
+        my $accessor_name = $pname;
         
-        my $accessor_name = $property_name;
+        my $property_data = $self->{has}{$property_name};
+
+        # handle aliases
+        # the underlying property_name and data will change, though the accessor will not
+        my $n = 0;
+        while ($property_data->{via} and $property_data->{via} eq '__self__') {
+            $property_name = $property_data->{to};
+            $property_data = $self->{has}{$property_name};
+            unless ($property_data) {
+                Carp::confess("Property $accessor_name is an alias for $property_name, which does not exist!")
+            }
+            if ($n > 100) {
+                Carp::confess("Deep recursion in property aliases behind $accessor_name!");
+            }
+        }
+
         my $column_name = $property_data->{column_name};
         my $is_transient = $property_data->{is_transient};
         my $where = $property_data->{where};
@@ -1590,9 +1630,9 @@ sub initialize_direct_accessors {
             my $isa = \@{ $class_name . "::ISA" };
             my @old_isa = @$isa;
             @$isa = ();
-            if ($class_name->can($property_name)) {
-                #warn "property $class_name $property_name exists!";
-                $accessor_name = "__$property_name";
+            if ($class_name->can($accessor_name)) {
+                #warn "property $class_name $accessor_name exists!";
+                $accessor_name = "__$accessor_name";
             }
             @$isa = @old_isa;
         };
@@ -1633,20 +1673,19 @@ sub initialize_direct_accessors {
         elsif (my $via = $property_data->{via}) {
             my $to = $property_data->{to} || $property_data->{property_name};
             if ($via eq '__self__') {
-                $self->mk_alias_accessor($class_name, $accessor_name, $to);
+                die "aliases should be caught above!"; 
 
-            } else {
-                if ($property_data->{is_mutable}) {
-                    my $singular_name;
-                    if ($property_data->{'is_many'}) {
-                        require Lingua::EN::Inflect;
-                        $singular_name = Lingua::EN::Inflect::PL_V($accessor_name);
-                    }
-                    $self->mk_indirect_rw_accessor($class_name,$accessor_name,$via,$to,$where,$property_data->{'is_many'} && $singular_name);
+            } 
+            if ($property_data->{is_mutable}) {
+                my $singular_name;
+                if ($property_data->{'is_many'}) {
+                    require Lingua::EN::Inflect;
+                    $singular_name = Lingua::EN::Inflect::PL_V($accessor_name);
                 }
-                else {
-                    $self->mk_indirect_ro_accessor($class_name,$accessor_name,$via,$to,$where);
-                }
+                $self->mk_indirect_rw_accessor($class_name,$accessor_name,$via,$to,$where,$property_data->{'is_many'} && $singular_name, $property_name);
+            }
+            else {
+                $self->mk_indirect_ro_accessor($class_name,$accessor_name,$via,$to,$where);
             }
         }
         elsif (my $calculate = $property_data->{calculate}) {
@@ -1682,11 +1721,11 @@ sub initialize_direct_accessors {
             $self->mk_object_set_accessors($class_name, $singular_name, $plural_name, $reverse_as, $r_class_name, $where);
         }        
         elsif ($property_data->{'is_classwide'}) {
-            my $value = $property_data->{'default_value'};
+            my($value, $column_name, $is_transient) = @$property_data{'default_value','column_name','is_transient'};
             if ($property_data->{'is_constant'}) {
-                $self->mk_ro_class_accessor($class_name,$accessor_name,'',$value);
+                $self->mk_ro_class_accessor($class_name,$accessor_name,$column_name,$value);
             } else {
-                $self->mk_rw_class_accessor($class_name,$accessor_name,'',$value);
+                $self->mk_rw_class_accessor($class_name,$accessor_name,$column_name,$is_transient,$value);
             }
         }
         else {        
@@ -1834,7 +1873,7 @@ They need more documentation.
 
 =item mk_rw_class_accessor
 
-  $classobj->mk_rw_class_accessor($class_name, $accessor_name, $column_name, $variable_value);
+  $classobj->mk_rw_class_accessor($class_name, $accessor_name, $column_name, $is_transient, $variable_value);
 
 Creates a read-write accessor called $accessor_name which stores its value 
 in a scalar captured by the accessor's closure.  Since the closure is

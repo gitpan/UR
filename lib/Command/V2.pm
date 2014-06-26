@@ -11,7 +11,7 @@ use Getopt::Long;
 use Command::View::DocMethods;
 use Command::Dispatch::Shell;
 
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 our $entry_point_class;
 our $entry_point_bin;
@@ -33,6 +33,7 @@ UR::Object::Type->define(
                                 doc => 'when expanding user supplied values: 0 = never verify, 1 = always verify, undef = determine automatically', },        
     ],
     has_optional => [
+        debug       => { is => 'Boolean', doc => 'enable debug messages' },
         is_executed => { is => 'Boolean' },
         result      => { is => 'Scalar', is_output => 1 },
         original_command_line => { is => 'String', doc => 'null-byte separated list of command and arguments when run via execute_with_shell_params_and_exit'},
@@ -254,6 +255,48 @@ sub exit_code_for_return_value {
     return $return_value;
 }
 
+sub _wrapper_has {
+    my ($class, $new_class_base) = @_;
+
+    $new_class_base ||= __PACKAGE__;
+
+    my $command_meta = $class->__meta__;
+    my @properties = $command_meta->properties();
+    
+    my %has;
+    for my $property (@properties) {
+        my %desc;
+        next unless $property->can("is_param") and $property->can("is_input") and $property->can("is_output");
+
+        my $name = $property->property_name;
+
+        next if $new_class_base->can($name);
+
+        if ($property->is_param) {
+            $desc{is_param} = 1;
+        }
+        elsif ($property->is_input) {
+            $desc{is_input} = 1;
+        }
+        #elsif ($property->can("is_metric") and $property->is_metric) {
+        #    $desc{is_metric} = 1;
+        #}
+        #elsif ($property->can("is_output") and $property->is_output) {
+        #    $desc{is_output} = 1;
+        #}
+        else {
+            next;
+        }
+
+        $has{$name} = \%desc;
+        $desc{is} = $property->data_type;
+        $desc{doc} = $property->doc;
+        $desc{is_many} = $property->is_many;
+        $desc{is_optional} = $property->is_optional;
+    }
+
+    return %has;
+}
 
 sub display_command_summary_report {
     my $self = shift;

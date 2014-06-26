@@ -10,7 +10,7 @@ use UR::Object::Command::List::Style;
 use List::Util qw(reduce);
 use Command::V2;
 
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 class UR::Object::Command::List {
     is => 'Command::V2',
@@ -264,7 +264,7 @@ sub _filter_doc {
     my $doc = <<EOS;
  Filtering:
  ----------
- Restrict which itemes are listed by adding a filter.
+ Restrict which items are listed by adding a filter.
      job=Captain
 
  Quotes are needed only when spaces or special words are involved.
@@ -278,6 +278,9 @@ sub _filter_doc {
 
  The "like" operator uses "%" as a wildcard:
      "name like '%Jones'"
+
+ The "not" operator negates the condition:
+     "name not like '%Jones'"
 
  Use square brackets for "in" clauses.
      "name like '%Jones' and job in [Captain,Ensign,'First Officer']"
@@ -297,6 +300,7 @@ sub _filter_doc {
     ~  "like" the value
     :   "between" two values, dash "-" separated
     :  "in" the list of several values, slash "/" separated
+    !  "not" operator can be combined with any of the above
 EOS
 
     if (my $help_synopsis = $class->help_synopsis) {
@@ -347,7 +351,9 @@ EOS
         }
     }
     my @lines = $class->_format_property_doc_data(@data);
-    $doc .= join("\n ", @lines);
+    { no warnings 'uninitialized';
+        $doc .= join("\n ", @lines);
+    }
 
     $self->delete;
     return $doc;

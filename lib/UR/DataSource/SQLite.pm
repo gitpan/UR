@@ -2,6 +2,10 @@ package UR::DataSource::SQLite;
 use strict;
 use warnings;
 
+use IO::Dir;
+use File::Spec;
+use File::Basename;
+
 =pod
 
 =head1 NAME
@@ -19,14 +23,25 @@ Or write the singleton to represent the source directly:
     class Acme::DataSource::MyDB1 {
         is => 'UR::DataSource::SQLite',
         has_constant => [
-            _database_file_path => '/var/lib/acme-app/mydb1.sqlitedb'
+            server => '/var/lib/acme-app/mydb1.sqlitedb'
+        ]
+    };
+
+You may also use a directory containing *.sqlite3 files.  The primary database
+must be named main.sqlite3.  All the other *.sqlite3 files are attached when
+the database is opened.
+
+    class Acme::DataSource::MyDB2 {
+        is => 'UR::DataSource::SQLite',
+        has_constant => [
+            server => '/path/to/directory/'
         ]
     };
 
 =cut
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::SQLite',
@@ -52,11 +67,77 @@ sub auth {
     undef
 }
 
-sub create_dbh {
+sub create_default_handle {
     my $self = shift->_singleton_object();
 
     $self->_init_database;
-    return $self->SUPER::create_dbh(@_);
+    if ($self->_db_path_specifies_a_directory($self->server)) {
+        return $self->_create_default_handle_from_directory();
+    } else {
+        return $self->SUPER::create_default_handle(@_);
+    }
+}
+
+sub _create_default_handle_from_directory {
+    my $self = shift;
+
+    my $server_directory = $self->server;
+    my $ext = $self->_extension_for_db;
+    my $main_schema_file = File::Spec->catfile($server_directory, "main${ext}");
+    -f $main_schema_file
+        || UR::Util::touch_file($main_schema_file)
+        || die "Could not create main schema file $main_schema_file: $!";
+
+    my $server_sub_name = join('::', ref($self), 'server');
+
+    my $dbh = do {
+        no strict 'refs';
+        no warnings 'redefine';
+        local *$server_sub_name = sub { $main_schema_file };
+
+        $self->SUPER::create_default_handle();
+    };
+
+    $self->_attach_all_schema_files_in_directory($dbh, $server_directory);
+    return $dbh;
+}
+
+sub _attach_all_schema_files_in_directory {
+    my($self, $dbh, $server_directory) = @_;
+    my @schema_files = $self->_schema_files_in_directory($server_directory);
+
+    local $dbh->{AutoCommit} = 1;
+
+    my $main_db_file = join('', 'main', $self->_extension_for_db);
+    foreach my $file ( @schema_files ) {
+        next if $file eq $main_db_file;
+        my $schema = $self->_schema_from_schema_filename($file);
+
+        my $pathname = File::Spec->catfile($server_directory, $file);
+        $dbh->do("ATTACH DATABASE '$pathname' as $schema")
+            || Carp::croak("Could not attach schema file $file: ".$dbh->errstr);
+    }
+}
+
+sub _schema_files_in_directory {
+    my($self, $dir) = @_;
+
+    my $dh = IO::Dir->new($dir);
+
+    my @files;
+    while (my $name = $dh->read) {
+        my $pathname = File::Spec->catfile($dir, $name);
+        next unless -f $pathname;
+        push(@files, $name) if $self->_schema_from_schema_filename($name);
+    }
+    return @files;
+}
+
+sub _schema_from_schema_filename {
+    my($self, $pathname) = @_;
+
+    my($schema, $dir, $ext) = File::Basename::fileparse($pathname, $self->_extension_for_db);
+    return $ext ? $schema : undef;
 }
 
 sub database_exists {
@@ -190,7 +271,8 @@ sub _init_database {
     return 1;
 }
 
-sub _init_created_dbh
+*_init_created_dbh = \&init_created_handle;
+sub init_created_handle
 {
     my ($self, $dbh) = @_;
     return unless defined $dbh;
@@ -466,86 +548,37 @@ sub _resolve_fk_name {
 # $fk_table refers to the table where the fk is attached
 # $pk_table refers to the table the pk points to - where the primary key exists
 sub get_foreign_key_details_from_data_dictionary {
-my($self,$fk_catalog,$fk_schema,$fk_table,$pk_catalog,$pk_schema,$pk_table) = @_;
-
-    my $dbh = $self->get_default_handle();
+my($self, $pk_catalog, $pk_schema, $pk_table, $fk_catalog, $fk_schema, $fk_table) = @_;
 
     # first, build a data structure to collect columns of the same foreign key together
-    my %fk_info;
+    my @returned_fk_info;
     if ($fk_table) {
-        my $fksth = $dbh->prepare_cached("PRAGMA foreign_key_list($fk_table)")
-                      or return $dbh->DBI::set_err($DBI::err, "DBI::Sponge: $DBI::errstr");
-        unless ($fksth->execute()) {
-            $self->error_message("foreign_key_list execute failed: $DBI::errstr");
-            return;
-        }
-
-        #my($id, $seq, $to_table, $from, $to);
-        # This will generate an error message when there are no result rows
-        #$fksth->bind_columns(\$id, \$seq, \$to_table, \$from, \$to);
-
-        while (my $row = $fksth->fetchrow_arrayref) {
-            my($id, $seq, $to_table, $from, $to) = @$row;
-            $fk_info{$id} ||= [];
-            $fk_info{$id}->[$seq] = { from_table => $fk_table, to_table => $to_table, from => $from, to => $to };
-        }
+        @returned_fk_info = $self->_get_foreign_key_details_for_fk_table_name($fk_table);
 
     } elsif ($pk_table) {
         # We'll have to loop through each table in the DB and find FKs that reference
         # the named table
 
         my @tables = $self->_get_info_from_sqlite_master(undef,'table');
-        my $id = 0;
+        TABLE:
         foreach my $table_data ( @tables ) {
             my $from_table = $table_data->{'table_name'};
-            $id++;
-            my $fksth = $dbh->prepare_cached("PRAGMA foreign_key_list($from_table)")
-                      or return $dbh->DBI::set_err($DBI::err, "DBI::Sponge: $DBI::errstr");
-            unless ($fksth->execute()) {
-                $self->error_message("foreign_key_list execute failed: $DBI::errstr");
-                return;
-            }
-            #my($id, $seq, $to_table, $from, $to);
-            #$fksth->bind_columns(\$id, \$seq, \$to_table, \$from, \$to);
-
-            while (my $row = $fksth->fetchrow_arrayref) {
-                my(undef, $seq, $to_table, $from, $to) = @$row;
-                next unless $to_table eq $pk_table;  # Only interested in fks pointing to $pk_table
-                $fk_info{$id} ||= [];
-                $fk_info{$id}->[$seq] = { from_table => $from_table, to_table => $to_table, from => $from, to => $to };
-            }
+            push @returned_fk_info, $self->_get_foreign_key_details_for_fk_table_name($from_table, sub { $_[0]->{table} eq $pk_table });
         }
     } else {
         Carp::croak("Can't get_foreign_key_details_from_data_dictionary(): either pk_table ($pk_table) or fk_table ($fk_table) are required");
     }
 
-    # next, format it to get returned as a sth
-    my @ret_data;
-    foreach my $fk_info ( values %fk_info ) {
-        my @column_list = map { $_->{'from'} } @$fk_info;
-        my @r_column_list = map { $_->{'to'} } @$fk_info;
-        my $fk_name = $self->_resolve_fk_name($fk_info->[0]->{'from_table'},
-                                              \@column_list,
-                                              $fk_info->[0]->{'to_table'},  # They'll all have the same table, right?
-                                              \@r_column_list);
-        foreach my $fk_info_col (@$fk_info) {
-            my $node;
-            $node->{'FK_NAME'}        = $fk_name;
-            $node->{'FK_TABLE_NAME'}  = $fk_info_col->{'from_table'};
-            $node->{'FK_COLUMN_NAME'} = $fk_info_col->{'from'};
-            $node->{'UK_TABLE_NAME'}  = $fk_info_col->{'to_table'};
-            $node->{'UK_COLUMN_NAME'} = $fk_info_col->{'to'};
-            push @ret_data, $node;
-        }
-    }
-            
+    my $dbh = $self->get_default_handle;
     my $sponge = DBI->connect("DBI:Sponge:", '','')
         or return $dbh->DBI::set_err($DBI::err, "DBI::Sponge: $DBI::errstr");
 
-    my @returned_names = qw( FK_NAME UK_TABLE_NAME UK_COLUMN_NAME FK_TABLE_NAME FK_COLUMN_NAME );
+    my @returned_names = qw( UK_TABLE_CAT UK_TABLE_SCHEM UK_TABLE_NAME UK_COLUMN_NAME
+                             FK_TABLE_CAT FK_TABLE_SCHEM FK_TABLE_NAME FK_COLUMN_NAME
+                             ORDINAL_POSITION UPDATE_RULE DELETE_RULE FK_NAME UK_NAME DEFERABILITY );
     my $table = $pk_table || $fk_table;
     my $returned_sth = $sponge->prepare("foreign_key_info $table", {
-        rows => [ map { [ @{$_}{@returned_names} ] } @ret_data ],
+        rows => [ map { [ @{$_}{@returned_names} ] } @returned_fk_info ],
         NUM_OF_FIELDS => scalar @returned_names,
         NAME => \@returned_names,
     }) or return $dbh->DBI::set_err($sponge->err(), $sponge->errstr());
@@ -553,6 +586,59 @@ my($self,$fk_catalog,$fk_schema,$fk_table,$pk_catalog,$pk_schema,$pk_table) = @_
     return $returned_sth;
 }
 
+# used by _get_foreign_key_details_for_fk_table_name to convert the on_delete or on_update
+# string into the number code commonly returnd by DBI
+my %update_delete_action_to_numeric_code = (
+    CASCADE       => 0,
+    RESTRICT      => 1,
+    'SET NULL'    => 2,
+    'NO ACTION'   => 3,
+    'SET DEFAULT' => 4,
+);
+
+sub _get_foreign_key_details_for_fk_table_name {
+    my($self, $fk_table_name, $accept_rows) = @_;
+    $accept_rows ||= sub { 1 };  # default is accept all
+
+    my $dbh = $self->get_default_handle;
+    my $fksth = $dbh->prepare("PRAGMA foreign_key_list($fk_table_name)")
+                  or return $dbh->DBI::set_err($DBI::err, "DBI::Sponge: $DBI::errstr");
+    unless ($fksth->execute()) {
+        $self->error_message("foreign_key_list execute failed: $DBI::errstr");
+        return;
+    }
+
+    my @fk_rows_this_table;
+    my(@column_list, @r_column_list);
+    while (my $row = $fksth->fetchrow_hashref) {
+        next unless ($accept_rows->($row));
+
+        my %fk_info_row = ( FK_TABLE_NAME => $fk_table_name,
+                            UPDATE_RULE => $update_delete_action_to_numeric_code{$row->{on_update}},
+                            DELETE_RULE => $update_delete_action_to_numeric_code{$row->{on_delete}},
+                            ORDINAL_POSITION => $row->{seq} + 1,
+                          );
+        @fk_info_row{'FK_COLUMN_NAME','UK_TABLE_NAME','UK_COLUMN_NAME'}
+            = @$row{'from','table','to'};
+
+        push @fk_rows_this_table, \%fk_info_row;
+
+        push @column_list, $row->{from};
+        push @r_column_list, $row->{to}
+    }
+
+    if (@fk_rows_this_table) {
+        my $fk_name = $self->_resolve_fk_name($fk_rows_this_table[0]->{FK_TABLE_NAME},
+                                          \@column_list,
+                                          $fk_rows_this_table[0]->{UK_TABLE_NAME},  # They'll all have the same table, right?
+                                          \@r_column_list);
+        foreach my $fk_info_row ( @fk_rows_this_table ) {
+            $fk_info_row->{FK_NAME} = $fk_name;
+        }
+        @fk_rows_this_table = sort { $a->{ORDINAL_POSITION} <=> $b->{ORDINAL_POSITION} } @fk_rows_this_table;
+    }
+    return @fk_rows_this_table;
+}
 
 sub get_bitmap_index_details_from_data_dictionary {
     # SQLite dosen't support bitmap indicies, so there aren't any
@@ -561,13 +647,13 @@ sub get_bitmap_index_details_from_data_dictionary {
 
 
 sub get_unique_index_details_from_data_dictionary {
-my($self,$table_name) = @_;
+    my($self, $owner_name, $table_name) = @_;
 
     my $dbh = $self->get_default_handle();
     return undef unless $dbh;
 
     # First, do a pass looking for unique indexes
-    my $idx_sth = $dbh->prepare(qq(PRAGMA index_list($table_name)));
+    my $idx_sth = $dbh->prepare(qq(PRAGMA $owner_name.index_list($table_name)));
     return undef unless $idx_sth;
 
     $idx_sth->execute();
@@ -708,7 +794,7 @@ sub _load_db_from_dump_internal {
         # Is it restoring the foreign_keys setting?
         if ($sql =~ m/PRAGMA foreign_keys\s*=\s*(\w+)/) {
             my $value = $1;
-            my $fk_setting = $self->_get_foreign_key_setting();
+            my $fk_setting = $self->_get_foreign_key_setting($dbh);
             if (! defined($fk_setting)) {
                 # This version of SQLite cannot enforce foreign keys.
                 # Print a warning message if they're trying to turn it on.
@@ -750,44 +836,34 @@ sub _cache_foreign_key_setting_from_file {
 # returns undef if this version of SQLite cannot enforce foreign keys
 sub _get_foreign_key_setting {
     my $self = shift;
+    my $dbh = shift;
     my $id = $self->id;
 
     our %foreign_key_setting;
     unless (exists $foreign_key_setting{$id}) {
-        my $dbh = $self->get_default_handle;
+        $dbh ||= $self->get_default_handle;
         my @row = $dbh->selectrow_array('PRAGMA foreign_keys');
         $foreign_key_setting{$id} = $row[0];
     }
     return $foreign_key_setting{$id};
 }
 
-sub resolve_order_by_clause {
-    my($self,$order_by_columns,$order_by_column_data) = @_;
+sub _resolve_order_by_clause_for_column {
+    my($self, $column_name, $query_plan, $property_meta) = @_;
 
-    my @cols = @$order_by_columns;
-    foreach my $col ( @cols) {
-        my $is_descending;
-        if ($col =~ m/^(-|\+)(.*)$/) {
-            $col = $2;
-            if ($1 eq '-') {
-                $is_descending = 1;
-            }
+    my $is_optional = $property_meta->is_optional;
+
+    my $column_clause = $column_name;  # default, usual case
+    if ($is_optional) {
+        if ($query_plan->order_by_column_is_descending($column_name)) {
+            $column_clause = "CASE WHEN $column_name ISNULL THEN 0 ELSE 1 END, $column_name DESC";
+        } else {
+            $column_clause = "CASE WHEN $column_name ISNULL THEN 1 ELSE 0 END, $column_name";
         }
-
-        my $property_meta = $order_by_column_data->{$col} ? $order_by_column_data->{$col}->[1] : undef;
-        my $is_optional; $is_optional = $property_meta->is_optional if $property_meta;
-
-        if ($is_optional) {
-            if ($is_descending) {
-                $col = "CASE WHEN $col ISNULL THEN 0 ELSE 1 END, $col DESC";
-            } else {
-                $col = "CASE WHEN $col ISNULL THEN 1 ELSE 0 END, $col";
-            }
-        } elsif ($is_descending) {
-            $col = $col . ' DESC';
-        }
+    } elsif ($query_plan->order_by_column_is_descending($column_name)) {
+        $column_clause = $column_name . ' DESC';
     }
-    return  'order by ' . join(', ',@cols);
+    return $column_clause;
 }
 
 
@@ -808,7 +884,7 @@ sub _dump_db_to_file_internal {
     }
 
     my $db_file = $self->server;
-    my $dbh = DBI->connect("dbi:SQLite:dbname=$db_file",'','',{ AutoCommit => 0, RaiseError => 0 });
+    my $dbh = $self->get_default_handle;
     unless ($dbh) {
         Carp::croak("Can't create DB handle for file $db_file: $DBI::errstr");
     }
@@ -848,7 +924,7 @@ sub _dump_db_to_file_internal {
                 foreach my $col ( @row ) {
                     if (! defined $col) {
                         $col = 'null';
-                    } elsif ($col =~ m/\D/) {
+                    } elsif ($col =~ m/\D/ or length($col) == 0) {
                         $col = "'" . $col . "'";  # Put quotes around non-numeric stuff
                     }
                 }
@@ -866,5 +942,75 @@ sub _dump_db_to_file_internal {
     return 1;
 }
             
+
+sub _create_dbh_for_alternate_db {
+    my($self, $connect_string) = @_;
+
+    my $match_dbname = qr{dbname=([^;]+)}i;
+    my($db_file) = $connect_string =~ m/$match_dbname/;
+    $db_file
+        || Carp::croak("Cannot determine dbname for alternate DB from dbi connect string $connect_string");
+
+    if ($self->_db_path_specifies_a_directory($db_file)) {
+        mkdir $db_file;
+        my $main_schema_file = join('', 'main', $self->_extension_for_db);
+        $db_file = File::Spec->catfile($db_file, $main_schema_file);
+
+        $connect_string =~ s/$match_dbname/dbname=$db_file/;
+    }
+
+    my $dbh = $self->SUPER::_create_dbh_for_alternate_db($connect_string);
+    return $dbh;
+}
+
+sub _db_path_specifies_a_directory {
+    my($self, $pathname) = @_;
+    return -d $pathname or $pathname =~ m{/$};
+}
+
+sub _assure_schema_exists_for_table {
+    my($self, $table_name, $dbh) = @_;
+    $dbh ||= $self->get_default_handle;
+
+    my($schema_name, undef) = $self->_extract_schema_and_table_name($table_name);
+    if ($schema_name
+        and
+        ! $self->is_schema_attached($schema_name, $dbh)
+    ) {
+        # pretend we have schemas
+
+        my($main_filename) = $dbh->{Name} =~ m/(?:dbname=)*(.*)/;
+        my $directory = File::Basename::dirname($main_filename);
+        my $schema_filename = File::Spec->catfile($directory, "${schema_name}.sqlite3");
+        unless (UR::Util::touch_file($schema_filename)) {
+            Carp::carp("touch_file $schema_filename failed: $!");
+            return;
+        }
+        unless ($dbh->do(qq(ATTACH DATABASE '$schema_filename' as $schema_name))) {
+            Carp::carp("Cannot attach file $schema_filename as $schema_name: ".$dbh->errstr);
+            return;
+        }
+    }
+}
+
+sub attached_schemas {
+    my($self, $dbh) = @_;
+    $dbh ||= $self->get_default_handle;
+
+    # Statement returns id, schema, filename
+    my $sth = $dbh->prepare('PRAGMA database_list') || Carp::croak("Cannot list attached databases: ".$dbh->errstr);
+    $sth->execute();
+    my %schemas = map { $_->[1] => $_->[2] }
+                         @{ $sth->fetchall_arrayref };
+    return \%schemas;
+}
+
+sub is_schema_attached {
+    my($self, $schema, $dbh) = @_;
+    $dbh ||= $self->get_default_handle;
+
+    my $schemas = $self->attached_schemas($dbh);
+    return exists $schemas->{$schema};
+}
 
 1;

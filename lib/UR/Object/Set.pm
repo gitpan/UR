@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use UR;
 use List::MoreUtils qw(any);
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 our @CARP_NOT = qw( UR::Object::Type );
 
@@ -39,66 +39,83 @@ sub __display_name__ {
     return '(' . ref($self) . ' ' . $s . ')';
 }
 
-# I'll neave this in here commented out for the future
-# It's intended to keep 'count' for sets updated in real-time as objects are 
-# created/deleted/updated
-#sub _load {
-#    my $class = shift;
-#    my $self = $class->SUPER::_load(@_);
-#
-#    my $member_class_name = $rule->subject_class_name;
-#
-#    my $rule = $self->rule
-#    my $rule_template = $rule->template;
-#
-#    my @rule_properties = $rule_template->_property_names;
-#    my %rule_values = map { $_ => $rule->value_for($_) } @rule_properties;
-#
-#    my %underlying_comparator_for_property = map { $_->property_name => $_ } $rule_template->get_underlying_rule_templates;
-#
-#    my @aggregates = qw( count );
-#
-#    $member_class_name->create_subscription(
-#        note => 'set monitor '.$self->id,
-#        priority => 0,
-#        callback => sub {
-#            # make sure the aggregate values get invalidated when objects change
-#            my @agg_set = @$self{aggregates};
-#            return unless exists(@agg_set);   # returns only if none of the aggregates have values
-#
-#            my ($changed_object, $changed_property, $old_value, $new_value) = @_;
-#
-#            if ($changed_property eq 'create') {
-#                if ($rule->evaluate($changed_object)) {
-#                    $self->{'count'}++;
-#                }
-#            } elsif ($changed_property eq 'delete') {
-#                if ($rule->evaluate($changed_object)) {
-#                    $self->{'count'}--;
-#                }
-#            } elsif (exists $value_index_for_property{$changed_property}) {
-#
-#                my $comparator = $underlying_comparator_for_property{$changed_property};
-#
-#                # HACK!
-#                $changed_object->{$changed_property} = $old_value;
-#                my $evaled_before = $comparator->evaluate_subject_and_values($changed_object,$rule_values{$changed_property});
-#
-#                $changed_object->{$changed_property} = $new_value;
-#                my $evaled_after = $comparator->evaluate_subject_and_values($changed_object,$rule_values{$changed_property});
-#
-#                if ($evaled_before and ! $evaled_after) {
-#                    $self->{'count'}--;
-#                } elsif ($evaled_after and ! $evaled_before) {
-#                    $self->{'count'}++;
-#                }
-#            }
-#        }
-#    );
-#
-#    return $self;
-#}
-    
+# When a set comes into existance, set up a subscription to monitor changes
+# to the set's members
+UR::Object::Set->create_subscription(
+    method  => 'load',
+    note    => 'set creation monitor',
+    callback => sub {
+        my $set = shift;
+        my $rule = $set->rule;
+        my %set_defining_attributes = map { $_ => 1 } $rule->template->_property_names();
+        my $deps = $set->{__aggregate_deps} ||= {};
+
+        $set->member_class_name->create_subscription(
+            note        => 'set monitor '.$set->id,
+            priority    => 0,
+            callback    => sub {
+                return unless exists($set->{__aggregates});  # nothing cached  yet
+
+                my ($member, $attr_name, $before, $after) = @_;
+                # load/unload won't affect aggregate values
+                return if ($attr_name eq 'load' or $attr_name eq 'unload');
+
+                # If a set-defining attribute changes, or an object matching
+                # the set is created or deleted, then the set membership has
+                # possibly changed.  Invalidate the whole aggregate cache.
+                if (exists($set_defining_attributes{$attr_name})
+                    ||
+                    (   ($attr_name eq 'create' or $attr_name eq 'delete')
+                        &&
+                        $rule->evaluate($member)
+                    )
+                ) {
+                    $set->__invalidate_cache__;
+                    # A later call to _members_have_changes() would miss the case
+                    # where a member becomes deleted or a member-defining attribute
+                    # changes
+                    $set->{__members_have_changes} = 1;
+
+                }
+                # if the changed attribute is a dependancy for a cached aggregation
+                # value, and it's a set member...
+                elsif ((my $dependant_aggregates = $deps->{$attr_name})
+                        &&
+                        $rule->evaluate($member)
+                ) {
+                    # remove the cached aggregates that depend on this attribute
+                    delete @{$set->{__aggregates}}{@$dependant_aggregates};
+                    # remove the dependancy records
+                    delete @$deps{@$dependant_aggregates};
+                    delete $deps->{$attr_name}
+                }
+            }
+        );
+    }
+);
+
+# When a transaction rolls back, it doesn't trigger subscriptions for the
+# member objects as they get changed back to their original values.
+# The safe thing is to set wipe out all Sets' aggregate caches :(
+# It would be helpful if sets had a db_committed like other objects
+# and we could just revert their values back to their db_committed values
+UR::Context::Transaction->create_subscription(
+    method  => 'rollback',
+    note    => 'rollback set cache invalidator',
+    callback => sub {
+        delete(@$_{'__aggregates','__aggregate_deps','__members_have_changes'}) foreach UR::Object::Set->is_loaded();
+    }
+);
+
+UR::Context->create_subscription(
+    method => 'commit',
+    callback => sub {
+        my $worked = shift;
+        return unless $worked;  # skip if the commit failed
+        delete $_->{__members_have_changes} foreach UR::Object::Set->is_loaded();
+    }
+);
+
 
 sub get_with_special_parameters {
     Carp::cluck("Getting sets by directly properties of their members method will be removed shortly because of ambiguity on the meaning of 'id'.  Please update the code which calls this.");
@@ -123,9 +140,20 @@ sub members {
     return $self->member_class_name->get($rule);
 }
 
+sub member_iterator {
+    my $self = shift;
+    my $rule = $self->rule;
+    while (@_) {
+        $rule = $rule->add_filter(shift, shift);
+    }
+    return $self->member_class_name->create_iterator($rule);
+}
+
 sub _members_have_changes {
     my $self = shift;
-    return any { $self->rule->evaluate($_) && $_->__changes__ } $self->member_class_name->is_loaded;
+    return 1 if $self->{__members_have_changes};
+    my $rule = $self->rule;
+    return any { $rule->evaluate($_) && $_->__changes__(@_) } $self->member_class_name->is_loaded;
 }
 
 sub subset {
@@ -149,9 +177,23 @@ sub group_by {
     return $self->context_return(@groups);
 }
 
+
+sub __invalidate_cache__ {
+    my $self = shift;
+    if (@_) {
+        my $aggregate = shift;
+        delete $self->{__aggregates}->{$aggregate};
+    } else {
+        delete @$self{'__aggregates','__aggregate_deps'};
+    }
+}
+
 sub __aggregate__ {
     my $self = shift;
-    my $f = shift;
+    my $aggr = shift;
+
+    my $f = $aggr->{f};
+    my $aggr_properties = $aggr->{properties};
 
     Carp::croak("$f is a group operation, and is not writable") if @_;
 
@@ -162,31 +204,44 @@ sub __aggregate__ {
                              map { $subject_class_meta->property_meta_for_name($_) || () }
                              $self->rule->template->_property_names;
 
+    my($cache, $deps) = @$self{'__aggregates','__aggregate_deps'};
+
     # If there are no member-class objects with changes, we can just interrogate the DB
-    if ($self->_members_have_changes or $not_ds_expressable) {
-        my $fname;
-        my @fargs;
-        if ($f =~ /^(\w+)\((.*)\)$/) {
-            $fname = $1;
-            @fargs = ($2 ? split(',',$2) : ());
+    if (! exists($cache->{$f})) {
+        if ($not_ds_expressable or $self->_members_have_changes(@$aggr_properties)) {
+            my $fname;
+            my @fargs;
+            if ($f =~ /^(\w+)\((.*)\)$/) {
+                $fname = $1;
+                @fargs = ($2 ? split(',',$2) : ());
+            }
+            else {
+                $fname = $f;
+                @fargs = ();
+            }
+            my $local_method = '__aggregate_' . $fname . '__';
+            $self->{__aggregates}->{$f} = $self->$local_method(@fargs);
+
+        } else {
+            my $rule = $self->rule->add_filter(-aggregate => [$f])->add_filter(-group_by => []);
+            UR::Context->current->get_objects_for_class_and_rule(
+                  $self->member_class_name,
+                  $rule,
+                  1,    # load
+                  0,    # return_closure
+             );
+
         }
-        else {
-            $fname = $f;
-            @fargs = ();
+        # keep 2-way mapping of dependances...
+        # First, keep a list of properties this aggregate cached value depends on
+        $deps->{$f} = $aggr_properties;
+        # And add this aggregate to the lists these properties are dependancies for
+        foreach ( @$aggr_properties ) {
+            $deps->{$_} ||= [];
+            push @{$deps->{$_}}, $f;
         }
-        my $local_method = '__aggregate_' . $fname . '__';
-        $self->{$f} = $self->$local_method(@fargs);
-    } 
-    elsif (! exists $self->{$f}) {
-        my $rule = $self->rule->add_filter(-aggregate => [$f])->add_filter(-group_by => []);
-        UR::Context->current->get_objects_for_class_and_rule(
-              $self->member_class_name,
-              $rule,
-              1,    # load
-              0,    # return_closure
-         );
     }
-    return $self->{$f};
+    return $self->{__aggregates}->{$f};
 }
 
 sub __aggregate_count__ {
@@ -203,7 +258,7 @@ sub __aggregate_min__ {
     for my $member ($self->members) {
         my $v = $member->$p;
         next unless defined $v;
-        $min = $v if not defined $min or $v < $min;
+        $min = $v if (!defined($min) || ($v < $min) || ($v lt $min));
     }
     return $min;
 }
@@ -216,7 +271,7 @@ sub __aggregate_max__ {
     for my $member ($self->members) {
         my $v = $member->$p;
         next unless defined $v;
-        $max = $v if not defined $max or $v > $max;
+        $max = $v if (!defined($max) || ($v > $max) || ($v gt $max));
     }
     return $max;
 }
@@ -326,10 +381,11 @@ sub CAN {
             return sub {
                 my $self = shift;
                 my $f = $method;
-                if (@_) {
-                    $f .= '(' . join(',',@_) . ')';
+                my @aggr_properties = @_;
+                if (@aggr_properties) {
+                    $f .= '(' . join(',',@aggr_properties) . ')';
                 }
-                return $self->__aggregate__($f);
+                return $self->__aggregate__({ f => $f, properties => \@aggr_properties });
             };
         }
         

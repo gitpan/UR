@@ -1,9 +1,11 @@
 use strict;
 use warnings;
-use Test::More tests=> 51;
+use Test::More tests=> 125;
 use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__).'/../..';
+
+use Sub::Install;
 
 # Test getting some objects that includes -hints, and then that later get()s
 # don't re-query the DB
@@ -97,6 +99,9 @@ is($query_count, 0, 'Made no queries');
 my $car_set = $cool_person_set->cars_set;
 ok($car_set, "got a set of cars for the person set: object set -> value set");
 
+# We're going to roll back all these changes just before the last block of tests
+my $t = UR::Context::Transaction->begin();
+
 # Test aggregate function on a set that has no member changes.
 # All aggregate functions should trigger query since function is
 # performed server-side on the data source.
@@ -126,7 +131,7 @@ ok($car_set, "got a set of cars for the person set: object set -> value set");
     ok($cool_person_set->rule->evaluate($p), 'person is member of cool person set');
     ok($p->age($p->age + 1), 'changed the age of the youngest person to be +1 (26)');
 
-    ok($cool_person_set->_members_have_changes, 'cool person set no has changes');
+    ok($cool_person_set->_members_have_changes, 'cool person set now has changes');
 
     $aggr_query_count = 0;
     is($cool_person_set->count, 3, 'set membership count is still the same');
@@ -192,4 +197,153 @@ ok($car_set, "got a set of cars for the person set: object set -> value set");
     ok($jamesbond->delete, 'Delete James Bond');
     is($cool_person_set->count, $cool_person_count + 1, 'count decreased after delete');
     is($aggr_query_count, 0, 'Made no queries');
+}
+
+# Fab up a method wrapper so we can tell if the accessor is called
+my $original_age_accessor = \&URT::Person::age;
+my $age_accessor_called = 0;
+Sub::Install::reinstall_sub({
+    into => 'URT::Person',
+    as => 'age',
+    code => sub { $age_accessor_called = 1; goto &$original_age_accessor }
+});
+
+my $original_name_accessor = \&URT::Person::name;
+my $name_accessor_called = 0;
+Sub::Install::reinstall_sub({
+    into => 'URT::Person',
+    as => 'name',
+    code => sub { $name_accessor_called = 1; goto &$original_name_accessor }
+});
+
+# Make a change, then do a set aggregate on a different property
+# it should do a single aggregate query on the DB and not load all
+# members
+ok($t->rollback(), 'Rollback changes');
+$t = UR::Context::Transaction->begin();
+{
+    ok(URT::Person->unload(), 'Unload all Person objects');
+    my $p = URT::Person->get(11);
+    is(scalar(@{[URT::Person->is_loaded]}), 1, 'One Person object is loaded');
+
+    $aggr_query_count = 0;
+    is($cool_person_set->count, 3, 'set membership count is still the same');
+    is($aggr_query_count, 1, 'count made an aggregate query');
+    is(scalar(@{[URT::Person->is_loaded]}), 1, 'Still, one Person object is loaded');
+
+    $aggr_query_count = $age_accessor_called = 0;
+    is($cool_person_set->sum('age'), 110, 'Get sum(age)');
+    is($aggr_query_count, 1, 'count made an aggregate query');
+    is($age_accessor_called, 0, '"age" accessor was not called');
+    is(scalar(@{[URT::Person->is_loaded]}), 1, 'Still, one Person object is loaded');
+
+    ok($cool_person_set->rule->evaluate($p), 'person is member of cool person set');
+    ok($p->name('AAAA'), 'changed the name of the person to AAAA');
+
+    ok($cool_person_set->_members_have_changes, 'cool person set now has changes');
+
+    # After changing the name, count and sum should still be valid cached values
+    $aggr_query_count = 0;
+    is($cool_person_set->count, 3, 'set membership count is still the same');
+    is($aggr_query_count, 0, 'count did not trigger query');
+
+    $aggr_query_count = 0;
+    is($cool_person_set->sum('age'), 110, 'Get sum(age)');
+    is($aggr_query_count, 0, 'sum did not trigger query');
+    is($age_accessor_called, 0, '"age" accessor was not called');
+
+    $aggr_query_count = 0;
+    is($cool_person_set->min('age'), 25, 'Minimum age is 25');
+    is($age_accessor_called, 0, "'age' accessor was not called");  # ran in the DB
+    is($aggr_query_count, 1, 'Did one aggregate query');
+    is(scalar(@{[URT::Person->is_loaded]}), 1, 'Still, one Person object is loaded');
+
+    $aggr_query_count = 0;
+    is($cool_person_set->min('name'), 'AAAA', 'Minimum name is AAAA');
+    is($aggr_query_count, 0, 'Made no aggregate queries');
+    is(scalar(@{[URT::Person->is_loaded]}), 3, 'All 3 Person objects were loaded that are is_cool');
+
+    # After changing the name, the min(age) value should still be cached
+    $age_accessor_called = $aggr_query_count = 0;
+    is($cool_person_set->min('age'), 25, 'Minimum age is 25');
+    is($age_accessor_called, 0, "'age' accessor was not called");
+    is($aggr_query_count, 0, 'Did no aggregate queries');
+
+
+    # Now, change age, and test that it has to re-calculate the age-dependant aggregates
+    # but not the name-related aggregate
+    ok($p->age(26), 'Change person age to 26');
+    $age_accessor_called = 0;
+    is($cool_person_set->sum('age'), 111, 'Get sum(age)');
+    is($aggr_query_count, 0, 'sum did not trigger query');
+    is($age_accessor_called, 1, '"age" accessor was called');
+
+    $age_accessor_called = 0;
+    is($cool_person_set->min('age'), 26, 'Minimum age is 26');
+    is($age_accessor_called, 1, "'age' accessor was called");
+
+    $name_accessor_called = 0;
+    is($cool_person_set->min('name'), 'AAAA', 'Minimum name is AAAA');
+    is($name_accessor_called, 0, "'name' accessor was not called");
+}
+
+# Test that changing set membership invalidates the whole cache of aggregate values
+ok($t->rollback(), 'Rollback changes');
+$t = UR::Context::Transaction->begin();
+{
+    my $p = URT::Person->get(11);
+
+    is($cool_person_set->min('age'), 25, 'Minimum age is 25');
+    is($cool_person_set->sum('age'), 110, 'Get sum(age)');
+    is($cool_person_set->min('name'), 'Bob', 'Minimum name is Bob');
+
+    ok(defined($p->is_cool(0)), 'Set person to be not cool');
+
+    $age_accessor_called = 0;
+    is($cool_person_set->min('age'), 40, 'Minimum cool age is 40');
+    is($age_accessor_called, 1, "'age' accessor was called");
+
+    $age_accessor_called = 0;
+    is($cool_person_set->sum('age'), 85, 'Get cool sum(age)');
+    is($age_accessor_called, 1, '"age" accessor was called');
+
+    $name_accessor_called = 0;
+    is($cool_person_set->min('name'), 'Frank', 'Minimum cool name is Frank');
+    is($name_accessor_called, 1, "'name' accessor was called");
+}
+
+# Test that changing a property on an object of the same class, but not a member
+# of the set, does not invalidate cached aggregate values
+ok($t->rollback(), 'Rollback changes');
+{
+    my $p = URT::Person->get(12);
+    is($p->is_cool, 0, 'Got an uncool person');
+
+    is($cool_person_set->min('age'), 25, 'Minimum cool age is 25');
+    is($cool_person_set->sum('age'), 110, 'Get cool sum(age)');
+    is($cool_person_set->min('name'), 'Bob', 'Minimum cool name is Bob');
+
+    ok($p->age(99), "Change uncool person's age");
+    ok($p->name('goo'), "Change uncool person's name");
+
+    my $check_aggrs = sub {
+        $age_accessor_called = 0;
+        is($cool_person_set->min('age'), 25, 'Minimum cool age is 25');
+        is($age_accessor_called, 0, '"age" accessor was not called');
+
+        $age_accessor_called = 0;
+        is($cool_person_set->sum('age'), 110, 'Get cool sum(age)');
+        is($age_accessor_called, 0, '"age" accessor was not called');
+
+        $name_accessor_called = 0;
+        is($cool_person_set->min('name'), 'Bob', 'Minimum cool name is Bob');
+        is($name_accessor_called, 0, '"name" accessor not called');
+    };
+    $check_aggrs->();
+
+    ok($p->delete, 'Delete the uncool person');
+    $check_aggrs->();
+
+    ok(URT::Person->create(is_cool => 0, name => 'Porky Pig', age => 60), 'Create a new uncool person');
+    $check_aggrs->();
 }

@@ -4,10 +4,12 @@ package UR::Util;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 use Cwd;
 use Data::Dumper;
 use Clone::PP;
+use Config;
+use Module::Runtime v0.014 qw(module_notional_filename);
 
 sub on_destroy(&) {
     my $sub = shift;
@@ -38,6 +40,7 @@ sub used_libs {
         my $abs_inc = Cwd::abs_path($inc) || $inc; # should already be expanded by UR.pm
         next if (grep { $_ =~ /^$abs_inc$/ } @compiled_inc);
         next if (grep { $_ =~ /^$abs_inc$/ } @perl5lib);
+        next if ((File::Spec->splitdir($inc))[-1] eq $Config{archname});
         push @extra, $inc;
     }
 
@@ -62,6 +65,11 @@ sub used_libs_perl5lib_prefix {
         $prefix .= "$i:";    
     }
     return $prefix;
+}
+
+sub touch_file {
+    my $filename = shift;
+    open(my $fh, '>>', $filename);
 }
 
 my @compiled_inc;
@@ -397,6 +405,35 @@ sub generate_readonly_methods
     return 1;
 }
 
+=pod
+
+=over
+
+=item object
+
+  my $o = UR::Util::object($something);
+
+Return the object form of the supplied argument.  For regular objects, it
+returns the argument unchanged.  For singleton class names, it returns the
+instance of the Singleton.  For other class names, it throws an exception.
+
+=back
+
+=cut
+
+sub object {
+    my $it = shift;
+
+    unless (ref $it) {
+        if ($it->isa('UR::Singleton')) {
+            $it = $it->_singleton_object();
+        } else {
+            Carp::croak("Expected an object instance or Singleton class name, but got '$it'");
+        }
+    }
+    return $it;
+}
+
 =pod 
 
 =over
@@ -579,7 +616,83 @@ sub intersect_lists {
     );
 }
 
+sub is_valid_property_name {
+    my $property_name = shift;
+    return $property_name =~ m/^[_[:alpha:]][_[:alnum:]]*$/;
+}
 
+sub is_valid_class_name {
+    my $class = shift;
+    return $class =~ m/^[[:alpha:]]\w*((::|')\w+)*$/;
+}
+
+{
+    my %subclass_suffix_for_builtin_symbolic_operator = (
+        '='     => "Equals",
+        '<'     => "LessThan",
+        '>'     => "GreaterThan",
+        '[]'    => "In",
+        'in []' => "In",
+        'ne'    => "NotEquals",
+        '<='    => 'LessOrEqual',
+        '>='    => 'GreaterOrEqual',
+    );
+    my %subclass_suffix_for_builtin_symbolic_operator_negation = (
+        '<'     => 'GreaterOrEqual',  # 'not less than' is the same as GreaterOrEqual
+        '<='    => 'GreaterThan',
+        '>'     => 'LessOrEqual',
+        '>='    => 'LessThan',
+        'ne'    => 'Equals',
+        'false' => 'True',
+        'true'  => 'False',
+    );
+
+    sub class_suffix_for_operator {
+        my $comparison_operator = shift;
+        my $not = 0;
+        if ($comparison_operator and $comparison_operator =~ m/^(\!|not)\s*(.*)/) {
+            $not = 1;
+            $comparison_operator = $2;
+        }
+
+        if (!defined($comparison_operator) or $comparison_operator eq '') {
+            $comparison_operator = '=';
+        }
+
+        my $suffix;
+        if ($not) {
+            $suffix = $subclass_suffix_for_builtin_symbolic_operator_negation{$comparison_operator};
+            unless ($suffix) {
+                $suffix = $subclass_suffix_for_builtin_symbolic_operator{$comparison_operator} || ucfirst(lc($comparison_operator));
+                $suffix = "Not$suffix";
+            }
+        } else {
+            $suffix = $subclass_suffix_for_builtin_symbolic_operator{$comparison_operator} || ucfirst(lc($comparison_operator));
+        }
+        return $suffix;
+    }
+}
+
+# From DBI::quote()
+# needed in a few places where we need to quote some SQL but don't
+# have access to a database handle to call quote() on
+sub sql_quote {
+    my $str = shift;
+    return "NULL" unless defined $str;
+    $str =~ s/'/''/g; # ISO SQL2
+    return "'$str'";
+}
+
+# Module::Runtime's use_package_optimistically will not throw an exception if
+# the package cannot be found or if it fails to compile but will if the package
+# has upstream exceptions, e.g. a missing dependency.  We're a little less
+# "optimistic" so we check if the package is in %INC so we can report whether
+# it was believed to be loaded or not.
+sub use_package_optimistically {
+    my $name = Module::Runtime::use_package_optimistically(shift);
+    my $file = module_notional_filename($name);
+    return $INC{$file};
+}
 
 1;
 

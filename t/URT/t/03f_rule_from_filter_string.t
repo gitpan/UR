@@ -8,7 +8,7 @@ use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
-use Test::More tests => 710;
+use Test::More tests => 728;
 
 class URT::RelatedItem {
     id_by => 'ritem_id',
@@ -32,6 +32,14 @@ class URT::Item {
 };
 
 foreach my $test (
+    { string => q(name~%foo 123%),
+      values => { name => '%foo 123%' },
+      operators => { name => 'like' },
+    },
+    { string => q(name~%foo 123%,score=5),
+      values => { name => '%foo 123%', score => 5 },
+      operators => { name => 'like', score => '='},
+    },
     { string => 'name = bob',
       values => { name => 'bob' },
       operators => { name => '=' },
@@ -43,6 +51,14 @@ foreach my $test (
     { string => 'name=>bob',
       values => { name => 'bob' },
       operators => { name => '=' },
+    },
+    { string => 'name != bob',
+      values => { name => 'bob' },
+      operators => { name => 'not =' },
+    },
+    { string => 'name!=bob',
+      values => { name => 'bob' },
+      operators => { name => 'not =' },
     },
     { string => 'name=a-longer-string',
       values => { name => 'a-longer-string' },
@@ -116,7 +132,6 @@ foreach my $test (
     { string => 'score!:-100--10.2',
       values => { score => [-100, -10.2] },
       operators => { score => 'not between' },
-#stop => 1,
     },
     { string => 'name~%yoyo,score:10-100',
       values => { name => '%yoyo', score => [10,100] },
@@ -402,6 +417,7 @@ foreach my $test (
       values => { name => 'this that + the other thing' },
     },
 ) {
+    $DB::single = 1 if ($test->{'stop'});
 
     my $string = $test->{'string'};
     my $values = $test->{'values'};
@@ -427,10 +443,9 @@ foreach my $test (
             is_deeply($got, $test->{$meta}, "$meta is correct");
         }
     }
-   exit if ($test->{'stop'});
-#    print Data::Dumper::Dumper($r);
+
+    exit if ($test->{'stop'});
 }
-#exit;
 
 # or-type rules need to be checked differently
 foreach my $test (
@@ -617,13 +632,13 @@ foreach my $test (
     },
 
 ) {
-   $DB::single=1 if ($test->{'stop'});
+    $DB::single = 1 if ($test->{'stop'});
+
     my $string = $test->{'string'};
     my $composite_rule = UR::BoolExpr->resolve_for_string('URT::Item',$string);
     ok($composite_rule, "Created rule from string \"$string\"");
     isa_ok($composite_rule->template, 'UR::BoolExpr::Template::Or');
 
-#print Data::Dumper::Dumper($composite_rule);
     my @r = $composite_rule->underlying_rules();
     is(scalar(@r), scalar(@{$test->{'rules'}}), 'Underlying rules count is correct');
 
@@ -644,6 +659,7 @@ foreach my $test (
             is($r->operator_for($property), $operators->{$property}, "Operator for $property is correct");
         }
     }
+
     exit if ($test->{'stop'});
 }
 
@@ -689,6 +705,6 @@ foreach my $test (
 }
 
 1;
-                                          
+
 
 

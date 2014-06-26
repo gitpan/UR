@@ -7,7 +7,7 @@ require UR;
 use Lingua::EN::Inflect;
 use Class::AutoloadCAN;
 
-our $VERSION = "0.41"; # UR $VERSION;;
+our $VERSION = "0.42_01"; # UR $VERSION;;
 our @CARP_NOT = qw( UR::DataSource::RDBMS UR::Object::Type );
 
 # class_meta and r_class_meta duplicate the functionality if two properties of the same name,
@@ -39,6 +39,18 @@ sub is_numeric {
         $self->{'_is_numeric'} = $class->isa("UR::Value::Number");
     }
     return $self->{'_is_numeric'};
+}
+
+sub is_text {
+    my $self = shift;
+    unless (defined($self->{'_is_text'})) {
+        my $class = $self->_data_type_as_class_name;
+        unless ($class) {
+            return;
+        }
+        $self->{'_is_text'} = $class->isa("UR::Value::Text");
+    }
+    return $self->{'_is_text'};
 }
 
 sub is_valid_storage_for_value {

@@ -8,7 +8,7 @@ package UR::Context;
 use strict;
 use warnings;
 
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 
 # A wrapper around the method of the same name in UR::DataSource::* to iterate over the
@@ -485,7 +485,8 @@ sub _create_import_iterator_for_underlying_context {
             unless ($set) {
                 Carp::croak("Failed to fabricate $set_class for rule $ss_rule");
             }
-            @$set{@aggregate_properties} = @$row[$division_point+1..$#$row];
+            my $aggregates = $set->{__aggregates} ||= {};
+            @$aggregates{@aggregate_properties} = @$row[$division_point+1..$#$row];
             return $set;
         };
 

@@ -6,7 +6,7 @@ require UR;
 
 # Used during bootstrapping.
 our @ISA = qw(UR::Object);
-our $VERSION = "0.41"; # UR $VERSION;;
+our $VERSION = "0.42_01"; # UR $VERSION;;
 
 our @CARP_NOT = qw( UR::Object UR::Context  UR::ModuleLoader Class::Autouse UR::BoolExpr );
 
@@ -60,8 +60,7 @@ sub _properties {
             # This will give us most of the functionality. 
             for my $key (keys %extra) {
                 my ($name,$op) = ($key =~ /(\w+)\s*(.*)/);
-                my @have_the_property = grep { $_->can($name) } @$all;
-                if (@have_the_property == 0) {
+                unless (defined $self->{attributes_have}->{$name}) {
                     die "unknown property $name used to query properties of " . $self->class_name;
                 }
                 if ($op and $op ne '==' and $op ne 'eq') {

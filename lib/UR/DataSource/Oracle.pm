@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Oracle',
@@ -39,12 +39,25 @@ my($self,$sp_name) = @_;
 
 my $DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';
 my $TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SSXFF';
-sub _init_created_dbh {
+sub _set_date_format {
+    my $self = shift;
+
+    foreach my $sql ("alter session set NLS_DATE_FORMAT = '$DATE_FORMAT'",
+                    "alter session set NLS_TIMESTAMP_FORMAT = '$TIMESTAMP_FORMAT'"
+    ) {
+        $self->do_sql($sql);
+    }
+}
+
+
+*_init_created_dbh = \&init_created_handle;
+sub init_created_handle {
     my ($self, $dbh) = @_;
     return unless defined $dbh;
     $dbh->{LongTruncOk} = 0;
-    $dbh->do("alter session set NLS_DATE_FORMAT = '$DATE_FORMAT'");
-    $dbh->do("alter session set NLS_TIMESTAMP_FORMAT = '$TIMESTAMP_FORMAT'");
+
+    $self->_set_date_format();
+
     return $dbh;
 }
 
@@ -74,14 +87,6 @@ sub _post_process_lob_values {
             }
         } @$lob_id_arrayref;
 }
-
-sub _value_is_null {
-    my ($class,$value) = @_;
-    return 1 if not defined $value;
-    return 1 if $value eq '';
-    return 1 if (ref($value) eq 'HASH' and $value->{operator} eq '=' and (!defied($value->{value}) or $value->{value} eq ''));
-    return 0;
-}   
 
 sub _ignore_table {
     my $self = shift;
@@ -121,7 +126,7 @@ my($self,$sequence_name) = @_;
 }
 
 sub get_bitmap_index_details_from_data_dictionary {
-my($self,$table_name) = @_;
+    my($self, $table_name) = @_;
     my $sql = qq(
         select c.table_name,c.column_name,c.index_name
         from all_indexes i join all_ind_columns c on i.index_name = c.index_name
@@ -145,7 +150,7 @@ my($self,$table_name) = @_;
 
 
 sub get_unique_index_details_from_data_dictionary {
-    my ($self,$table_name) = @_;
+    my ($self, $owner_name, $table_name) = @_;
     my $sql = qq(
         select cc.constraint_name, cc.column_name
         from all_cons_columns cc
@@ -174,8 +179,7 @@ sub get_unique_index_details_from_data_dictionary {
     my $sth = $dbh->prepare($sql);
     return undef unless $sth;
 
-    my($db_owner,$dd_table_name) = $self->_resolve_owner_and_table_from_table_name($table_name);
-    $sth->execute($table_name, $db_owner, $dd_table_name, $db_owner);
+    $sth->execute($table_name, $owner_name, $table_name, $owner_name);
 
     my $ret;
     while (my $data = $sth->fetchrow_hashref()) {
@@ -192,7 +196,7 @@ sub set_userenv {
     # 1. this method in UR::DataSource::Oracle is a class method
     # that can be called to change the values later
     # 2. the method in YourSubclass::DataSource::Oracle is called in
-    # _init_created_dbh which is called while the datasource
+    # init_created_handle which is called while the datasource
     # is still being set up- it operates directly on the db handle 
 
     my ($self, %p) = @_;
@@ -258,7 +262,8 @@ my %ur_data_type_for_vendor_data_type = (
 sub ur_data_type_for_data_source_data_type {
     my($class,$type) = @_;
 
-    my $urtype = $ur_data_type_for_vendor_data_type{uc($type)};
+    $type = $class->normalize_vendor_type($type);
+    my $urtype = $ur_data_type_for_vendor_data_type{$type};
     unless (defined $urtype) {
         $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
     }
@@ -672,53 +677,64 @@ sub _get_oracle_major_server_version {
 }
 
 sub cast_for_data_conversion {
-    my($class, $prop_meta1, $prop_meta2) = @_;
+    my($class, $left_type, $right_type, $operator, $sql_clause) = @_;
 
     my @retval = ('%s','%s');
 
-    my $prop_meta1_type = $prop_meta1->_data_type_as_class_name;
-    my $prop_meta2_type = $prop_meta2->_data_type_as_class_name;
-    #printf("Cast %s::%s (%s) and %s::%s (%s)\n",
-    #    $prop_meta1->class_name, $prop_meta1->property_name, $prop_meta1_type,
-    #    $prop_meta2->class_name, $prop_meta2->property_name, $prop_meta2_type);
-
-    if ($prop_meta1_type->isa($prop_meta2_type)
+    # compatible types
+    if ($left_type->isa($right_type)
         or
-        $prop_meta2_type->isa($prop_meta1_type)
+        $right_type->isa($left_type)
     ) {
         return @retval;
     }
 
-    if (! $prop_meta1_type->isa('UR::Value::Text')
+    if (! $left_type->isa('UR::Value::Text')
         and
-        ! $prop_meta2_type->isa('UR::Value::Text')
+        ! $right_type->isa('UR::Value::Text')
     ) {
         # We only support cases where one is a string, for now
         # hopefully the DB can sort it out
         return @retval;
     }
 
+    # Oracle can auto-convert strings into numbers and dates in the 'where'
+    # clause, but has issues in joins
+    if ($sql_clause eq 'where') {
+        return @retval;
+    }
+
     # Figure out which one is the non-string
-    my($data_type, $i) = $prop_meta1_type->isa('UR::Value::Text')
-                        ? ( $prop_meta2_type, 1)
-                        : ( $prop_meta1_type, 0);
+    my($data_type, $i) = $left_type->isa('UR::Value::Text')
+                        ? ( $right_type, 1)
+                        : ( $left_type, 0);
 
     if ($data_type->isa('UR::Value::Number')) {
         $retval[$i] = q{to_char(%s)};
 
     } elsif ($data_type->isa('UR::Value::Timestamp')) {
-        # These time formats shoule match what's given in _init_created_dbh
+        # These time formats shoule match what's given in init_created_handle
         $retval[$i] = qq{to_char(%s, '$TIMESTAMP_FORMAT')};
 
     } elsif ($data_type->isa('UR::Value::DateTime')) {
         $retval[$i] = qq{to_char(%s, '$DATE_FORMAT')};
 
     } else {
-        @retval = $class->SUPER::cast_for_data_conversion($prop_meta1, $prop_meta2);
+        @retval = $class->SUPER::cast_for_data_conversion($left_type, $right_type);
     }
 
     return @retval;
 }
+
+sub _vendor_data_type_for_ur_data_type {
+    return ( TEXT        => 'VARCHAR2',
+             STRING      => 'VARCHAR2',
+             BOOLEAN      => 'INTEGER',
+             __default__ => 'VARCHAR2',
+             shift->SUPER::_vendor_data_type_for_ur_data_type(),
+            );
+};
+
 
 1;
 

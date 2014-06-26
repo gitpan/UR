@@ -28,7 +28,7 @@ This module subclasses DBI, and provides a few extra methods useful when using a
 require 5.006_000;
 use warnings;
 use strict;
-our $VERSION = "0.41"; # UR $VERSION;;
+our $VERSION = "0.42_01"; # UR $VERSION;;
 
 # set up module
 use base qw(Exporter DBI);
@@ -673,9 +673,11 @@ sub rollback_without_object_update
 sub disconnect
 {
     my $self = shift;
-    
-    # Always rollback.  Oracle commits by default on disconnect.
-    $self->rollback;    
+    # Rollback if AutoCommit is 0.  Oracle commits by default on disconnect.
+    # Rolling back when AutoCommit is on will generate a DBI warning.
+    if ($self->{'AutoCommit'} == 0) {
+        $self->rollback;    
+    }
     
     # Msg and disconnect.
     UR::DBI::before_execute("disconnecting");

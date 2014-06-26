@@ -37,7 +37,7 @@ use strict;
 
 use vars qw ( $VERSION $COMPATIBLE $FILENAME );
 
-$VERSION = '1.05';
+$VERSION = '1.05'; # No BumpVersion
 $COMPATIBLE = '0.07';
 $FILENAME=__FILE__;
 
@@ -1991,7 +1991,8 @@ my %token_states = (
         MINUS => qr{-},
         INTEGER => qr{\d+},
         REAL => qr{\d*\.\d+|\d+\.\d*},
-        WORD => qr{[%\+\.\/\w][\+\-\.%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+        WORD => [ qr{[%\+\.\/\w][\+\-\.%\w\/]*},   # also allow / for pathnames, - for hyphenated names, % for like wildcards
+                    'dont_gobble_spaces' ],
         DOUBLEQUOTE_STRING => qr{"(?:\\.|[^"])*"},
         SINGLEQUOTE_STRING => qr{'(?:\\.|[^'])*'},
         LEFT_PAREN => [ qr{\(}, 'DEFAULT' ],

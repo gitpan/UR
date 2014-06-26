@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::Pg',
@@ -56,7 +56,8 @@ my($self,$sp_name) = @_;
 }
 
 
-sub _init_created_dbh
+*_init_created_dbh = \&init_created_handle;
+sub init_created_handle
 {
     my ($self, $dbh) = @_;
     return unless defined $dbh;
@@ -102,7 +103,7 @@ sub get_bitmap_index_details_from_data_dictionary {
 
 
 sub get_unique_index_details_from_data_dictionary {
-my($self,$table_name) = @_;
+    my($self, $owner_name, $table_name) = @_;
 
     my $sql = qq(
         SELECT c_index.relname, a.attname
@@ -110,7 +111,8 @@ my($self,$table_name) = @_;
         JOIN pg_catalog.pg_index i ON i.indrelid = c_table.oid
         JOIN pg_catalog.pg_class c_index ON c_index.oid = i.indexrelid
         JOIN pg_catalog.pg_attribute a ON a.attrelid = c_index.oid
-        WHERE c_table.relname = ?
+        JOIN pg_catalog.pg_namespace n ON c_table.relnamespace = n.oid
+        WHERE c_table.relname = ? AND n.nspname = ?
           and (i.indisunique = 't' or i.indisprimary = 't')
           and i.indisvalid = 't'
     );
@@ -122,7 +124,7 @@ my($self,$table_name) = @_;
     return undef unless $sth;
 
     #my $db_owner = $self->owner();  # We should probably do something with the owner/schema
-    $sth->execute($table_name);
+    $sth->execute($table_name, $owner_name);
 
     my $ret;
     while (my $data = $sth->fetchrow_hashref()) {
@@ -146,13 +148,20 @@ my %ur_data_type_for_vendor_data_type = (
 sub ur_data_type_for_data_source_data_type {
     my($class,$type) = @_;
 
-    my $urtype = $ur_data_type_for_vendor_data_type{uc($type)};
+    $type = $class->normalize_vendor_type($type);
+    my $urtype = $ur_data_type_for_vendor_data_type{$type};
     unless (defined $urtype) {
         $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
     }
     return $urtype;
 }
 
+sub _vendor_data_type_for_ur_data_type {
+    return ( BOOLEAN     => 'BOOLEAN',
+             XML         => 'XML',
+             shift->SUPER::_vendor_data_type_for_ur_data_type(),
+            );
+}
 
 sub _alter_sth_for_selecting_blob_columns {
     my($self, $sth, $column_objects) = @_;
@@ -166,13 +175,59 @@ sub _alter_sth_for_selecting_blob_columns {
     }
 }
 
-sub _value_is_null {
-    my ($class,$value) = @_;
-    return 1 if not defined $value;
-    return 1 if $value eq '';
-    return 1 if (ref($value) eq 'HASH' and $value->{operator} eq '=' and (!defied($value->{value}) or $value->{value} eq ''));
-    return 0;
-}   
+my $DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';
+my $TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.US';
+sub cast_for_data_conversion {
+    my($class, $left_type, $right_type, $operator, $sql_clause) = @_;
+
+    my @retval = ('%s','%s');
+
+    # compatible types
+    if ($left_type->isa($right_type)
+        or
+        $right_type->isa($left_type)
+    ) {
+        return @retval;
+    }
+
+    # So far, the only casting is to support using 'like' and one or both are strings
+    if ($operator ne 'like'
+        or
+        ( ! $left_type->isa('UR::Value::Text') and ! $right_type->isa('UR::Value::Text') )
+    ) {
+        return @retval;
+    }
+
+    # Figure out which one is the non-string
+    my($data_type, $i) = $left_type->isa('UR::Value::Text')
+                        ? ( $right_type, 1)
+                        : ( $left_type, 0);
+
+    if ($data_type->isa('UR::Value::Timestamp')) {
+        $retval[$i] = qq{to_char(%s, '$TIMESTAMP_FORMAT')};
+
+    } elsif ($data_type->isa('UR::Value::DateTime')) {
+        $retval[$i] = qq{to_char(%s, '$DATE_FORMAT')};
+
+    } else {
+        @retval = $class->SUPER::cast_for_data_conversion($left_type, $right_type, $operator);
+    }
+
+    return @retval;
+}
+
+sub _resolve_order_by_clause_for_column {
+    my($self, $column_name, $query_plan, $property_meta) = @_;
+
+    my $column_clause = $self->SUPER::_resolve_order_by_clause_for_column($column_name, $query_plan);
+
+    my $is_text_type = $property_meta->is_text;
+    if ($is_text_type) {
+        # Tell the DB to sort the same order as Perl's cmp
+        $column_clause .= q( COLLATE "C");
+    }
+    return $column_clause;
+}
 
 1;
 

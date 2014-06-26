@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::MySQL',
@@ -36,7 +36,8 @@ sub _default_sql_like_escape_string { undef };  # can't do an 'escape' clause wi
 
 sub can_savepoint { 1;} 
 
-sub _init_created_dbh
+*_init_created_dbh = \&init_created_handle;
+sub init_created_handle
 {
     my ($self, $dbh) = @_;
     return unless defined $dbh;
@@ -123,47 +124,37 @@ my($self,$sp_name) = @_;
 }
 
 
-sub resolve_order_by_clause {
-    my($self,$order_by_columns,$order_by_column_data) = @_;
+sub _resolve_order_by_clause_for_column {
+    my($self, $column_name, $query_plan, $property_meta) = @_;
 
-    my @cols = @$order_by_columns;
-    foreach my $col ( @cols) {
-        my $is_descending;
-        if ($col =~ m/^(-|\+)(.*)$/) {
-            $col = $2;
-            if ($1 eq '-') {
-                $is_descending = 1;
-            }
+    my $is_optional = $property_meta->is_optional;
+
+    my $column_clause = $column_name;  # default, usual case
+    if ($is_optional) {
+        if ($query_plan->order_by_column_is_descending($column_name)) {
+            $column_clause = "CASE WHEN $column_name ISNULL THEN 0 ELSE 1 END, $column_name DESC";
+        } else {
+            $column_clause = "CASE WHEN $column_name ISNULL THEN 1 ELSE 0 END, $column_name";
         }
-
-        my $property_meta = $order_by_column_data->{$col} ? $order_by_column_data->{$col}->[1] : undef;
-        my $is_optional; $is_optional = $property_meta->is_optional if $property_meta;
-
-        if ($is_optional) {
-            if ($is_descending) {
-                $col = "CASE WHEN $col ISNULL THEN 0 ELSE 1 END, $col DESC";
-            } else {
-                $col = "CASE WHEN $col ISNULL THEN 1 ELSE 0 END, $col";
-            }
-        } elsif ($is_descending) {
-            $col = $col . ' DESC';
-        }
+    } elsif ($query_plan->order_by_column_is_descending($column_name)) {
+        $column_clause = $column_name . ' DESC';
     }
-    return  'order by ' . join(', ',@cols);
+    return $column_clause;
 }
+
 
 
 # FIXME This works on Mysql 4.x (and later?).  Mysql5 has a database called
 # IMFORMATION_SCHEMA that may be more useful for these kinds of queries
 sub get_unique_index_details_from_data_dictionary {
-my($self,$table_name) = @_;
+    my($self, $owner_name, $table_name) = @_;
 
     my $dbh = $self->get_default_handle();
     return undef unless $dbh;
 
     #$table_name = $dbh->quote($table_name);
 
-    my $sql = qq(SHOW INDEX FROM $table_name);
+    my $sql = qq(SHOW INDEX FROM $table_name FROM $owner_name);
 
     my $sth = $dbh->prepare($sql);
     return undef unless $sth;
@@ -220,7 +211,8 @@ my %ur_data_type_for_vendor_data_type = (
 sub ur_data_type_for_data_source_data_type {
     my($class,$type) = @_;
 
-    my $urtype = $ur_data_type_for_vendor_data_type{uc($type)};
+    $type = $class->normalize_vendor_type($type);
+    my $urtype = $ur_data_type_for_vendor_data_type{$type};
     unless (defined $urtype) {
         $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
     }

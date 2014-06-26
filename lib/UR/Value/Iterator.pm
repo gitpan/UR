@@ -3,7 +3,7 @@ package UR::Value::Iterator;
 use strict;
 use warnings;
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 sub create {
     my $class = shift;
@@ -14,7 +14,8 @@ sub create {
 
 sub create_for_value_arrayref {
     my ($class, $arrayref) = @_;
-    return bless { members => $arrayref }, $class;
+    my @copy = @$arrayref;
+    return bless { members => \@copy }, $class;
 }
 
 sub next {

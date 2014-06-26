@@ -9,33 +9,52 @@ use Scalar::Util;
 use File::Basename;
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 UR::Object::Type->define(
     class_name => 'UR::DataSource::RDBMS',
     is => ['UR::DataSource','UR::Singleton'],
     is_abstract => 1,
-    properties => [
-        server       => { is => 'String', doc => 'the "server" part of the DBI connect string' },
-        login        => { is => 'String', doc => 'user name to connect as', is_optional => 1 },
-        auth         => { is => 'String', doc => 'authentication for the given user', is_optional => 1 },
-        owner        => { is => 'String', doc => 'Schema/owner name to connect to', is_optional => 1  },
+    has => [
+        server       => { is => 'Text', doc => 'the "server" part of the DBI connect string' },
+        login        => { is => 'Text', doc => 'user name to connect as', is_optional => 1 },
+        auth         => { is => 'Text', doc => 'authentication for the given user', is_optional => 1 },
+        owner        => { is => 'Text', doc => 'Schema/owner name to connect to', is_optional => 1  },
     ],
 
     has_optional => [
-        _all_dbh_hashref                 => { type => 'HASH',       len => undef, is_transient => 1 },
-        _default_dbh                     => { type => 'DBI::db',    len => undef, is_transient => 1 },
-        _last_savepoint                  => { type => 'String',     len => undef, is_transient => 1 },
+        alternate_db_dsn => {
+            is => 'Text',
+            default_value => 0,
+            doc => 'Set to a DBI dsn to copy all data queried from this datasource to an alternate database',
+        },
+        camel_case_table_names => {
+            is => 'Boolean',
+            default_value => 0,
+            doc => 'When true, dynamically calculating class names from table names will expect camel case in table names.',
+        },
+        camel_case_column_names => {
+            is => 'Boolean',
+            default_value => 0,
+            doc => 'When true, dynamically calculating property names from column names will expect camel case in column names.',
+        },
+        _all_dbh_hashref                 => { is => 'HASH', len => undef, is_transient => 1 },
+        _last_savepoint                  => { is => 'Text', len => undef, is_transient => 1 },
     ],
-    valid_signals => ['query'],
+    valid_signals => ['query', 'query_failed', 'commit_failed', 'do_failed', 'connect_failed', 'sequence_nextval', 'sequence_nextval_failed'],
     doc => 'A logical DBI-based database, independent of prod/dev/testing considerations or login details.',
 );
+
+# A record of objects saved to the database.  It's filled in by _sync_database()
+# and used by the alternate DB saving code.  Objects noted in this hash don't get
+# saved to the alternate DB
+my %objects_in_database_saved_by_this_process;
 
 sub database_exists {
     my $self = shift;
     warn $self->class . " failed to implement the database_exists() method.  Testing connection as a surrogate.  FIXME here!\n";
     eval {
-        my $c = $self->create_dbh();
+        my $c = $self->create_default_handle();
     };
     if ($@) {
         return;
@@ -96,7 +115,7 @@ sub _resolve_ddl_for_table {
 }
 
 sub generate_schema_for_class_meta {
-    my ($self,$class_meta,$temp) = @_;
+    my ($self, $class_meta, $temp) = @_;
 
     # We now support on-the-fly database introspection
     # this gets called with the temp flag when _sync_database realizes 
@@ -397,37 +416,19 @@ sub dbi_data_source_name {
     return 'dbi:' . $driver . ':' . $server;
 }
 
+*get_default_dbh = \&get_default_handle;
 sub get_default_handle {    
     my $self = shift->_singleton_object;    
-    my $dbh = $self->_default_dbh;
+    my $dbh = $self->SUPER::get_default_handle;
     unless ($dbh && $dbh->{Active}) {
-        $dbh = $self->create_dbh();
-        $self->_default_dbh($dbh);
+        $self->__invalidate_get_default_handle__;
+        $dbh = $self->create_default_handle();
     }    
     return $dbh;
 }
 
-*get_default_dbh = \&get_default_handle;
-*has_default_dbh = \&has_default_handle;
-*disconnect_default_dbh = \&disconnect_default_handle;
 
-sub has_default_handle {
-    my $self = shift->_singleton_object;
-    return 1 if $self->_default_dbh;
-    return;
-}
 
-sub disconnect_default_handle {
-    my $self = shift->_singleton_object;
-    my $dbh = $self->_default_dbh;
-    unless ($dbh) {
-        Carp::cluck("Cannot disconnect.  Not connected!");
-        return;
-    }
-    $dbh->disconnect;
-    $self->_default_dbh(undef);
-    return $dbh;
-}
 
 sub get_for_dbh {
     my $class = shift;
@@ -439,7 +440,7 @@ sub get_for_dbh {
 }
 
 sub has_changes_in_base_context {
-    shift->has_default_dbh;
+    shift->has_default_handle;
     # TODO: actually check, as this is fairly conservative
     # If used for switching contexts, we'd need to safely rollback any transactions first.
 }
@@ -459,16 +460,20 @@ sub _dbi_connect_args {
 
 sub get_connection_debug_info {
     my $self = shift;
+    my $handle_class = $self->default_handle_class;
     my @debug_info = (
         "DBI Data Source Name: ", $self->dbi_data_source_name, "\n",
-        "DBI Login: ", $self->login, "\n",
+        "DBI Login: ", $self->login || '' , "\n",
         "DBI Version: ", $DBI::VERSION, "\n",
-        "DBI Error: ", UR::DBI->errstr, "\n",
+        "DBI Error: ", $handle_class->errstr || '(no error)', "\n",
     );
     return @debug_info;
 }
 
-sub create_dbh {
+sub default_handle_class { 'UR::DBI' };
+
+sub create_dbh { shift->create_default_handle_wrapper }
+sub create_default_handle {
     my $self = shift;
     if (! ref($self) and $self->isa('UR::Singleton')) {
         $self = $self->_singleton_object;
@@ -478,26 +483,23 @@ sub create_dbh {
     my @connection = $self->_dbi_connect_args();
     
     # connect
-    my $dbh = UR::DBI->connect(@connection);
+    my $handle_class = $self->default_handle_class;
+    my $dbh = $handle_class->connect(@connection);
     unless ($dbh) {
+        my $errstr;
+        {   no strict 'refs';
+            $errstr = ${"${handle_class}::errstr"};
+        };
         my @confession = (
-            "Failed to connect to the database!\n",
+            "Failed to connect to the database: $errstr\n",
             $self->get_connection_debug_info(),
         );
+        $self->__signal_observers__('connect_failed', 'connect', \@connection, $errstr);
         Carp::confess(@confession);
     }
 
     # used for reverse lookups
     $dbh->{'private_UR::DataSource::RDBMS_name'} = $self->class;
-
-    # this method may be implemented in subclasses to do extra initialization
-    if ($self->can("_init_created_dbh")) {
-        unless ($self->_init_created_dbh($dbh)) {
-            $dbh->disconnect;
-            Carp::confess("Failed to initialize new database connection!\n"
-                . $self->error_message . "\n");
-        }
-    }
 
     # store the handle in a hash, since it's not a UR::Object
     my $all_dbh_hashref = $self->_all_dbh_hashref;
@@ -511,11 +513,6 @@ sub create_dbh {
     $self->is_connected(1);
     
     return $dbh;
-}
-
-sub _init_created_dbh {
-    # override in sub-classes
-    1;
 }
 
 # The default is to ignore no tables, but derived classes
@@ -649,7 +646,7 @@ sub access_level {
     my $self = shift;
     my $env = $self->_method2env("access_level");    
     if (@_) {
-        if ($self->has_default_dbh) {
+        if ($self->has_default_handle) {
             Carp::confess("Cannot change the db access level for $self while connected!");
         }
         $ENV{$env} = lc(shift);
@@ -672,12 +669,16 @@ sub _method2env {
 }
 
 sub resolve_class_name_for_table_name {
-    my $self = shift->_singleton_class_name;
+    my $self = shift->_singleton_object;
     my $table_name = shift;
     my $relation_type = shift;   # Should be 'TABLE' or 'VIEW'
 
     # When a table_name conflicts with a reserved word, it ends in an underscore.
     $table_name =~ s/_$//;
+
+    if ($self->camel_case_table_names) {
+        $table_name = UR::Value::Text->get($table_name)->to_lemac("_");
+    }
 
     my $namespace = $self->get_namespace;
     my $vocabulary = $namespace->get_vocabulary;
@@ -720,9 +721,13 @@ sub resolve_class_name_for_table_name {
 }
 
 sub resolve_type_name_for_table_name {
-    my $self = shift->_singleton_class_name;
+    my $self = shift->_singleton_object;
     my $table_name = shift;
 
+    if ($self->camel_case_table_names) {
+        $table_name = UR::Value::Text->get($table_name)->to_lemac("_");
+    }
+    
     my $namespace = $self->get_namespace;
     my $vocabulary = $namespace->get_vocabulary;
     $vocabulary = 'UR::Vocabulary' unless eval { $vocabulary->__meta__ };
@@ -742,10 +747,13 @@ sub resolve_type_name_for_table_name {
 }
 
 sub resolve_property_name_for_column_name {
-    my $self = shift->_singleton_class_name;
+    my $self = shift->_singleton_object;
     my $column_name = shift;
 
-    my @words =                 
+    if ($self->camel_case_column_names) {
+        $column_name = UR::Value::Text->get($column_name)->to_lemac("_");
+    }
+    my @words =
         map { lc($_) }
         split("_",$column_name);
 
@@ -1049,7 +1057,7 @@ sub refresh_database_metadata_for_table_name {
                 $data->{$_} =~ s/"|'//g;
             }
 
-            my $constraint_name = $data->{'FK_NAME'};
+            my $constraint_name = $data->{'FK_NAME'} || '';
             my $fk_table_name = $data->{'FK_TABLE_NAME'}
                                 || $data->{'FKTABLE_NAME'};
             my $r_table_name = $data->{'UK_TABLE_NAME'}
@@ -1178,7 +1186,7 @@ sub refresh_database_metadata_for_table_name {
     # and each other DataSource class needs its own implementation
 
     # The above was moved into each data source's class
-    if (my $uc = $data_source->get_unique_index_details_from_data_dictionary($db_table_name)) {
+    if (my $uc = $data_source->get_unique_index_details_from_data_dictionary($ds_owner, $db_table_name)) {
         my %uc = %$uc;   # make a copy we can manipulate in case $uc is shared or read-only
 
         # check for redundant unique constraints
@@ -1315,11 +1323,22 @@ sub _make_foreign_key_fingerprint {
 sub _resolve_owner_and_table_from_table_name {
     my($self, $table_name) = @_;
 
+    return (undef, undef) unless $table_name;
     if ($table_name =~ m/(\w+)\.(\w+)/) {
         return($1,$2);
-    } 
+    }
     else {
         return($self->owner, $table_name);
+    }
+}
+
+sub _resolve_table_and_column_from_column_name {
+    my($self, $column_name) = @_;
+
+    if ($column_name =~ m/(\w+)\.(\w+)$/) {
+        return ($1, $2);
+    } else {
+        return (undef, $column_name);
     }
 }
 
@@ -1348,6 +1367,79 @@ sub get_unique_index_details_from_data_dictionary {
     Carp::confess("Class $class didn't define its own unique_index_info() method");
 }
 
+
+sub _resolve_table_name_for_class_name {
+    my($self, $class_name) = @_;
+
+    for my $parent_class_name ($class_name, $class_name->inheritance) {
+        my $parent_class = $parent_class_name->__meta__; # UR::Object::Type->get(class_name => $parent_class_name);
+        next unless $parent_class;
+        if (my $table_name = $parent_class->table_name) {
+            return $table_name;
+        }
+    }
+    return;
+}
+
+# For when there's no metaDB info for a class' table, it walks up the
+# ancestry of the class, and uses the ID properties to get the column
+# names, and assummes they must be the table primary keys.
+#
+# From there, it guesses the sequence name
+sub _resolve_sequence_name_from_class_id_properties {
+    my($self, $class_name) = @_;
+
+    my $class_meta = $class_name->__meta__;
+    for my $meta ($class_meta, $class_meta->ancestry_class_metas) {
+        next unless $meta->table_name;
+        my @primary_keys = grep { $_ }  # Only interested in the properties with columns defined
+                           map { $_->column_name }
+                           $meta->direct_id_property_metas;
+        if (@primary_keys > 1) {
+            Carp::croak("Tables with multiple primary keys (i.e. " .
+                $meta->table_name  . ": " .
+                join(',',@primary_keys) .
+                ") cannot have a surrogate key created from a sequence.");
+        }
+        elsif (@primary_keys == 1) {
+            my $sequence = $self->_get_sequence_name_for_table_and_column($meta->table_name, $primary_keys[0]);
+            return $sequence if $sequence;
+        }
+    }
+
+}
+
+
+sub _resolve_sequence_name_for_class_name {
+    my($self, $class_name) = @_;
+
+    my $table_name = $self->_resolve_table_name_for_class_name($class_name);
+
+    unless ($table_name) {
+        Carp::croak("Could not determine a table name for class $class_name");
+    }
+
+    my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
+    my $table_meta = UR::DataSource::RDBMS::Table->get(
+                         table_name => $ds_table,
+                         owner => $ds_owner,
+                         data_source => $self->_my_data_source_id);
+
+    my $sequence;
+    if ($table_meta) {
+        my @primary_keys = $table_meta->primary_key_constraint_column_names;
+        if (@primary_keys == 0) {
+            Carp::croak("No primary keys found for table " . $table_name . "\n");
+        }
+        $sequence = $self->_get_sequence_name_for_table_and_column($table_name, $primary_keys[0]);
+
+    } else {
+        # No metaDB info... try and make a guess based on the class' ID properties
+        $sequence = $self->_resolve_sequence_name_from_class_id_properties($class_name);
+    }
+    return $sequence;
+}
+
 our %sequence_for_class_name;
 sub autogenerate_new_object_id_for_class_name_and_rule {
     # The sequences in the database are named by a naming convention which allows us to connect them to the table
@@ -1364,72 +1456,34 @@ sub autogenerate_new_object_id_for_class_name_and_rule {
 
     my $sequence = $sequence_for_class_name{$class_name} || $class_name->__meta__->id_generator;
     
-    # FIXME Child classes really should use the same sequence generator as its parent
-    # if it doesn't specify its own.
-    # It'll be hard to distinguish the case of a class meta not explicitly mentioning its
-    # sequence name, but there's a sequence generator in the schema for it (the current
-    # mechanism), and when we should defer to the parent's sequence...
-    unless ($sequence) {
-        # This class directly doesn't have a sequence specified.  Search through the inheritance
-        my $table_name;
-        for my $parent_class_name ($class_name, $class_name->inheritance) {
-            # print "checking $parent_class_name (for $class_name)\n";
-            my $parent_class = $parent_class_name->__meta__; # UR::Object::Type->get(class_name => $parent_class_name);
-            # print "object $parent_class\n";
-            next unless $parent_class;
-            #$sequence = $class_meta->id_generator;
-            #last if $sequence;
-            if ($table_name = $parent_class->table_name) {
-                # print "found table $table_name\n";
-                last;
+    my $new_id = eval {
+        # FIXME Child classes really should use the same sequence generator as its parent
+        # if it doesn't specify its own.
+        # It'll be hard to distinguish the case of a class meta not explicitly mentioning its
+        # sequence name, but there's a sequence generator in the schema for it (the current
+        # mechanism), and when we should defer to the parent's sequence...
+        unless ($sequence) {
+            $sequence = $self->_resolve_sequence_name_for_class_name($class_name);
+
+            if (!$sequence) {
+                Carp::croak("No identity generator found for class " . $class_name . "\n");
             }
+
+            $sequence_for_class_name{$class_name} = $sequence;
         }
 
-        unless ($table_name) {
-            Carp::croak("Could not determine a table name for class $class_name");
-        }
+        $self->__signal_observers__('sequence_nextval', $sequence);
 
-        my($ds_owner, $ds_table) = $self->_resolve_owner_and_table_from_table_name($table_name);
-        my $table_meta = UR::DataSource::RDBMS::Table->get(
-                             table_name => $ds_table,
-                             owner => $ds_owner,
-                             data_source => $self->_my_data_source_id);
+        $self->_get_next_value_from_sequence($sequence);
+    };
 
-        my @primary_keys;
-        if ($table_meta) {
-            @primary_keys = $table_meta->primary_key_constraint_column_names;
-            $sequence = $self->_get_sequence_name_for_table_and_column($table_name, $primary_keys[0]);
-        } else {
-            # No metaDB info... try and make a guess based on the class' ID properties
-            my $class_meta = $class_name->__meta__;
-            for my $meta ($class_meta, $class_meta->ancestry_class_metas) {
-                @primary_keys = grep { $_ }  # Only interested in the properties with columns defined
-                                map { $_->column_name }
-                                $meta->direct_id_property_metas;
-                if (@primary_keys > 1) {
-                    Carp::croak("Tables with multiple primary keys (i.e. " .
-                        $table_name  . ": " .
-                        join(',',@primary_keys) .
-                        ") cannot have a surrogate key created from a sequence.");
-                } 
-                elsif (@primary_keys == 1) {
-                    $sequence = $self->_get_sequence_name_for_table_and_column($table_name, $primary_keys[0]);
-                    last if $sequence;
-                }
-            }
-        }
-
-        if (@primary_keys == 0) {
-            Carp::croak("No primary keys found for table " . $table_name . "\n");
-        }
-        if (!$sequence) {
-            Carp::croak("No identity generator found for table " . $table_name . "\n");
-        }
-
-        $sequence_for_class_name{$class_name} = $sequence;
+    unless (defined $new_id) {
+        my $dbh = $self->get_default_handle;
+        $self->__signal_observers__('sequence_nextval_failed', '', $sequence, $dbh->errstr);
+        no warnings 'uninitialized';
+        Carp::croak("Can't get next value for sequence $sequence. Exception: $@.  DBI error: ".$dbh->errstr);
     }
 
-    my $new_id = $self->_get_next_value_from_sequence($sequence);
     return $new_id;
 }
 
@@ -1445,19 +1499,46 @@ sub _get_sequence_name_for_table_and_column {
 }
 
 sub resolve_order_by_clause {
-    my($self,$order_by_columns,$order_by_column_data) = @_;
+    my($self, $query_plan) = @_;
 
-    my @cols = @$order_by_columns;
-    foreach my $col ( @cols) {
-        if ($col =~ m/^(-|\+)(.*)$/) {
-            $col = $2;
-            if ($1 eq '-') {
-                $col = $col . ' DESC';
+    my $order_by_columns = $query_plan->order_by_column_list;
+    return '' unless (@$order_by_columns);
+
+    my $query_class_meta = $query_plan->class_name->__meta__;
+
+    my @order_by_parts = map {
+            my $order_by_property_meta = $query_plan->property_meta_for_column($_);
+            unless ($order_by_property_meta) {
+                Carp::croak("Cannot resolve property metadata for order-by column '$_' of class "
+                            . $query_class_meta->class_name);
             }
+            $self->_resolve_order_by_clause_for_column($_, $query_plan, $order_by_property_meta);
         }
-    }
-    return  'order by ' . join(', ',@cols);
+        @$order_by_columns;
+
+    return  'order by ' . join(', ',@order_by_parts);
 }
+
+sub _resolve_order_by_clause_for_column {
+    my($self, $column_name, $query_plan) = @_;
+
+    return $query_plan->order_by_column_is_descending($column_name)
+            ? $column_name . ' DESC'
+            : $column_name;
+}
+sub do_sql {
+    my $self = shift;
+    my $sql = shift;
+
+    my $dbh = $self->get_default_handle;
+    my $rv = $dbh->do($sql);
+    unless ($rv) {
+        $self->__signal_observers__('do_failed', 'do', $sql, $dbh->errstr);
+        Carp::croak("DBI do() failed: ".$dbh->errstr);
+    }
+    return $rv;
+}
+
 
 sub create_iterator_closure_for_rule {
     my ($self, $rule) = @_; 
@@ -1470,7 +1551,6 @@ sub create_iterator_closure_for_rule {
     #
 
     my $class_name                                  = $query_plan->{class_name};
-    my $class = $class_name;    
 
     my @lob_column_names                            = @{ $query_plan->{lob_column_names} };
     my @lob_column_positions                        = @{ $query_plan->{lob_column_positions} };    
@@ -1488,7 +1568,6 @@ sub create_iterator_closure_for_rule {
     my $where_clause                                = $query_plan->{where_clause};
     my $connect_by_clause                           = $query_plan->{connect_by_clause};
     my $group_by_clause                             = $query_plan->{group_by_clause};
-    my $order_by_columns                            = $query_plan->{order_by_columns} || [];
 
     my $sql_params                                  = $query_plan->{sql_params};
     my $filter_specs                                = $query_plan->{filter_specs};
@@ -1519,10 +1598,7 @@ sub create_iterator_closure_for_rule {
     }
 
     # The full SQL statement for the template, besides the filter logic, is built here.    
-    my $order_by_clause;
-    if (@$order_by_columns) {
-        $order_by_clause = $self->resolve_order_by_clause($order_by_columns,$query_plan->_order_by_property_names);
-    }
+    my $order_by_clause = $self->resolve_order_by_clause($query_plan);
 
     my $sql = "\nselect ";
     if ($select_hint) {
@@ -1543,14 +1619,16 @@ sub create_iterator_closure_for_rule {
     $self->__signal_change__('query',$sql);
 
     my $dbh = $self->get_default_handle;
-    my $sth = $dbh->prepare($sql,$query_config);
+    my $sth = $dbh->prepare($sql,$query_plan->{query_config});
     unless ($sth) {
-        $class->error_message("Failed to prepare SQL $sql\n" . $dbh->errstr . "\n");
-        Carp::confess($class->error_message);
+        $self->__signal_observers__('query_failed', 'prepare', $sql, $dbh->errstr);
+        $self->error_message("Failed to prepare SQL $sql\n" . $dbh->errstr . "\n");
+        Carp::confess($self->error_message);
     }
     unless ($sth->execute(@all_sql_params)) {
-        $class->error_message("Failed to execute SQL $sql\n" . $sth->errstr . "\n" . Data::Dumper::Dumper(\@all_sql_params) . "\n");
-        Carp::confess($class->error_message);
+        $self->__signal_observers__('query_failed', 'execute', $sql, $dbh->errstr);
+        $self->error_message("Failed to execute SQL $sql\n" . $sth->errstr . "\n" . Data::Dumper::Dumper(\@all_sql_params) . "\n");
+        Carp::confess($self->error_message);
     }
 
     die unless $sth;   # FIXME - this has no effect, right?  
@@ -1559,7 +1637,12 @@ sub create_iterator_closure_for_rule {
     my $next_db_row;
     my $pending_db_object_data;
 
-    my $ur_test_filldb = $ENV{'UR_TEST_FILLDB'};
+    my $ur_test_fill_db = $self->alternate_db_dsn
+                            &&
+                            $self->_create_sub_for_copying_to_alternate_db(
+                                    $self->alternate_db_dsn,
+                                    $query_plan->{loading_templates}
+                                );
 
     my $iterator = sub {
         unless ($sth) {
@@ -1582,13 +1665,440 @@ sub create_iterator_closure_for_rule {
         }
 
         # this is used for automated re-testing against a private database
-        $self->_CopyToAlternateDB($class,$dbh,$next_db_row) if $ur_test_filldb;
+        $ur_test_fill_db && $ur_test_fill_db->($next_db_row);
 
         return $next_db_row;
     }; # end of iterator closure
 
     Sub::Name::subname('UR::DataSource::RDBMS::__datasource_iterator(closure)__', $iterator);
     return $iterator;
+}
+
+sub _create_sub_for_copying_to_alternate_db {
+    my($self, $connect_string, $loading_templates) = @_;
+
+    my $ds_type = $self->ur_datasource_class_for_dbi_connect_string($connect_string);
+    my $dbh = $ds_type->_create_dbh_for_alternate_db($connect_string)
+            || do {
+                Carp::carp("Cannot connect to alternate DB for copying: $DBI::errstr");
+                return sub {}
+            };
+
+    my @saving_templates = $self->_resolve_loading_templates_for_alternate_db($loading_templates);
+
+    foreach my $tmpl ( @saving_templates ) {
+        my $class_meta = $tmpl->{data_class_name}->__meta__;
+        $ds_type->mk_table_for_class_meta($class_meta, $dbh);
+    }
+
+    my @inserter_for_each_table = map { $self->_make_insert_closures_for_loading_template_for_alternate_db($_, $dbh) }
+                                    @saving_templates;
+
+    # Iterate through all the inserters, prerequisites first, for each row
+    # returned from the database.  Each inserter may return false, which means
+    # it did not save anything to the alternate DB, for example if it
+    # is asked to save an object with a dummy ID (< 0).  In that case, no
+    # subsequent inserters will be processed for that row
+    return Sub::Name::subname '__altdb_inserter' => sub {
+        foreach my $inserter ( @inserter_for_each_table ) {
+            last unless &$inserter;
+        }
+    };
+}
+
+sub _make_insert_closures_for_loading_template_for_alternate_db {
+    my($self, $template, $dbh) = @_;
+
+    my %seen_ids;  # don't insert the same object more than once
+
+    my $class_name = $template->{data_class_name};
+    my $class_meta = $class_name->__meta__;
+    my $table_name = $class_meta->table_name;
+    my $columns_string = join(', ',
+                            map { $class_meta->column_for_property($_) }
+                            @{ $template->{property_names} } );
+    my $insert_sql = "insert into $table_name ($columns_string) values ("
+                . join(',',
+                    map { '?' } @{ $template->{property_names} } )
+                . ')';
+
+    my $insert_sth = $dbh->prepare($insert_sql)
+        || Carp::croak("Prepare for insert on alternate DB table $table_name failed: ".$dbh->errstr);
+
+    my $check_id_exists_sql = "select count(*) from $table_name where "
+                        . join(' and ',
+                                map { "$_ = ?" }
+                                map { $class_meta->column_for_property($_) }
+                                @{ $template->{id_property_names} });
+    my $check_id_exists_sth = $dbh->prepare($check_id_exists_sql)
+        || Carp::croak("Prepare for check ID select on alternate DB table $table_name failed: ".$dbh->errstr);
+    my @id_column_positions = @{$template->{id_column_positions}};
+
+    my @column_positions = @{$template->{column_positions}};
+
+    my $id_resolver = $template->{id_resolver};
+    my $check_id_is_not_null = _create_sub_to_check_if_id_is_not_null(@id_column_positions);
+
+    my @prerequisites = $self->_make_insert_closures_for_prerequisite_tables($class_meta, $template);
+
+    my $object_num = $template->{object_num};
+    my $inserter = Sub::Name::subname "__altdb_inserter_obj${object_num}_${class_name}" => sub {
+        my($next_db_row) = @_;
+
+        my $id = $id_resolver->(@$next_db_row[@id_column_positions]);
+
+        return if _object_was_saved_to_database_by_this_process($class_name, $id);
+
+        if ($check_id_is_not_null->($next_db_row) and ! $seen_ids{$id}++) {
+            $check_id_exists_sth->execute( @$next_db_row[@id_column_positions]);
+            my($count) = @{ $check_id_exists_sth->fetchrow_arrayref() };
+            unless ($count) {
+                my @column_values = @$next_db_row[@column_positions];
+                $insert_sth->execute(@column_values)
+                    || Carp::croak("Inserting to alternate DB for $class_name failed");
+            }
+        }
+        return 1;
+    };
+
+    return (@prerequisites, $inserter);
+}
+
+
+
+# not a method
+sub _create_sub_to_check_if_id_is_not_null {
+    my(@id_columns) = @_;
+
+    return sub {
+        my $next_db_row = $_[0];
+        foreach my $col ( @id_columns ) {
+            return 1 if defined $next_db_row->[$col];
+        }
+        return 0;
+    };
+}
+
+my %cached_fk_data_for_table;
+sub _make_insert_closures_for_prerequisite_tables {
+    my($self, $class_meta, $loading_template) = @_;
+
+    $cached_fk_data_for_table{$class_meta->table_name} ||= $self->_load_fk_data_for_class_meta($class_meta);
+
+    my %column_idx_for_column_name;
+    for (my $i = 0; $i < @{ $loading_template->{property_names} }; $i++) {
+        my $column_name = $class_meta->column_for_property( $loading_template->{property_names}->[$i] );
+        $column_idx_for_column_name{ $column_name }
+            = $loading_template->{column_positions}->[$i];
+    }
+
+    my $class_name = $class_meta->class_name;
+
+    return map { $self->_make_prerequisite_insert_closure_for_fk($class_name, \%column_idx_for_column_name, $_) }
+            @{ $cached_fk_data_for_table{ $class_meta->table_name } };
+}
+
+
+sub _load_fk_data_for_class_meta {
+    my($self, $class_meta) = @_;
+
+    my ($db_owner, $table_name_without_owner) = $self->_resolve_owner_and_table_from_table_name($class_meta->table_name);
+
+    my @fk_data;
+    my $fk_sth = $self->get_foreign_key_details_from_data_dictionary('','','','', $db_owner, $table_name_without_owner);
+    my %seen_fk_names;
+    while( $fk_sth and my $row = $fk_sth->fetchrow_hashref ) {
+
+        foreach my $key (qw(UK_TABLE_CAT UK_TABLE_SCHEM UK_TABLE_NAME UK_COLUMN_NAME FK_TABLE_CAT FK_TABLE_SCHEM FK_TABLE_NAME FK_COLUMN_NAME)) {
+            no warnings 'uninitialized';
+            $row->{$key} =~ s/"|'//g;  # Postgres puts quotes around entities that look like keywords
+        }
+        if (!@fk_data or $row->{ORDINAL_POSITION} == 1
+            or ( $row->{FK_NAME} and !$seen_fk_names{ $row->{FK_NAME} }++)
+        ) {
+            # part of a new FK
+            push @fk_data, [];
+        }
+
+        push @{ $fk_data[-1] }, { %$row };
+    }
+    return \@fk_data;
+}
+
+# return true if this list of FK columns exists for inheritance:
+# this table's FKs matches the given class' ID properties, and the FK points
+# to every ID property of the parent class
+sub _fk_represents_inheritance {
+    my($load_class_name, $fk_column_list) = @_;
+
+    my $load_class_meta = $load_class_name->__meta__;
+
+    my %is_pk_column_for_class = map { $_ => 1 }
+                                 grep { $_ }
+                                 map { $load_class_meta->column_for_property($_) }
+                                 $load_class_name->__meta__->id_property_names;
+
+    if (scalar(@$fk_column_list) != scalar(values %is_pk_column_for_class)) {
+        # differing number of columns vs ID properties
+        return '';
+    }
+
+    foreach my $fk ( @$fk_column_list ) {
+        return '' unless $is_pk_column_for_class{ $fk->{FK_COLUMN_NAME} };
+    }
+
+    my %checked;
+    foreach my $parent_class_name ( $load_class_meta->inheritance ) {
+        next if ($checked{$parent_class_name}++);
+
+        my $parent_class_meta = eval { $parent_class_name->__meta__ };
+        next unless $parent_class_meta;  # for non-ur classes
+        my @pk_columns_for_parent = grep { $_ }
+                                    map { $parent_class_meta->column_for_property($_) }
+                                    $parent_class_meta->id_property_names;
+        next if (scalar(@$fk_column_list) != scalar(@pk_columns_for_parent));
+
+        foreach my $parent_pk_column ( @pk_columns_for_parent ) {
+            return '' unless $is_pk_column_for_class{ $parent_pk_column };
+        }
+    }
+
+    return 1;
+}
+
+sub _make_prerequisite_insert_closure_for_fk {
+    my($self, $load_class_name, $column_idx_for_column_name, $fk_column_list) = @_;
+
+    my $pk_class_name = $self->_lookup_fk_target_class_name($fk_column_list);
+
+    # fks for inheritance are handled inside _resolve_loading_templates_for_alternate_db
+    return () if _fk_represents_inheritance($load_class_name, $fk_column_list);
+
+    my $pk_class_meta = $pk_class_name->__meta__;
+
+    my %pk_to_fk_column_name_map = map { @$_{'UK_COLUMN_NAME','FK_COLUMN_NAME'} }
+                                   @$fk_column_list;
+    my @fk_columns = map { $column_idx_for_column_name->{$_} }
+                     map { $pk_to_fk_column_name_map{$_} }
+                     $pk_class_meta->id_property_names;
+
+    if (grep { !defined } @fk_columns
+        or
+        !@fk_columns
+    ) {
+        Carp::croak(sprintf(q(Couldn't determine column order for inserting prerequisites of %s with foreign key "%s" refering to table %s with columns (%s)),
+            $load_class_name,
+            $fk_column_list->[0]->{FK_NAME},
+            $fk_column_list->[0]->{UK_TABLE_NAME},
+            join(', ', map { $_->{UK_COLUMN_NAME} } @$fk_column_list)
+        ));
+    }
+
+    my $id_resolver = $pk_class_meta->get_composite_id_resolver();
+    my $check_id_is_not_null = _create_sub_to_check_if_id_is_not_null(@fk_columns);
+
+    return Sub::Name::subname "__altdb_prereq_inserter_${pk_class_name}" => sub {
+        my($next_db_row) = @_;
+        if ($check_id_is_not_null->($next_db_row)) {
+            my $id = $id_resolver->(@$next_db_row[@fk_columns]);
+
+            return if _object_was_saved_to_database_by_this_process($pk_class_name, $id);
+
+            # here we _do_ want to recurse back in.  That way if these prerequisites
+            # have prerequisites of their own, they'll be loaded in the recursive call.
+            $pk_class_name->get($id);
+        }
+        return 1;
+    }
+}
+
+# not a method
+sub _object_was_saved_to_database_by_this_process {
+    my($class_name, $id) = @_;
+
+    # Fast common case
+    return 1 if exists ($objects_in_database_saved_by_this_process{$class_name})
+                &&
+                exists($objects_in_database_saved_by_this_process{$class_name}->{$id});
+
+    foreach my $saved_class ( keys %objects_in_database_saved_by_this_process ) {
+        next unless ($class_name->isa($saved_class) || $saved_class->isa($class_name));
+        return 1 if exists($objects_in_database_saved_by_this_process{$saved_class}->{$id});
+    }
+    return;
+}
+
+# given a UR::DataSource::RDBMS::FkConstraint, find the table this fk refers to
+# (the table with the pk_columns), then find which class goes with that table.
+sub _lookup_fk_target_class_name {
+    my($self, $fk_column_list) = @_;
+
+    my $pk_owner = $fk_column_list->[0]->{UK_TABLE_SCHEM};
+    my $pk_table_name = $fk_column_list->[0]->{UK_TABLE_NAME};
+    my $pk_table_name_with_owner = $pk_owner ? join('.', $pk_owner, $pk_table_name) : $pk_table_name;
+    my $pk_class_name = $self->_lookup_class_for_table_name( $pk_table_name_with_owner )
+                        || $self->_lookup_class_for_table_name( $pk_table_name );
+
+    unless ($pk_class_name) {
+        # didn't find it.  Maybe the target class isn't loaded yet
+        # try looking up the class on the other side of the FK
+        # and determine which property matches this FK
+
+        my $fk_owner = $fk_column_list->[0]->{FK_TABLE_SCHEM};
+        my $fk_table_name = $fk_column_list->[0]->{FK_TABLE_NAME};
+        my $fk_table_name_with_owner = $fk_owner ? join('.', $fk_owner, $fk_table_name) : $fk_table_name;
+
+        my $fk_class_name = $self->_lookup_class_for_table_name( $fk_table_name_with_owner )
+                            || $self->_lookup_class_for_table_name( $fk_table_name );
+        if ($fk_class_name) {
+            # get all the relation property target classes loaded
+            my @relation_property_metas = grep { $_->id_by and $_->data_type  }
+                                          $fk_class_name->__meta__->properties();
+            foreach my $prop_meta ( @relation_property_metas ) {
+                eval { $prop_meta->data_type->__meta__ };
+            }
+
+            # try looking up again
+            $pk_class_name = $self->_lookup_class_for_table_name( $pk_table_name_with_owner )
+                             || $self->_lookup_class_for_table_name( $pk_table_name );
+        }
+    }
+    unless ($pk_class_name) {
+        Carp::croak(
+            sprintf(q(Couldn't determine class with table %s involved in foreign key "%s" from table %s with columns (%s)),
+                        $pk_table_name,
+                        $fk_column_list->[0]->{FK_NAME},
+                        $fk_column_list->[0]->{FK_TABLE_NAME},
+                        join(', ', map { $_->{FK_COLUMN_NAME} } @$fk_column_list),
+                    ));
+    }
+    return $pk_class_name;
+}
+
+# Given a query plan's loading templates, return a new list of look-alike
+# loading templates.  This new list may look different from the original
+# list in the case of table inheritance: it separates out each class' table
+# and the columns that goes with it.
+sub _resolve_loading_templates_for_alternate_db {
+    my($self, $original_loading_templates) = @_;
+
+    my @loading_templates;
+    foreach my $loading_template ( @$original_loading_templates ) {
+        my $load_class_name = $loading_template->{data_class_name};
+
+        my %column_for_property_name;
+        for (my $i = 0; $i < @{ $loading_template->{property_names} }; $i++) {
+            $column_for_property_name{ $loading_template->{property_names}->[$i] }
+                = $loading_template->{column_positions}->[$i];
+        }
+
+        my @involved_class_metas = reverse
+                                    grep { $_->table_name }
+                                    $load_class_name->__meta__->all_class_metas;
+        foreach my $class_meta ( @involved_class_metas ) {
+            my @id_property_names = map { $_->property_name }
+                                    grep { $_->column_name }
+                                    $class_meta->direct_id_property_metas;
+            my @id_column_positions = map { $column_for_property_name{$_} } @id_property_names;
+            my @property_names = map { $_->property_name }
+                                 grep { $_->column_name }
+                                 $class_meta->direct_property_metas;
+            my @column_positions = map { $column_for_property_name{$_} } @property_names;
+            my $this_template = {
+                    id_property_names   => \@id_property_names,
+                    id_column_positions => \@id_column_positions,
+                    property_names      => \@property_names,
+                    column_positions    => \@column_positions,
+                    table_alias         => $class_meta->table_name,
+                    data_class_name     => $class_meta->class_name,
+                    final_class_name    => $loading_template->{final_class_name},
+                    object_num          => $loading_template->{object_num},
+                    id_resolver         => $class_meta->get_composite_id_resolver,
+                };
+            push @loading_templates, $this_template
+        }
+    }
+    return @loading_templates;
+}
+
+sub _create_dbh_for_alternate_db {
+    my($self, $connect_string) = @_;
+
+    # Support an extension of the connect string to allow user and password.
+    # URI::DB supports these kinds of things, too.
+    $connect_string =~ s/user=(\w+);?//;
+    my $user = $1;
+    $connect_string =~ s/password=(\w+);?//;
+    my $password = $1;
+
+    # Don't use $self->default_handle_class here
+    # Generally, it'll be UR::DBI, which respects the setting for UR_DBI_NO_COMMIT.
+    # Tests are usually run with no-commit on, and we still want to fill the
+    # test db in that case
+    my $handle_class = 'DBI';
+    $handle_class->connect($connect_string, $user || '', $password || '', { AutoCommit => 1, PrintWarn => 0 });
+}
+
+# Create the table behind this class in the specified database.
+# used by the functionality behind the UR_TEST_FILLDB env var
+sub mk_table_for_class_meta {
+    my($self, $class_meta, $dbh) = @_;
+    return 1 unless $class_meta->has_table;
+
+    $dbh ||= $self->get_default_handle;
+
+    my $table_name = $class_meta->table_name();
+    $self->_assure_schema_exists_for_table($table_name, $dbh);
+
+    # we only care about properties backed up by a real column
+    my @props = grep { $_->column_name } $class_meta->direct_property_metas();
+
+    my $sql = "create table IF NOT EXISTS $table_name (";
+
+    my @cols;
+    foreach my $prop ( @props ) {
+        my $col = $prop->column_name;
+        my $type = $self->data_source_type_for_ur_data_type($prop->data_type);
+        my $len = $prop->data_length;
+        my $nullable = $prop->is_optional;
+
+        my $string = "$col" . " " . $type;
+        $string .= " NOT NULL" unless $nullable;
+        push @cols, $string;
+    }
+    $sql .= join(',',@cols);
+
+    my @id_cols = $class_meta->direct_id_column_names();
+    $sql .= ", PRIMARY KEY (" . join(',',@id_cols) . ")" if (@id_cols);
+
+    # Should we also check for the unique properties?
+
+    $sql .= ")";
+    unless ($dbh->do($sql) ) {
+        $self->error_message("Can't create table $table_name: ".$DBI::errstr."\nSQL: $sql");
+        return undef;
+    }
+
+    1;
+}
+
+sub _assure_schema_exists_for_table {
+    my($self, $table_name, $dbh) = @_;
+
+    $dbh ||= $self->get_default_handle;
+
+    my($schema_name, undef) = $self->_extract_schema_and_table_name($table_name);
+    if ($schema_name) {
+        $dbh->do("CREATE SCHEMA IF NOT EXISTS $schema_name")
+            || Carp::croak("Could not create schema $schema_name: ".$dbh->errstr);
+    }
+}
+
+sub _extract_schema_and_table_name {
+    my($self, $string) = @_;
+
+    my($schema_name, $table_name) = $string =~ m/(.*)\.(\w+)$/;
+    return ($schema_name, $table_name);
 }
 
 sub _default_sql_like_escape_string {
@@ -1601,132 +2111,36 @@ sub _format_sql_like_escape_string {
     return "'$escape'";
 }
 
-# This allows the size of an autogenerated IN-clause to be adjusted.
-# The limit for Oracle is 1000, and a bug requires that, in some cases
-# we drop to 250.
-my $in_clause_size_limit = 250;        
-
 # This method is used when generating SQL for a rule template, in the joins
 # and also on a per-query basis to turn specific values into a where clause
 sub _extend_sql_for_column_operator_and_value {
-    my ($self, $expr_sql, $op, $val, $escape) = @_;
+    my($self, $expr_sql, $op, $val, $escape) = @_;
 
-    $op ||= '';
-    if ($op eq 'in' and not ref($val) eq 'ARRAY') {
-        ##$DB::single = 1;
-        $val = [];
-    }    
+    my $class = $self->_sql_generation_class_for_operator($op);
 
-    my $sql; 
-    my @sql_params;
+    $escape ||= $self->_default_sql_like_escape_string;
+    $escape = $self->_format_sql_like_escape_string($escape);
+    return $class->generate_sql_for($expr_sql, $val, $escape);
+}
 
-    if ($op eq '' or $op eq '=' or $op eq 'eq') {
-        $sql .= $expr_sql;
-        if ($self->_value_is_null($val))
-        {
-            $sql = "$expr_sql is NULL";
-        }
-        else
-        {
-            $sql = "$expr_sql = ?";
-            push @sql_params, $val;
-        }        
+sub _sql_generation_class_for_operator {
+    my($self, $op) = @_;
+    my $suffix = UR::Util::class_suffix_for_operator($op);
+    my @classes = $self->inheritance;
+    foreach my $class ( @classes ) {
+        my $op_class_name = join('::', $class, 'Operator', $suffix);
+
+        return $op_class_name if UR::Util::use_package_optimistically($op_class_name);
     }
-    elsif ($op =~ m/^between( \[\])?/i) {
-        $sql .= "$expr_sql between ? and ?";
-        push @sql_params, @$val;
-    }
-    elsif ($op =~ /\[\]/ or $op =~ /in/i) {
-        no warnings 'uninitialized';
-        my $not = $op =~ m/not/i;
-
-        unless (@$val)
-        {
-            # an empty list was passed-in.
-            # since "in ()", like "where 1=0", is self-contradictory,
-            # there is no data to return, and no SQL required
-            $self->warning_message(Carp::shortmess("Null in-clause passed to default_load_sql"));
-            return;
-        }
-
-        my @list = sort @$val;
-        my $has_null = ( (grep { length($_) == 0 } @list) ? 1 : 0);
-        my $wrap = ($has_null or @$val > $in_clause_size_limit ? 1 : 0);
-        my $cnt = 0;
-        $sql .= "\n(\n   " if $wrap;
-        my $dbh = $self->get_default_handle;
-        while (my @set = splice(@list,0,$in_clause_size_limit))
-        {
-            $sql .= "\n   or " if $cnt++;
-            $sql .= $expr_sql;
-            $sql .= ' not ' if $not;
-            $sql .= " in (" . join(",",map { $dbh->quote($_) } @set) . ")";
-        }
-        if ($has_null) {
-            $sql .= "\n  or $expr_sql is ";
-            $sql .= 'not' if ($not);
-            $sql .= ' null';
-        }
-        $sql .= "\n)\n" if $wrap;
-    }       
-    elsif($op =~ /^(like|not like|in|not in|\<\>|\<|\>|\=|\<\=|\>\=)$/i ) {
-        # SQL operator.  Use this directly.
-        $sql .= "$expr_sql $op ?";
-        push @sql_params, $val;        
-        if($op =~ /like/i and my $default_escape = $self->_default_sql_like_escape_string) {
-            $escape ||= $default_escape;
-            $escape = $self->_format_sql_like_escape_string($escape);
-            $sql .= " escape $escape";
-        }
-    } elsif($op =~ /^(ne|\!\=)$/i) {                
-        # Perlish inequality.  Special SQL to handle this.
-        if (not defined($val)) {
-            # ne undef =~ is not null
-            $sql .= "$expr_sql is not null";
-            pop @sql_params;
-        }
-        elsif ($op =~ /^(ne|\!\=)$/i) {
-            # ne $v =~ should match everything but $v, including nulls
-            # != is the same, and will rely on is_loaded to 
-            # filter out any cases where "hello" != "goodbye" returns
-            # but Perl wants to exclude the value because they match numerically.
-            $sql .= "( $expr_sql != ?" 
-            .  " or $expr_sql is null)";                                                     
-            push @sql_params, $val;
-        }                                
-    } elsif ($op eq 'true' ) {
-        $sql .= "( $expr_sql is not null and $expr_sql != 0 )";
-    } elsif ($op eq 'false' ) {
-        $sql .= "( $expr_sql is null or $expr_sql = 0)";
-
-    } else {
-        # Something else?
-        die "Unknown operator $op!";
-    }
-
-    if (@sql_params > 256) {
-        Carp::confess("A bug in Oracle causes queries using > 256 placeholders to return incorrect results.");
-    }
-
-    return ($sql, @sql_params)
+    Carp::croak("Can't load SQL generation class for operator $op: $@");
 }
 
 sub _value_is_null {
-    # this is a separate method since some databases, like Oracle, treat empty strings as null values
-    my ($self, $value) = @_;
+    my ($class, $value) = @_;
     return 1 if not defined $value;
-    return if not ref($value);
-    if (ref($value) eq 'HASH') {
-        if ($value->{operator} eq '=' or $value->{operator} eq 'eq') {
-            if (not defined $value->{value}) {
-                return 1;
-            }
-            else {
-                return;
-            }
-        }
-    }
-    return;
+    return 1 if $value eq '';
+    return 1 if (ref($value) eq 'HASH' and $value->{operator} eq '=' and (!defied($value->{value}) or $value->{value} eq ''));
+    return 0;
 }
 
 sub _resolve_ids_from_class_name_and_sql {
@@ -1805,6 +2219,10 @@ sub _sync_database {
         my $class_name = ref($obj);
         $objects_by_class_name{$class_name} ||= [];
         push @{ $objects_by_class_name{$class_name} }, $obj;
+
+        if ($self->alternate_db_dsn) {
+            $objects_in_database_saved_by_this_process{$class_name}->{$obj->id} = 1;
+        }
     }
 
     my $dbh = $self->get_default_handle;
@@ -2221,12 +2639,13 @@ sub _sync_database {
             my $class_name = $cmd->{class};
 
             # get the db handle to use for this class
-            my $dbh = $cmd->{'dbh'};   #$class_name->dbh;
+            my $dbh = $cmd->{dbh};
             my $sth = $dbh->prepare($sql);
             $sth{$sql} = $sth;
 
-            if ($dbh->errstr)
+            unless ($sth)
             {
+                $self->__signal_observers__('commit_failed', 'prepare', $sql, $dbh->errstr);
                 $self->error_message("Error preparing SQL:\n$sql\n" . $dbh->errstr . "\n");
                 return;
             }
@@ -2278,6 +2697,17 @@ sub _sync_database {
         }
     }
 
+    # DBI docs say that if AutoCommit is on, then starting a transaction will temporarily
+    # turn it off.  When the handle gets commit() or rollback(), it will get turned back
+    # on automatically by DBI
+    if ($dbh->{AutoCommit}
+        and
+        ! eval { $dbh->begin_work; 1 }
+    ) {
+        Carp::croak(sprintf('Cannot begin transaction on data source %s: %s',
+                            $self->id, $dbh->errstr));
+    }
+
     # Set a savepoint if possible.
     my $savepoint;
     if ($self->can_savepoint) {
@@ -2298,10 +2728,6 @@ sub _sync_database {
             return;
         }
         $self->_last_savepoint($savepoint);
-    }
-    else {
-        # FIXME SQLite dosen't support savepoints, but autocommit is already off so this dies?!
-        #$dbh->begin_work;
     }
 
     # Do any explicit table locking necessary.
@@ -2330,26 +2756,6 @@ sub _sync_database {
             }
             if ($failed_attempts > 1) {
                 my $err = join("\n",@err);
-                #$UR::Context::current->send_email(
-                #    To => 'example@example.edu',
-                #    From => UR::Context::Process->prog_name . ' <example@example.edu>',
-                #    Subject => (
-                #            $failed_attempts >= $max_failed_attempts
-                #            ? "sync_database lock failure after $failed_attempts attempts"
-                #            : "sync_database lock success after $failed_attempts attempts"
-                #        )
-                #        . " in " . UR::Context::Process->prog_name
-                #        . " on $table_name",
-                #    Message => qq/
-                #        $failed_attempts attempts to lock table $table_name
-                #
-                #        Errors:
-                #        $err
-                #
-                #        The complete table lock list for this sync:
-                #        @tables_requiring_lock
-                #    /
-                #);
                 if ($failed_attempts >= $max_failed_attempts) {
                     $self->error_message(
                         "Could not obtain an exclusive table lock on table "
@@ -2377,8 +2783,9 @@ sub _sync_database {
         for my $cmd (@explicit_commands_in_order) {
             unless ($sth{$cmd->{sql}}->execute(@{$cmd->{params}}))
             {
-                #my $dbh = $cmd->{class}->dbh;
+                my $dbh = $cmd->{dbh};
                 # my $dbh = UR::Context->resolve_data_source_for_object($cmd->{class})->get_default_handle;
+                $self->__signal_observers__('commit_failed', 'execute', $cmd->{sql}, $dbh->errstr);
                 push @failures, {cmd => $cmd, error_message => $sth{$cmd->{sql}}->errstr};
                 last if $skip_fault_tolerance_check;
             }
@@ -2617,7 +3024,14 @@ sub _lookup_class_for_table_name {
     my $self = shift;
     my $table_name = shift;
 
-    my @table_class_obj = grep { $_->class_name !~ /::Ghost$/ } UR::Object::Type->is_loaded(table_name => $table_name);
+    my @table_class_obj = grep { $_->class_name !~ /::Ghost$/ } UR::Object::Type->is_loaded(data_source_id => $self->id, table_name => $table_name);
+
+    # Like _get_table_object, we need to look in the data source and if the
+    # object wasn't found then in 'UR::DataSource::Meta' in order to mimic
+    # behavior elsewhere.
+    unless (@table_class_obj) {
+        @table_class_obj = grep { $_->class_name !~ /::Ghost$/ } UR::Object::Type->is_loaded(data_source_id => 'UR::DataSource::Meta', table_name => $table_name);
+    }
     my $table_class;
     my $table_class_obj;
     if (@table_class_obj == 1) {
@@ -2970,7 +3384,7 @@ sub _do_on_default_dbh {
     my $self = shift;
     my $method = shift;
 
-    return 1 unless $self->has_default_dbh();
+    return 1 unless $self->has_default_handle();
 
     my $dbh = $self->get_default_handle;
     unless ($dbh->$method(@_)) {
@@ -2983,11 +3397,27 @@ sub _do_on_default_dbh {
 
 sub commit {
     my $self = shift;
+    if ($self->has_default_handle) {
+        if (my $dbh = $self->get_default_handle) {
+            if ($dbh->{AutoCommit} ) {
+                $self->debug_message('Ignoring ineffective commit because AutoCommit is on');
+                return 1;
+            }
+        }
+    }
     $self->_do_on_default_dbh('commit', @_);
 }
 
 sub rollback {
     my $self = shift;
+    if ($self->has_default_handle) {
+        if (my $dbh = $self->get_default_handle) {
+            if ($dbh->{AutoCommit} ) {
+                $self->debug_message('Ignoring ineffective rollback because AutoCommit is on');
+                return 1;
+            }
+        }
+    }
     $self->_do_on_default_dbh('rollback', @_);
 }
 
@@ -2997,6 +3427,7 @@ sub disconnect {
         $self = $self->_singleton_object;
     }
     my $rv = $self->_do_on_default_dbh('disconnect', @_);
+    $self->__invalidate_get_default_handle__;
     $self->is_connected(0);
     return $rv;
 }
@@ -3210,14 +3641,48 @@ my %ur_data_type_for_vendor_data_type = (
     'TIME'             => ['DateTime', undef],
 );
 
+sub normalize_vendor_type {
+    my ($class, $type) = @_;
+    $type = uc($type);
+    $type =~ s/\(\d+\)$//;
+    return $type;
+}
+
 sub ur_data_type_for_data_source_data_type {
     my($class,$type) = @_;
 
-    my $urtype = $ur_data_type_for_vendor_data_type{uc($type)};
+    $type = $class->normalize_vendor_type($type);
+    my $urtype = $ur_data_type_for_vendor_data_type{$type};
     unless (defined $urtype) {
         $urtype = $class->SUPER::ur_data_type_for_data_source_data_type($type);
     }
     return $urtype;
+}
+
+
+sub _vendor_data_type_for_ur_data_type {
+    return ( TEXT        => 'VARCHAR',
+             STRING      => 'VARCHAR',
+             INTEGER     => 'INTEGER',
+             DECIMAL     => 'INTEGER',
+             NUMBER      => 'FLOAT',
+             BOOLEAN     => 'INTEGER',
+             DATETIME    => 'DATETIME',
+             TIMESTAMP   => 'TIMESTAMP',
+             __default__ => 'VARCHAR',
+         );
+}
+
+sub data_source_type_for_ur_data_type {
+    my($class, $type) = @_;
+
+    if ($type and $type->isa('UR::Value')) {
+        ($type) =~ m/UR::Value::(\w+)/;
+    }
+    my %types = $class->_vendor_data_type_for_ur_data_type();
+    return $type && $types{uc($type)}
+            ? $types{uc($type)}
+            : $types{__default__};
 }
 
 
@@ -3229,8 +3694,10 @@ sub ur_data_type_for_data_source_data_type {
 #
 # SQLite basically treats everything as strings, so needs no conversion.
 # other DBs will have their own conversions
+#
+# $sql_clause will be one of "join", "where"
 sub cast_for_data_conversion {
-    my($class, $prop_meta1, $prop_meta2) = @_;
+    my($class, $left_type, $right_type, $operator, $sql_clause) = @_;
 
     return ('%s', '%s');
 }
@@ -3246,13 +3713,21 @@ sub do_after_fork_in_child {
     }
 
     # reset our state back to being "disconnected"
-    $self->_default_dbh(undef);
+    $self->__invalidate_get_default_handle__;
     $self->_all_dbh_hashref({});
     $self->is_connected(0);
 
     # now force a reconnect
     $self->get_default_handle();
     return 1;
+}
+
+sub parse_view_and_alias_from_inline_view {
+    my($self, $sql) = @_;
+
+    return ($sql and $sql =~ m/^(.*?)(?:\s+as)?\s+(\w+)\s*$/s)
+        ? ($1, $2)
+        : ();
 }
 
 1;

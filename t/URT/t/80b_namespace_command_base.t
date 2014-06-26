@@ -5,7 +5,7 @@ use File::Basename;
 use lib File::Basename::dirname(__FILE__)."/../../../lib";
 use lib File::Basename::dirname(__FILE__)."/../..";
 use URT;
-use Test::More tests => 17;
+use Test::More tests => 25;
 use Cwd;
 use File::Temp;
 
@@ -77,7 +77,7 @@ is($cmd->namespace_path, $expected_namespace_path, 'namespace_path is correct');
 is($cmd->command_name, 'u-r-t test-base', 'command_name is correct');
 
 # This needs to be updated if we ever drop in a new module under URT/
-my @expected_modules = sort qw(URT/34Baseclass.pm URT/38Primary.pm URT/43Primary.pm URT/ObjWithHash.pm URT/Thingy.pm
+my @expected_modules = sort qw(URT/34Baseclass.pm URT/38Primary.pm URT/43Primary.pm URT/FakeDBI.pm URT/ObjWithHash.pm URT/Thingy.pm
                                URT/34Subclass.pm URT/38Related.pm URT/43Related.pm URT/RAMThingy.pm URT/Vocabulary.pm
                                URT/Context/Testing.pm URT/DataSource/CircFk.pm URT/DataSource/Meta.pm
                                URT/DataSource/SomeFile.pm URT/DataSource/SomeFileMux.pm URT/DataSource/SomeMySQL.pm
@@ -87,7 +87,7 @@ my @modules = sort $cmd->_modules_in_tree();
 @modules = grep { $_ !~ m/Car.pm|Person.pm|Employee.pm/ } @modules; 
 is_deeply(\@modules, \@expected_modules, '_modules_in_tree with no args is correct');
 
-my @expected_class_names = sort qw(URT::34Baseclass URT::38Primary URT::43Primary URT::ObjWithHash URT::Thingy
+my @expected_class_names = sort qw(URT::34Baseclass URT::38Primary URT::43Primary URT::FakeDBI URT::ObjWithHash URT::Thingy
                                    URT::34Subclass URT::38Related URT::43Related URT::RAMThingy URT::Vocabulary
                                    URT::Context::Testing URT::DataSource::CircFk URT::DataSource::Meta
                                    URT::DataSource::SomeFile URT::DataSource::SomeFileMux URT::DataSource::SomeMySQL
@@ -103,3 +103,24 @@ is_deeply(\@class_names, \@expected_class_names, '_class_names_in_tree with no a
 @expected_modules = sort qw( URT/34Baseclass.pm URT/DataSource/Meta.pm URT/34Baseclass.pm URT/DataSource/SomeOracle.pm );
 is_deeply(\@modules, \@expected_modules, '_modules_in_tree with args is correct');
 
+eval {
+    my @tests = (
+        [q(Foo::Bar) , 1],
+        [q(Foo'Bar)  , 1],
+        [q(Foo_Bar)  , 1],
+        [q(FooBar)   , 1],
+        [q(Foo0::Bar), 1],
+        [q(Foo::0Bar), 1],
+        [q(Foo.d)    , ''],
+        [q(0Foo::Bar), ''],
+    );
+    for my $test (@tests) {
+        my ($class_name, $is_valid) = @$test;
+        my $msg = $is_valid
+                    ? "valid: $class_name"
+                    : "invalid: $class_name";
+        is(UR::Util::is_valid_class_name($class_name),
+            $is_valid,
+            $msg);
+    }
+};

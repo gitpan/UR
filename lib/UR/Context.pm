@@ -6,7 +6,7 @@ use Sub::Name;
 use Scalar::Util;
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 use UR::Context::ImportIterator;
 use UR::Context::ObjectFabricator;
@@ -2056,7 +2056,6 @@ sub _cache_is_complete_for_class_and_normalized_rule {
         }
         else {
             # scalar id
-
             # Check for objects already loaded.
             no warnings;
             if (exists $all_objects_loaded->{$class}->{$id}) {
@@ -2065,9 +2064,11 @@ sub _cache_is_complete_for_class_and_normalized_rule {
                     grep { $_ }
                     $all_objects_loaded->{$class}->{$id};
             }
-            else {
+            elsif (not $class->isa("UR::Value")) {
                 # we already checked the immediate class,
                 # so just check derived classes
+                # this is not done for values because an identity can exist 
+                # with independent objects with values, unlike entities
                 @objects =
                     grep { $_ }
                     map { $all_objects_loaded->{$_}->{$id} }
@@ -2484,6 +2485,10 @@ sub _loading_was_done_before_with_a_superset_of_this_rule {
         return 1;
     }
 
+    if ($template->subject_class_name->isa("UR::Value")) {
+        return;
+    }
+
     my @rule_values = $rule->values;
     my @rule_param_names = $template->_property_names;
     my %rule_values;
@@ -2559,9 +2564,13 @@ sub commit {
     $self->__signal_change__('precommit');
 
     unless ($self->_sync_databases) {
+        $self->__signal_observers__('sync_databases', 0);
         $self->__signal_change__('commit',0);
         return;
     }
+
+    $self->__signal_observers__('sync_databases', 1);
+
     unless ($self->_commit_databases) {
         $self->__signal_change__('commit',0);
         die "Application failure during commit!";
@@ -2808,7 +2817,8 @@ sub display_invalid_data_for_save {
 
     for my $obj (@objects_with_errors) {
         no warnings;
-        my $msg = $obj->class . " identified by " . $obj->__display_name__ . " has problems on\n";
+        my $identifier = eval { $obj->__display_name__ } || $obj->id;
+        my $msg = $obj->class . " identified by " . $identifier . " has problems on\n";
         my @problems = $obj->__errors__;
         foreach my $error ( @problems ) {
             $msg .= $error->__display_name__ . "\n";
@@ -3753,7 +3763,7 @@ one of three values
 
 =over 2
 
-=item 1.  all
+=item 1. all
 
 This rule is against a class with no filters, meaning it should return every
 member of that class.  It calls C<$class-E<gt>all_objects_loaded> to extract
@@ -3765,11 +3775,16 @@ This rule is against a class and filters by only a single ID, or a list of
 IDs.  The request is fulfilled by plucking the matching objects right out
 of the object cache.
 
-=item 3.
+=item 3. index
 
-The category for any other rule.  This request is fulfilled by getting a
-previously created L<UR::Object::Index> for this rule, or creating a new
-UR::Object::Index, and calling L<UR::Object::Index/all_objects_matching>.
+This rule is against one more more non-id properties.  An index is built
+mapping the filtered properties and their values, and the cached objects
+which have those values.  The request is fulfilled by using the index to
+find objects matching the filter.
+
+=item 4. set intersection
+
+This is a group-by rule and will return a ::Set object.
 
 =back
 

@@ -5,7 +5,7 @@ package UR::Object;
 use warnings;
 use strict;
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 use Data::Dumper;
 use Scalar::Util qw(blessed);
@@ -88,6 +88,9 @@ sub property_diff {
 # TODO: make this a context operation
 sub unload {
     my $proto = shift;
+
+    return unless ($proto->class->__meta__->is_uncachable);
+
     my ($self, $class);
     ref $proto ? $self = $proto : $class = $proto;
     
@@ -336,7 +339,7 @@ package UR::ModuleBase;
 
 =pod
 
-=over
+=over 4
 
 =item message_callback
 
@@ -345,6 +348,8 @@ package UR::ModuleBase;
 
 This method returns and optionally sets the subroutine that handles
 messages of a specific type.
+
+=back
 
 =cut
 

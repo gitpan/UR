@@ -3,7 +3,7 @@ use warnings;
 use strict;
 
 require UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 use Sys::Hostname;
 use Cwd;
@@ -56,6 +56,8 @@ our $PROPERTY_META_FOR_NAME_TEMPLATE;
 push @cache_keys, '_property_meta_for_name';
 sub property_meta_for_name {
     my ($self, $property_name) = @_;
+
+    return unless $property_name;
 
     if (index($property_name,'.') != -1) {
         my @chain = split(/\./,$property_name);
@@ -448,7 +450,7 @@ sub get_composite_id_decomposer {
                     # Handle each underlying ID, turning each into an arrayref divided by property value.
                     my @decomposed_ids;
                     for my $underlying_id (@$id) {
-                        push @decomposed_ids, [map { $_ eq '' ? undef : $_ } split(/\t/,$underlying_id)];
+                        push @decomposed_ids, [map { $_ eq '' ? undef : $_ } split($separator,$underlying_id)];
                     }
             
                     # Count the property values.
@@ -680,13 +682,21 @@ sub is_uncachable {
     my $self = shift;
 
     my $class_name = $self->class_name;
+
+    if (@_) {
+        # setting the is_uncachable value
+        return $uncachable_types{$class_name} = shift;
+    }
+
     unless (exists $uncachable_types{$class_name}) {
+        my $is_uncachable = 1;
         foreach my $type ( keys %uncachable_types ) {
-            if ($class_name->isa($type)) {
-                $uncachable_types{$class_name} = $uncachable_types{$type};
+            if ($class_name->isa($type) and ! $uncachable_types{$type}) {
+                $is_uncachable = 0;
                 last;
             }
         }
+        $uncachable_types{$class_name} = $is_uncachable;
         unless (exists $uncachable_types{$class_name}) {
             die "Couldn't determine is_uncachable() for $class_name";
         }
@@ -1167,50 +1177,6 @@ sub _use_safe {
 }
 
 
-# Create the table behind this class in the specified database.
-# Currently, it creates sql valid for SQLite for support of loading
-# up a testing DB.  Maybe this should be moved somewhere under the
-# DataSource objects
-sub mk_table {
-    my($self,$dbh) = @_;
-    return 1 unless $self->has_table;
-
-    $dbh ||= $self->dbh;
-
-    my $table_name = $self->table_name();
-    # we only care about properties backed up by a real column
-    my @props = grep { $_->column_name } $self->direct_property_metas();
-
-    my $sql = "create table $table_name (";
-
-    my @cols;
-    foreach my $prop ( @props ) {
-        my $col = $prop->column_name;
-        my $type = $prop->data_type;
-        my $len = $prop->data_length;
-        my $nullable = $prop->nullable;
-
-        my $string = "$col" . " " . $type;
-        $string .= " NOT NULL" unless $nullable;
-        push @cols, $string;
-    }
-    $sql .= join(',',@cols);
-
-    my @id_cols = $self->direct_id_column_names();
-    $sql .= ", PRIMARY KEY (" . join(',',@id_cols) . ")" if (@id_cols);
-
-    # Should we also check for the unique properties?
-
-    $sql .= ")";
-
-    unless ($dbh->do($sql) ) {
-        $self->error_message("Can't create table $table_name: ".$DBI::errstr."\nSQL: $sql");
-        return undef;
-    }
-
-    1;
-}
-
 # sub _object
 # This is used to make sure that methods are called
 # as object methods and not class methods.
@@ -1302,19 +1268,60 @@ sub column_for_property {
 sub property_for_column {
     my $self = _object(shift);
     Carp::croak('must pass a column_name to property_for_column') unless @_;
-    my $column_name = shift;
+    my $column_name = lc(shift);
 
-    my($properties,$columns) = @{$self->{'_all_properties_columns'}};
-    for (my $i = 0; $i < @$columns; $i++) {
-        if ($columns->[$i] eq $column_name) {
-            return $properties->[$i];
+    my $data_source = $self->data_source || 'UR::DataSource';
+    my($table_name,$self_table_name);
+    ($table_name, $column_name) = $data_source->_resolve_table_and_column_from_column_name($column_name);
+    (undef, $self_table_name) = $data_source->_resolve_owner_and_table_from_table_name($self->table_name);
+
+    if (! $table_name) {
+        my($properties,$columns) = @{$self->{'_all_properties_columns'}};
+        for (my $i = 0; $i < @$columns; $i++) {
+            if (lc($columns->[$i]) eq $column_name) {
+                return $properties->[$i];
+            }
+        }
+    } elsif ($table_name
+             and
+             $self_table_name
+             and lc($self_table_name) eq lc($table_name)
+    ) {
+        # @$properties and @$columns contain items inherited from parent classes
+        # make sure the property we find with that name goes to this class
+        my $property_name = $self->property_for_column($column_name);
+        return undef unless $property_name;
+        my $prop_meta = $self->property_meta_for_name($property_name);
+        if ($prop_meta->class_name eq $self->class_name
+            and
+            lc($prop_meta->column_name) eq $column_name
+        ) {
+            return $property_name;
+        }
+
+    } elsif ($table_name) {
+
+        for my $class_object ( $self, $self->ancestry_class_metas ) {
+            next unless $class_object->data_source;
+            my $class_object_table_name;
+            (undef, $class_object_table_name)
+                = $class_object->data_source->_resolve_owner_and_table_from_table_name($class_object->table_name);
+
+            if (! $class_object_table_name
+                or
+                $table_name ne lc($class_object_table_name)
+            ) {
+                (undef, $class_object_table_name) = $class_object->data_source->parse_view_and_alias_from_inline_view($class_object->table_name);
+            }
+            next if (! $class_object_table_name
+                or
+                $table_name ne lc($class_object_table_name));
+
+            my $property_name = $class_object->property_for_column($column_name);
+            return $property_name if $property_name;
         }
     }
 
-    for my $class_object ( $self->ancestry_class_metas ) {
-        my $property_name = $class_object->property_for_column($column_name);
-        return $property_name if $property_name;
-    }
     return;
 }
 

@@ -58,7 +58,6 @@ sub ACTION_docs {
     $self->depends_on('manpages', 'html');
 }
 
-print "@UR::ModuleBuild::ISA\n";
 
 
 1;
@@ -72,7 +71,7 @@ UR::ModuleBuild - a Module::Build subclass with UR extensions
 
 =head1 VERSION
 
-This document describes UR::ModuleBuild version 0.41.
+This document describes UR::ModuleBuild version 0.42_01.
 
 =head1 SYNOPOSIS
 

@@ -2,7 +2,7 @@ package UR::DataSource::QueryPlan;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 # this class is an evolving attempt to formalize
 # the blob of cached value used for query construction
@@ -316,18 +316,18 @@ sub _init_rdbms {
     # Find out what delegated properties we'll be dealing with
     my @sql_filters; 
     my @delegated_properties;
-    do {         
-        my %filters =     
-            map { $_ => 0 }
+    do {
+        my %filters =
+            map { $_ => $rule_template->operator_for($_) }
             grep { substr($_,0,1) ne '-' }
             $rule_template->_property_names;
-        
+
         unless (@all_id_property_names == 1 && $all_id_property_names[0] eq "id") {
             delete $filters{'id'};
         }
 
         # Remove the flag for descending/ascending sort
-        my @order_by_properties = $order_by ? @$order_by : ();;
+        my @order_by_properties = $order_by ? @$order_by : ();
         s/^-|\+//  foreach @order_by_properties;
 
         my %properties_involved = map { $_ => 1 }
@@ -335,7 +335,7 @@ sub _init_rdbms {
                                     ($hints ? @$hints : ()),
                                     @order_by_properties,
                                     ($group_by ? @$group_by : ());
-        
+
         my @properties_involved = sort keys(%properties_involved);
         my @errors;
         while (my $property_name = shift @properties_involved) {
@@ -355,7 +355,7 @@ sub _init_rdbms {
                     next;
                 }
             }
-            
+
             # For each property in this list, go up the inheritance and find the right property
             # to query on.  Give priority to properties that actually have columns
             FIND_PROPERTY_WITH_COLUMN:
@@ -383,11 +383,21 @@ sub _init_rdbms {
                 }
                 my $expr_sql = $property->expr_sql;
                 if (exists $filters{$property_name}) {
+                    my @coercion = $self->data_source->cast_for_data_conversion(
+                                                            $property->_data_type_as_class_name,
+                                                            'UR::Value::String', # We can't know here what the type should be
+                                                            $operator,
+                                                            'where');
                     push @sql_filters, 
                         $table_name => { 
                             # cheap hack of prefixing with a whitespace differentiates 
                             # from a regular column below
-                            " " . $expr_sql => { operator => $operator, value_position => $value_position }
+                            " " . $expr_sql => {
+                                        operator => $operator,
+                                        value_position => $value_position,
+                                        left_coercion => $coercion[0],
+                                        right_coercion => $coercion[1],
+                                    }
                         };
                 }
                 next;
@@ -402,16 +412,31 @@ sub _init_rdbms {
                 $hints{$_} = 1 foreach @$calculate_from;
             }
 
-            if (my $column_name = $property->column_name) {
+            if (exists($filters{$property_name}) and $filters{$property_name} eq 'isa') {
+                # RDBMS databases can't do 'isa'
+                $self->needs_further_boolexpr_evaluation_after_loading(1);
+                next;
+            }
+            elsif (my $column_name = $property->column_name) {
                 # normal column: filter on it
                 unless ($table_name) {
                     $ds->warning_message("Property '$property_name' of class '$class_name'  has column '$column_name' but has no table!");
                     next;
                 }
                 if (exists $filters{$property_name}) {
+                    my @coercion = $self->data_source->cast_for_data_conversion(
+                                                            $property->_data_type_as_class_name,
+                                                            'UR::Value::String', # We can't know here what the type should be
+                                                            $operator,
+                                                            'where');
                     push @sql_filters, 
                         $table_name => { 
-                            $column_name => { operator => $operator, value_position => $value_position } 
+                            $column_name => {
+                                    operator => $operator,
+                                    value_position => $value_position,
+                                    left_coercion => $coercion[0],
+                                    right_coercion => $coercion[1],
+                                }
                         };
                 }
             }
@@ -434,10 +459,10 @@ sub _init_rdbms {
             Carp::croak("Can't continue");
         }
     };
-    
+
     my $object_num = 0; 
     $self->_alias_count(0);
-    
+
     my %hints_included;
     my @select_hint;
 
@@ -445,7 +470,7 @@ sub _init_rdbms {
     # and inheritance-join-resolver methods that can be called recursively.
     # It would better encapsulate what's going on and avoid bugs with complicated
     # get()s
-   
+
     # one iteration per target value involved in the query,
     # including values needed for filtering, ordering, grouping, and hints (selecting more)
     # these "properties" may be a single property name or an ad-hoc "chain"
@@ -457,7 +482,7 @@ sub _init_rdbms {
         $delegation_chain_data->{"__all__"}{class_alias} = { $first_table_name => $class_meta };
 
         my ($final_accessor, $is_optional, @joins) = _resolve_object_join_data_for_property_chain($rule_template,$property_name,$property_name);
-        
+
         # when there is no "final_accessor" it often means we have an object-accessor in a hint
         # we want that to go through the join process, and only be left out at filter construction time
         #unless ($final_accessor) {
@@ -672,9 +697,20 @@ sub _init_rdbms {
                     die "No alias found for $property_name?!";
                 }
 
+                my @coercion = $self->data_source->cast_for_data_conversion(
+                                                        $final_accessor_property_meta->_data_type_as_class_name,
+                                                        'UR::Value::String', # We can't know here what the type should be
+                                                        $operator,
+                                                        'where');
+
                 push @sql_filters, 
                     $alias_for_property_value => { 
-                        $sql_lvalue => { operator => $operator, value_position => $value_position } 
+                        $sql_lvalue => {
+                            operator => $operator,
+                            value_position => $value_position,
+                            left_coercion => $coercion[0],
+                            right_coercion => $coercion[1],
+                         }
                     };
             }
         }
@@ -767,8 +803,9 @@ sub _init_rdbms {
         for my $column_name (keys %$condition) {
             my $linkage_data = $condition->{$column_name};
             my $expr_sql = (substr($column_name,0,1) eq " " ? $column_name : "${table_alias}.${column_name}");                                
-            my ($operator, $value_position, $value, $link_table_name, $link_column_name)
-                = @$linkage_data{qw/operator value_position value link_table_name link_column_name/};
+            my ($operator, $value_position, $value, $link_table_name, $link_column_name, $left_coercion, $right_coercion)
+                = @$linkage_data{qw/operator value_position value link_table_name
+                                    link_column_name left_coercion right_coercion/};
 
             if ($link_table_name and $link_column_name) {
                 # the linkage data is a join specifier
@@ -780,6 +817,9 @@ sub _init_rdbms {
                 unless (defined $value_position) {
                     Carp::confess("No value position for $column_name in query!");
                 }                
+
+                $expr_sql = sprintf($left_coercion, $expr_sql);
+
                 push @filter_specs, [$expr_sql, $operator, $value_position];
             }
         } # next column                
@@ -963,11 +1003,10 @@ sub _add_join {
 
         @$source_table_and_column_names =
             map {
-                if ($_->[0] =~ /^(.*)\s+(\w+)\s*$/s) {
+                if (my($view, $alias) = $ds->parse_view_and_alias_from_inline_view($_->[0])) {
                     # This "table_name" was actually a bit of SQL with an inline view and an alias
-                    # FIXME - this won't work if they used the optional "as" keyword
-                    $_->[0] = $1;
-                    $_->[2] = $2;
+                    $_->[0] = $view;
+                    $_->[2] = $alias;
                 }
                 $_;
             }
@@ -1051,7 +1090,12 @@ sub _add_join {
                 for (my $n = 0; $n < @$where; $n += 2) {
                     my $key =$where->[$n];
                     my ($name,$op) = ($key =~ /^(\S+)\s*(.*)/);
-                    
+
+                    if(index($name, '-') == 0) {
+                        #skip '-order_by', '-hint' and the like for joins
+                        next;
+                    }
+
                     #my $meta = $foreign_class_object->property_meta_for_name($name);
                     #my $column = $meta->is_calculated ? (defined($meta->calculate_sql) ? ($meta->calculate_sql) : () ) : ($meta->column_name);
                     my ($table_name, $column_names, $property_metas) = $self->_resolve_table_and_column_data($foreign_class_object, $name);
@@ -1081,10 +1125,13 @@ sub _add_join {
                 my $link_class_meta = $class_alias->{$link_table_name} || $source_class_object;
                 my $link_property_name = $link_class_meta->property_for_column($link_column_name);
 
-                my @coercion = $self->data_source->cast_for_data_conversion(
-                                    $link_class_meta->_concrete_property_meta_for_class_and_name($link_property_name),
-                                    $foreign_property_meta[$n],
-                                );
+                # _concrete_property_meta_for_class_and_name returns a list :(
+                # since we're inspecting the joins by their "real" names and not the generic
+                # "id", it will only ever return a 1-element list
+                my($link_prop) = $link_class_meta->_concrete_property_meta_for_class_and_name($link_property_name);
+                my $left_type = $link_prop->_data_type_as_class_name;
+                my $right_type = $foreign_property_meta[$n]->_data_type_as_class_name;
+                my @coercion = $self->data_source->cast_for_data_conversion($left_type, $right_type, '=', 'join');
 
                 push @db_join_data,
                         $foreign_column_name => {
@@ -1366,8 +1413,10 @@ sub _resolve_db_joins_for_inheritance {
                 }
 
                 my @coercion = $co->data_source->cast_for_data_conversion(
-                                    $prev_property_meta,
-                                    $id_property_objects[0]);
+                                    $prev_property_meta->_data_type_as_class_name,
+                                    $id_property_objects[0]->_data_type_as_class_name,
+                                    '=',
+                                    'join');
                 push @sql_joins,
                     $table_name =>
                     {
@@ -2072,8 +2121,10 @@ sub _init_core {
                         {
                             map {
                                 my @coercion = $ds->cast_for_data_conversion(
-                                        $source_property_meta[$_],
-                                        $foreign_property_meta[$_]);
+                                        $source_property_meta[$_]->_data_type_as_class_name,
+                                        $foreign_property_meta[$_]->_data_type_as_class_name,
+                                        '=',
+                                        'join');
                                 $foreign_property_names[$_] => { 
                                     link_table_name     => $last_alias_for_this_chain || $source_table_and_column_names[$_][0],
                                     link_column_name    => $source_table_and_column_names[$_][1],
@@ -2267,6 +2318,61 @@ sub _init_remote_cache {
     );
 
     return $self;
+}
+
+sub order_by_column_list {
+    my $self = shift;
+
+    $self->_resolve_order_by_and_descending_data();
+    return $self->{_order_by_column_list};
+}
+
+sub _resolve_order_by_and_descending_data {
+    my $self = shift;
+
+    unless ($self->{_order_by_column_list}) {
+        my %is_descending;
+        my @order_by_columns =
+                map {
+                    m/^-(.*)/
+                        ? $is_descending{$1} = $1
+                        : $_;
+                }
+                @{ $self->order_by_columns || [] };
+
+        $self->{_order_by_column_list} = \@order_by_columns;
+        $self->{_order_by_column_is_descending} = \%is_descending;
+    }
+}
+
+sub order_by_column_is_descending {
+    my($self, $column_name) = @_;
+
+    $self->_resolve_order_by_and_descending_data();
+    return $self->{_order_by_column_is_descending}->{$column_name};
+}
+
+sub property_meta_for_column {
+    my($self, $table_and_column_name) = @_;
+
+    $table_and_column_name = lc($table_and_column_name);
+
+    my $data_source = $self->data_source();
+    my ($table_name, $column_name) = $data_source->_resolve_table_and_column_from_column_name($table_and_column_name);
+
+    if (my $join = $self->_get_alias_join($table_name)) {
+        # The given $table_name was actually a join alias
+        my $foreign_class_meta = $join->foreign_class->__meta__;
+        my $prop_name = $foreign_class_meta->property_for_column($column_name);
+        return $prop_name
+            ? $foreign_class_meta->property_meta_for_name($prop_name)
+            : undef;
+
+    } else {
+        my $class_meta = $self->class_name->__meta__;
+        my $prop_name = $class_meta->property_for_column($table_and_column_name);
+        return $class_meta->property_meta_for_name($prop_name);
+    }
 }
 
 1;

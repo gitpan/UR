@@ -4,7 +4,7 @@ package UR::Namespace::Command::Test::Use;
 use strict;
 use warnings;
 use UR;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 use Cwd;
 use YAML;
 
@@ -67,7 +67,9 @@ sub for_each_module_file {
     local $SIG{__DIE__};
     local $ENV{UR_DBI_MONITOR_SQL} = 1;
     local $ENV{APP_DBI_MONITOR_SQL} = 1;
+    local *CORE::GLOBAL::exit = sub {};
 
+    $self->debug_message("require $module_file");
     eval "require '$module_file'";
 
     my %new_libs = map { $_ => 1 } grep { not $libs_before{$_} } @INC;

@@ -5,7 +5,7 @@ package UR::DataSource::FileMux;
 use UR;
 use strict;
 use warnings;
-our $VERSION = "0.41"; # UR $VERSION;
+our $VERSION = "0.42_01"; # UR $VERSION;
 
 class UR::DataSource::FileMux {
     is => ['UR::DataSource'],
@@ -26,14 +26,36 @@ class UR::DataSource::FileMux {
         file_list             => { is => 'ARRAY',  doc => 'list of pathnames of equivalent files' },
         sort_order            => { is => 'ARRAY',  doc => 'Names of the columns by which the data file is sorted' },
         required_for_get      => { is => 'ARRAY',  doc => 'Property names which must appear in any get() request using this data source.  It is used to build the argument list for the file_resolver sub' },
+        delegate_file_ds      => { is => 'UR:DataFile::FileMuxFile', reverse_as => 'controlling_filemux', is_many => 1 },
     ],
 };
 
+UR::Object::Type->define(
+    class_name => 'UR::DataSource::FileMuxFile',
+    is => 'UR::DataSource::File',
+    has_transient => [
+        controlling_filemux => { is => 'UR::DataSource::FileMux', id_by => 'controlling_filemux_id' },
+    ],
+)->is_uncachable(1);
+
+
+# FileMux doesn't have a 'default_handle'
+sub create_default_handle {
+    return undef;
+}
+
+sub disconnect {
+    my $self = shift;
+    my @delegates = $self->delegate_file_ds();
+    $_->disconnect_default_handle foreach @delegates;
+}
 
 # The concreate data sources will be of this type
 sub _delegate_data_source_class {
-    'UR::DataSource::File';
+    'UR::DataSource::FileMuxFile';
 }
+
+
 
 sub sql_fh {
     return UR::DBI->sql_fh();
@@ -293,6 +315,7 @@ sub get_or_create_data_source {
                       id => $sub_ds_id,
                       %sub_ds_params,
                       server => $file_path,
+                      controlling_filemux_id => $self->id,
                   );
         $UR::Context::all_objects_cache_size++;
         $sub_ds = $concrete_ds_type->get($sub_ds_id);
@@ -314,9 +337,11 @@ sub _generate_loading_templates_arrayref {
     my $delegate_class = $self->_delegate_data_source_class();
     $delegate_class->class;  # trigger the autoloader, if necessary
 
-    my $function_name = $delegate_class . '::_generate_loading_templates_arrayref';
-    no strict 'refs';
-    return &$function_name($self,@_);
+    my $sub = $delegate_class->can('_generate_loading_templates_arrayref');
+    unless ($sub) {
+        Carp::croak(qq(FileMux can't locate method "_generate_loading_templates_arrayref" via package $delegate_class.  Is $delegate_class a File-type DataSource?));
+    }
+    $self->$sub(@_);
 }
 
 
@@ -575,6 +600,7 @@ sub _sync_database {
                           id => $sub_ds_id,
                           %sub_ds_params,
                           server => $file_path,
+                          controlling_filemux_id => $self->id,
                       );
             $UR::Context::all_objects_cache_size++;
             $sub_ds = $concrete_ds_type->get($sub_ds_id);
