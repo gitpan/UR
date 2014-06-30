@@ -3,6 +3,7 @@ abstract: 'rich declarative transactional objects'
 author:
   - 'UR was built by the software development team at The Genome Institute'
 build_requires:
+  Test::Exception: '0'
   Test::Fork: '0'
   Test::More: '0.98'
 configure_requires:
@@ -65,7 +66,7 @@ resources:
   bugtracker: https://github.com/genome/UR/issues
   homepage: https://github.com/genome/UR
   repository: git://github.com/genome/UR.git
-version: 0.42_02
+version: 0.42_03
 x_contributors:
   - 'josborne <josborne@watson.wustl.edu>'
   - 'thepler <thepler@watson.wustl.edu>'
